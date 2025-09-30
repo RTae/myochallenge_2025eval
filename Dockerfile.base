@@ -3,12 +3,15 @@ FROM nvcr.io/nvidia/cuda:13.0.1-base-ubuntu24.04
 # Set non-interactive frontend for apt
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Use USTC mirrors
-RUN rm -f /etc/apt/sources.list.d/cuda.list /etc/apt/sources.list.d/nvidia-ml.list || true && \
-    sed -i 's|http://archive.ubuntu.com/ubuntu/|https://mirrors.ustc.edu.cn/ubuntu/|g' /etc/apt/sources.list && \
-    sed -i 's|http://security.ubuntu.com/ubuntu/|https://mirrors.ustc.edu.cn/ubuntu/|g' /etc/apt/sources.list
+# Use Tsinghua University mirrors for apt
+RUN rm -f /etc/apt/sources.list.d/*
+RUN echo "deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu/ noble main restricted universe multiverse\n\
+deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu/ noble-updates main restricted universe multiverse\n\
+deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu/ noble-backports main restricted universe multiverse\n\
+deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu/ noble-security main restricted universe multiverse" \
+> /etc/apt/sources.list
 
-# Install Python and essential build tools
+# Install system packages
 RUN apt-get clean && apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-venv python3-dev \
     build-essential curl ca-certificates git pkg-config \
