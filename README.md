@@ -1,19 +1,5 @@
 # 2025 NeurIPS - MyoChallenge
 
-## Build
-### Base image
-```bash
-docker build \
-  -t myochallenge-base:latest \
-  -f Dockerfile.base .
-```
-
-
-<p align="center">
-  <img width="1020" height="467" alt="image" src="https://github.com/user-attachments/assets/16362637-c84f-460c-a31f-94a6bc95613e" />
-  <p align="center"><i>MyoChallenge Tasks</i></p>
-</p>
-
 Welcome to the [**2025 NeurIPS - MyoChallenge: Towards Human Athletic Intelligence**](https://sites.google.com/view/myosuite/myochallenge/myochallenge-2025).
 
 This challenge consists of developing controllers for a physiologically realistic musculoskeletal model to achieve upper and lower limb athletic tasks:
@@ -23,6 +9,24 @@ This challenge consists of developing controllers for a physiologically realisti
 - B) **Soccer task** -- Successfully control an agent to score a penalty/free kick (`myoChallengeSoccerP1-v0`).
 
 [⚠️ Important!] For Phase 1 environment, please upgrade to MyoSuite >= 2.10.0
+
+## Build
+### Base image
+```bash
+docker build \
+  -t ghcr.io/rtae/myochallenge/myochallenge-base:latest \
+  -f Dockerfile.base .
+```
+
+## Deverlopment
+### Run with Docker 
+```bash
+docker run -it --rm \
+  --gpus all \
+  -v $PWD:/app \
+  ghcr.io/rtae/myochallenge/myochallenge-base:latest \
+  bash
+```
 
 ## Overview
 This repository is primarily centered around the submission of your solution, but we also created documentation to help you with:
@@ -57,20 +61,4 @@ docker build -f docker/agent/Dockerfile_Tabletennis . -t myochallengeeval_mani_a
 # Step 4: Upload your policy
 evalai push myochallengeeval_mani_agent:latest --phase myochallenge2025-XXXX1-XXX --public
 
-```
-
-#### KNOWN ISSUES
-
-
-If error to install `grpcio`, a solution is to install it manually
-
-```bash
-pip install grpcio==1.47.0
-pip install grpcio-tools==1.47.0
-```
-
-It might be needed to make the path visible via:
-```bash
-export PYTHONPATH="./utils/:$PYTHONPATH"
-export PYTHONPATH="./agent/:$PYTHONPATH"
 ```
