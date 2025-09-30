@@ -1,27 +1,29 @@
 FROM nvcr.io/nvidia/cuda:13.0.1-base-ubuntu24.04
 
-# Avoid interactive prompts
+# Set non-interactive frontend for apt
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Switch Ubuntu sources to Tsinghua mirrors (inside China)
-RUN sed -i 's|http://archive.ubuntu.com/ubuntu/|https://mirrors.tuna.tsinghua.edu.cn/ubuntu/|g' /etc/apt/sources.list && \
-    sed -i 's|http://security.ubuntu.com/ubuntu/|https://mirrors.tuna.tsinghua.edu.cn/ubuntu/|g' /etc/apt/sources.list
+# Use USTC mirrors
+RUN rm -f /etc/apt/sources.list.d/cuda.list /etc/apt/sources.list.d/nvidia-ml.list || true && \
+    sed -i 's|http://archive.ubuntu.com/ubuntu/|https://mirrors.ustc.edu.cn/ubuntu/|g' /etc/apt/sources.list && \
+    sed -i 's|http://security.ubuntu.com/ubuntu/|https://mirrors.ustc.edu.cn/ubuntu/|g' /etc/apt/sources.list
 
-# Install Python 3.12 (default in Ubuntu 24.04) + build tools
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Install Python and essential build tools
+RUN apt-get clean && apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-venv python3-dev \
     build-essential curl ca-certificates git pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
-# Ensure python3 is available
+# Verify Python
 RUN python3 --version
 
-# Install uv (fast Python package manager)
+# Install uv (Python package manager)
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-# Working directory
+# Set working directory
 WORKDIR /app
 
-# Copy dependency files
+# Install dependencies
 COPY pyproject.toml uv.lock ./
+RUN uv pip install --system -r uv.lock || true
