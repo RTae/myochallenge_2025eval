@@ -1,7 +1,7 @@
 #################################################
 ### Base image with Python + uv                ##
 #################################################
-FROM nvcr.io/nvidia/cuda:13.0.1-base-ubuntu24.04 as python-base
+FROM nvcr.io/nvidia/cuda:13.0.1-base-ubuntu24.04 AS python-base
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -27,7 +27,7 @@ ENV PATH="/root/.local/bin:${PATH}"
 #################################################
 ### builder-base: install project dependencies ##
 #################################################
-FROM python-base as builder-base
+FROM python-base AS builder-base
 WORKDIR $PYSETUP_PATH
 
 # Copy only dependency files first (cache friendly)
@@ -44,7 +44,7 @@ ENV PATH="$VENV_PATH/bin:$PATH"
 #################################################
 ### final runtime image                        ##
 #################################################
-FROM python-base as runtime
+FROM python-base AS runtime
 WORKDIR /app
 
 # Copy venv from builder stage
@@ -53,3 +53,4 @@ COPY --from=builder-base $VENV_PATH $VENV_PATH
 # Ensure venv python is default
 ENV VIRTUAL_ENV=$VENV_PATH
 ENV PATH="$VENV_PATH/bin:$PATH"
+ENV PYTHONPATH="./:$PYTHONPATH"
