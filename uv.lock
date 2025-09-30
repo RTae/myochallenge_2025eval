@@ -849,7 +849,7 @@ requires-dist = [
     { name = "grpcio-tools", specifier = ">=1.75.1" },
     { name = "gymnasium", specifier = ">=1.2.1" },
     { name = "matplotlib", specifier = ">=3.10.6" },
-    { name = "myosuite" },
+    { name = "myosuite", specifier = ">=2.3.0" },
     { name = "numpy", specifier = ">=2.3.3" },
     { name = "protobuf", specifier = ">=6.32.1" },
     { name = "requests", specifier = ">=2.32.5" },

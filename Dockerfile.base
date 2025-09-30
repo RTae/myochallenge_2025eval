@@ -14,6 +14,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN apt-get clean && apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-venv python3-dev python-is-python3 \
     build-essential curl ca-certificates \
+    libgl1-mesa-dev libglfw3 libglfw3-dev libglew-dev patchelf \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python --version && python3 --version
@@ -30,13 +31,23 @@ ENV PATH="/root/.local/bin:${PATH}"
 FROM python-base AS builder-base
 WORKDIR $PYSETUP_PATH
 
+# Install MuJoCo 
+ENV MUJOCO_VERSION=2.3.7
+ENV MUJOCO_PATH=/root/.mujoco/mujoco-$MUJOCO_VERSION
+ENV LD_LIBRARY_PATH=$MUJOCO_PATH/bin:$LD_LIBRARY_PATH
+ENV CPATH=$MUJOCO_PATH/include:$CPATH
+
+RUN mkdir -p /root/.mujoco && \
+    curl -L https://github.com/deepmind/mujoco/releases/download/$MUJOCO_VERSION/mujoco-$MUJOCO_VERSION-linux-x86_64.tar.gz \
+    | tar -xz -C /root/.mujoco
+
 # Copy only dependency files first (cache friendly)
 COPY ./pyproject.toml ./uv.lock ./
 
-# Install dependencies into $VENV_PATH
+# Install dependencies
 RUN uv sync --no-dev --frozen --python python3 --directory $PYSETUP_PATH
 
-# Ensure the venv is on PATH
+# Activate venv by default
 ENV VIRTUAL_ENV=$VENV_PATH
 ENV PATH="$VENV_PATH/bin:$PATH"
 
@@ -47,11 +58,23 @@ ENV PATH="$VENV_PATH/bin:$PATH"
 FROM python-base AS runtime
 WORKDIR /app
 
+# Copy MuJoCo runtime libs
+ENV MUJOCO_PATH=/root/.mujoco/mujoco-$MUJOCO_VERSION
+ENV LD_LIBRARY_PATH=$MUJOCO_PATH/bin:$LD_LIBRARY_PATH
+COPY --from=builder-base /root/.mujoco $MUJOCO_PATH
+
 # Copy venv from builder stage
 COPY --from=builder-base $VENV_PATH $VENV_PATH
 
-# Ensure venv python is default
+# Default to venv python
 ENV VIRTUAL_ENV=$VENV_PATH
 ENV PATH="$VENV_PATH/bin:$PATH"
-ENV PYTHONPATH="./utils/:$PYTHONPATH"
-ENV PYTHONPATH="./agent/:$PYTHONPATH"
+
+# Add your project PYTHONPATHs
+ENV PYTHONPATH="/app/utils:/app/agent:$PYTHONPATH"
+
+# Copy source code last
+COPY . /app
+
+# Run agent directly (no bash script)
+CMD ["python", "agent/agent_tabletennis_random.py"]

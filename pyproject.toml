@@ -9,7 +9,7 @@ dependencies = [
     "grpcio-tools>=1.75.1",
     "gymnasium>=1.2.1",
     "matplotlib>=3.10.6",
-    "myosuite",
+    "myosuite>=2.3.0",
     "numpy>=2.3.3",
     "protobuf>=6.32.1",
     "requests>=2.32.5",
