@@ -1,25 +1,27 @@
-# Base image: CUDA 13.0.1 on Ubuntu 24.04
 FROM nvcr.io/nvidia/cuda:13.0.1-base-ubuntu24.04
 
-# Avoid interactive prompts during apt installs
+# Avoid interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install Python 3.12 and build essentials
+# Switch Ubuntu sources to Tsinghua mirrors (inside China)
+RUN sed -i 's|http://archive.ubuntu.com/ubuntu/|https://mirrors.tuna.tsinghua.edu.cn/ubuntu/|g' /etc/apt/sources.list && \
+    sed -i 's|http://security.ubuntu.com/ubuntu/|https://mirrors.tuna.tsinghua.edu.cn/ubuntu/|g' /etc/apt/sources.list
+
+# Install Python 3.12 (default in Ubuntu 24.04) + build tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3.12 python3.12-venv python3.12-dev \
+    python3 python3-venv python3-dev \
     build-essential curl ca-certificates git pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
-# Ensure python3 points to 3.12
-RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1 \
-    && update-alternatives --set python3 /usr/bin/python3.12
+# Ensure python3 is available
+RUN python3 --version
 
-# Install uv (fast Python package/dependency manager)
+# Install uv (fast Python package manager)
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-# Create working directory
+# Working directory
 WORKDIR /app
 
-# Install dependencies
+# Copy dependency files
 COPY pyproject.toml uv.lock ./
