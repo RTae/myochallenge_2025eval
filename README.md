@@ -3,7 +3,9 @@
 ## Build
 ### Base image
 ```bash
-docker build -t myochallenge-base:latest -f Dockerfile.base .
+docker build \
+  -t myochallenge-base:latest \
+  -f Dockerfile.base .
 ```
 
 

@@ -3,22 +3,25 @@ FROM nvcr.io/nvidia/cuda:13.0.1-base-ubuntu24.04
 # Set non-interactive frontend for apt
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Remove NVIDIA repos that cause issues
+RUN rm -f /etc/apt/sources.list.d/cuda.list /etc/apt/sources.list.d/nvidia-ml.list || true
+
+# Use Aliyun Zhongwei mirror
+RUN sed -i 's|http://archive.ubuntu.com/ubuntu/|http://cn-zhongwei-c.clouds.archive.ubuntu.com/ubuntu/|g' /etc/apt/sources.list && \
+    sed -i 's|http://security.ubuntu.com/ubuntu/|http://cn-zhongwei-c.clouds.archive.ubuntu.com/ubuntu/|g' /etc/apt/sources.list
+
 # Install Python and essential build tools
 RUN apt-get clean && apt-get update && apt-get install -y --no-install-recommends \
-    python3 python3-venv python3-dev \
-    build-essential curl ca-certificates git pkg-config \
-    && rm -rf /var/lib/apt/lists/*
+    python3 python3-venv python3-dev python3-pip \
+    build-essential curl ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
 
 # Verify Python
 RUN python3 --version
 
 # Install uv (Python package manager)
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/root/.cargo/bin:${PATH}"
-
-# Set working directory
-WORKDIR /app
+RUN pip3 install uv==0.4.30
 
 # Install dependencies
 COPY pyproject.toml uv.lock ./
-RUN uv pip install --system -r uv.lock || true
+RUN uv sync --no-dev
