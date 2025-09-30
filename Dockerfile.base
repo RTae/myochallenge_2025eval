@@ -1,28 +1,54 @@
-FROM nvcr.io/nvidia/cuda:13.0.1-base-ubuntu24.04
+#################################################
+### Base image with Python + uv                ##
+#################################################
+FROM nvcr.io/nvidia/cuda:13.0.1-base-ubuntu24.04 as python-base
 
-# Set non-interactive frontend for apt
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Remove NVIDIA repos that cause issues
-RUN rm -f /etc/apt/sources.list.d/cuda.list /etc/apt/sources.list.d/nvidia-ml.list || true
-
-# Use Aliyun Zhongwei mirror
-RUN sed -i 's|http://archive.ubuntu.com/ubuntu/|http://cn-zhongwei-c.clouds.archive.ubuntu.com/ubuntu/|g' /etc/apt/sources.list && \
-    sed -i 's|http://security.ubuntu.com/ubuntu/|http://cn-zhongwei-c.clouds.archive.ubuntu.com/ubuntu/|g' /etc/apt/sources.list
-
-# Install Python and essential build tools
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    UV_NO_CACHE=1 \
+    PYSETUP_PATH="/opt/pysetup" \
+    VENV_PATH="/opt/pysetup/.venv"
+    
+# Install Python + essentials
 RUN apt-get clean && apt-get update && apt-get install -y --no-install-recommends \
-    python3 python3-venv python3-dev \
-    build-essential curl ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
+    python3 python3-venv python3-dev python-is-python3 \
+    build-essential curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN python3 --version
+RUN python --version && python3 --version
 
-# Install uv (Python package manager)
+# Install uv
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:${PATH}"
-RUN uv --version
 
-# Install dependencies
-COPY pyproject.toml uv.lock ./
-RUN uv sync --no-dev
+
+#################################################
+### builder-base: install project dependencies ##
+#################################################
+FROM python-base as builder-base
+WORKDIR $PYSETUP_PATH
+
+# Copy only dependency files first (cache friendly)
+COPY ./pyproject.toml ./uv.lock ./
+
+# Install dependencies into $VENV_PATH
+RUN uv sync --no-dev --frozen --python python3 --directory $PYSETUP_PATH
+
+# Ensure the venv is on PATH
+ENV VIRTUAL_ENV=$VENV_PATH
+ENV PATH="$VENV_PATH/bin:$PATH"
+
+
+#################################################
+### final runtime image                        ##
+#################################################
+FROM python-base as runtime
+WORKDIR /app
+
+# Copy venv from builder stage
+COPY --from=builder-base $VENV_PATH $VENV_PATH
+
+# Ensure venv python is default
+ENV VIRTUAL_ENV=$VENV_PATH
+ENV PATH="$VENV_PATH/bin:$PATH"
