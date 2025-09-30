@@ -1,8 +1,10 @@
-[![Supported by MyoSuite](https://img.shields.io/static/v1?label=Supported%20by&message=MyoSuite&color=informational&link=https://github.com/MyoHub/myosuite)](https://github.com/MyoHub/myosuite)
-[![Slack](https://img.shields.io/badge/Slack-4A154B?style=for-the-badge&logo=slack&logoColor=white)](https://myosuite.slack.com)
-[![Twitter Follow](https://img.shields.io/twitter/follow/MyoSuite?style=social)](https://twitter.com/MyoSuite)
-
 # 2025 NeurIPS - MyoChallenge
+
+## Build
+### Base image
+```bash
+docker build -t myochallenge-base:latest -f Dockerfile.base .
+```
 
 
 <p align="center">

@@ -1,0 +1,25 @@
+# Base image: CUDA 13.0.1 on Ubuntu 24.04
+FROM nvcr.io/nvidia/cuda:13.0.1-base-ubuntu24.04
+
+# Avoid interactive prompts during apt installs
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install Python 3.12 and build essentials
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.12 python3.12-venv python3.12-dev \
+    build-essential curl ca-certificates git pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+# Ensure python3 points to 3.12
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1 \
+    && update-alternatives --set python3 /usr/bin/python3.12
+
+# Install uv (fast Python package/dependency manager)
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Create working directory
+WORKDIR /app
+
+# Install dependencies
+COPY pyproject.toml uv.lock ./
