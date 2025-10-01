@@ -35,11 +35,11 @@ WORKDIR $PYSETUP_PATH
 # Install MuJoCo 
 ENV MUJOCO_VERSION=3.3.0
 ENV MUJOCO_PATH=/root/.mujoco/mujoco-${MUJOCO_VERSION}
-ENV LD_LIBRARY_PATH=${MUJOCO_PATH}/bin:$LD_LIBRARY_PATH
-ENV CPATH=${MUJOCO_PATH}/include:$CPATH
+ENV LD_LIBRARY_PATH=${MUJOCO_PATH}/bin:${LD_LIBRARY_PATH:-}
+ENV CPATH=${MUJOCO_PATH}/include:${CPATH:-}
 
 RUN mkdir -p /root/.mujoco && \
-    curl -L https://github.com/deepmind/mujoco/releases/download/$MUJOCO_VERSION/mujoco-$MUJOCO_VERSION-linux-x86_64.tar.gz \
+    curl -L https://github.com/deepmind/mujoco/releases/download/${MUJOCO_VERSION}/mujoco-${MUJOCO_VERSION}-linux-x86_64.tar.gz \
     | tar -xz -C /root/.mujoco
 
 # Copy only dependency files first (cache friendly)
@@ -59,9 +59,11 @@ ENV PATH="$VENV_PATH/bin:$PATH"
 FROM python-base AS runtime
 WORKDIR /app
 
-# Copy MuJoCo runtime libs
-ENV MUJOCO_PATH=/root/.mujoco/mujoco-$MUJOCO_VERSION
-ENV LD_LIBRARY_PATH=$MUJOCO_PATH/bin:$LD_LIBRARY_PATH
+# MuJoCo runtime
+ENV MUJOCO_VERSION=3.3.0
+ENV MUJOCO_PATH=/root/.mujoco/mujoco-${MUJOCO_VERSION}
+ENV LD_LIBRARY_PATH=${MUJOCO_PATH}/bin:${LD_LIBRARY_PATH:-}
+
 COPY --from=builder-base /root/.mujoco $MUJOCO_PATH
 
 # Copy venv from builder stage
@@ -71,5 +73,5 @@ COPY --from=builder-base $VENV_PATH $VENV_PATH
 ENV VIRTUAL_ENV=$VENV_PATH
 ENV PATH="$VENV_PATH/bin:$PATH"
 
-# Add your project PYTHONPATHs
-ENV PYTHONPATH="/app/utils:/app/agent:$PYTHONPATH"
+# Add your project PYTHONPATH
+ENV PYTHONPATH=/app/utils:/app/agent:${PYTHONPATH:-}
