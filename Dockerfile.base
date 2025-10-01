@@ -1,5 +1,5 @@
 #################################################
-### Base image with Python + uv                ##
+### Base image with Python 3.12 + uv           ##
 #################################################
 FROM nvcr.io/nvidia/cuda:13.0.1-base-ubuntu24.04 AS python-base
 
@@ -10,15 +10,16 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYSETUP_PATH="/opt/pysetup" \
     VENV_PATH="/opt/pysetup/.venv"
 
-# Install Python + essentials
+# Install Python 3.12 + essentials
 RUN apt-get clean && apt-get update && apt-get install -y --no-install-recommends \
-    python3 python3-venv python3-dev python-is-python3 \
+    python3.12 python3.12-venv python3.12-dev python-is-python3 \
     build-essential curl ca-certificates \
     libgl1-mesa-dev libglfw3 libglfw3-dev libglew-dev patchelf \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-RUN python --version && python3 --version
+# Verify Python version
+RUN python3 --version && python --version
 
 # Install uv
 ARG UV_VERSION=0.8.22
@@ -45,8 +46,8 @@ RUN mkdir -p /root/.mujoco && \
 # Copy only dependency files first (cache friendly)
 COPY ./pyproject.toml ./uv.lock ./
 
-# Install dependencies
-RUN uv sync --no-dev --frozen --python python3 --directory $PYSETUP_PATH
+# Install dependencies into venv using uv
+RUN uv sync --no-dev --frozen --python python3.12 --directory $PYSETUP_PATH
 
 # Activate venv by default
 ENV VIRTUAL_ENV=$VENV_PATH
