@@ -14,7 +14,7 @@ This challenge consists of developing controllers for a physiologically realisti
 ### Base image
 ```bash
 docker build \
-  -t ghcr.io/rtae/myochallenge_2025eval/myochallenge-base:latest \
+  -t ghcr.io/rtae/myochallenge/myochallenge-base:latest \
   -f Dockerfile.base .
 ```
 
@@ -24,7 +24,7 @@ docker build \
 docker run -it --rm \
   --gpus all \
   -v $PWD:/app \
-  ghcr.io/rtae/myochallenge_2025eval/myochallenge-base:latest \
+  ghcr.io/rtae/myochallenge/myochallenge-base:latest \
   bash
 ```
 
