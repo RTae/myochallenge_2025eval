@@ -15,7 +15,7 @@ from loguru import logger
 ENV_ID = "myoChallengeTableTennisP2-v0"
 N_ENVS = 10
 TOTAL_TIMESTEPS = 1_000_000
-EVAL_FREQ = 50_000
+EVAL_FREQ = 1_000
 
 LOG_DIR = "./logs/logs_tabletennis_p2_full/"
 VIDEO_DIR = os.path.join(LOG_DIR, "videos")
@@ -29,9 +29,8 @@ warnings.filterwarnings("ignore", message=".*obs returned by the `step.*")
 warnings.filterwarnings("ignore", message="EGLError")  # silence destructor cleanup errors
 
 # Use GPU EGL (recommended if NVIDIA drivers are present)
-os.environ["MUJOCO_GL"] = "egl"            # or "osmesa" for CPU-only fallback
-os.environ["MUJOCO_EGL_DEVICE_ID"] = "0"   # choose GPU id if multiple
-os.environ["PYOPENGL_PLATFORM"] = "egl"    # helps some stacks
+os.environ["EGL_DEVICE_ID"] = "0"        # optional: choose GPU device
+os.environ["DISPLAY"] = ""               # disable X11
 
 # keep your thread limits too if you set them:
 os.environ["OMP_NUM_THREADS"] = "1"
