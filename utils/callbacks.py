@@ -37,14 +37,14 @@ class VideoEvalCallback(BaseCallback):
                 deterministic=True,
             )
 
-            print(f"\n🎯 Step {self.n_calls}: mean_reward={mean_reward:.3f} ± {std_reward:.3f}")
+            logger.info(f"\n🎯 Step {self.n_calls}: mean_reward={mean_reward:.3f} ± {std_reward:.3f}")
 
             # Save best model
             if mean_reward > self.best_mean_reward:
                 self.best_mean_reward = mean_reward
                 best_model_path = os.path.join(self.best_model_dir, "best_model.zip")
                 self.model.save(best_model_path)
-                print(f"💾 New best model saved: {best_model_path} (mean_reward={mean_reward:.3f})")
+                logger.info(f"💾 New best model saved: {best_model_path} (mean_reward={mean_reward:.3f})")
 
             # Record short video
             video_path = os.path.join(self.video_dir, f"step_{self.n_calls}_r{mean_reward:.2f}")
@@ -63,5 +63,5 @@ class VideoEvalCallback(BaseCallback):
                 if done.any():
                     obs = record_env.reset()
             record_env.close()
-            print(f"🎥 Video recorded and saved to: {video_path}")
+            logger.info(f"🎥 Video recorded and saved to: {video_path}")
         return True
