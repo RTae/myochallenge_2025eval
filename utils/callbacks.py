@@ -1,16 +1,34 @@
 import os
 import numpy as np
 import imageio
+from loguru import logger
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.evaluation import evaluate_policy
-from loguru import logger
+from ray.rllib.algorithms.callbacks import DefaultCallbacks
+
 from myosuite.utils import gym
 
 
-class VideoEvalCallback(BaseCallback):
-    """Periodic evaluation + .mp4 recording with isolated Mujoco renderer."""
+class MyoUnifiedVideoCallback(BaseCallback, DefaultCallbacks):
+    """
+    Unified callback for both Stable-Baselines3 and Ray RLlib.
 
-    def __init__(self, eval_env_id, eval_freq, video_dir, best_model_dir, n_eval_episodes=3, verbose=1):
+    ✨ Features:
+      - Periodic evaluation (SB3) or iteration-based evaluation (RLlib)
+      - Headless EGL-safe .mp4 recording
+      - Optional best-model saving (SB3)
+      - Per-worker EGL GPU pinning (RLlib)
+    """
+
+    def __init__(
+        self,
+        eval_env_id: str = "myoChallengeTableTennisP2-v0",
+        eval_freq: int = 10_000,
+        video_dir: str = "./logs/rllib_videos",
+        best_model_dir: str = "./logs/rllib_best",
+        n_eval_episodes: int = 3,
+        verbose: int = 1,
+    ):
         super().__init__(verbose)
         self.eval_env_id = eval_env_id
         self.eval_freq = eval_freq
@@ -19,56 +37,128 @@ class VideoEvalCallback(BaseCallback):
         self.n_eval_episodes = n_eval_episodes
         self.best_mean_reward = -np.inf
         self.eval_env = None
+        self._is_rllib = False
 
+        os.makedirs(self.video_dir, exist_ok=True)
+        os.makedirs(self.best_model_dir, exist_ok=True)
+
+        logger.info(
+            f"🎬 Initialized MyoUnifiedVideoCallback\n"
+            f"   • env_id: {self.eval_env_id}\n"
+            f"   • eval_freq: {self.eval_freq}\n"
+            f"   • video_dir: {self.video_dir}\n"
+            f"   • best_model_dir: {self.best_model_dir}"
+        )
+
+    # ============================================================
+    #  COMMON HELPERS
+    # ============================================================
+    def _init_env(self):
+        """Ensure evaluation env is created."""
+        if self.eval_env is None:
+            self.eval_env = gym.make(self.eval_env_id)
+            logger.info(f"Initialized evaluation environment: {self.eval_env_id}")
+
+    # ============================================================
+    #  SB3 CALLBACK METHODS
+    # ============================================================
     def _init_callback(self) -> None:
-        self.eval_env = gym.make(self.eval_env_id)
-        logger.info(f"Initialized evaluation environment: {self.eval_env_id}")
+        """Called by SB3 before training begins."""
+        self._init_env()
 
     def _on_step(self) -> bool:
-        # only evaluate every eval_freq steps
+        """Called by SB3 at each environment step."""
         if (self.n_calls % self.eval_freq) != 0:
             return True
+        self._evaluate_and_record(self.model, self.n_calls)
+        return True
 
-        # --- evaluate policy ---
-        mean_reward, std_reward = evaluate_policy(
-            self.model,
-            self.eval_env,
-            n_eval_episodes=self.n_eval_episodes,
-            deterministic=True,
-        )
-        logger.info(f"🎯 Step {self.n_calls}: mean_reward={mean_reward:.3f} ± {std_reward:.3f}")
+    # ============================================================
+    #  RLlib CALLBACK METHODS (override subset only)
+    # ============================================================
+    def on_algorithm_init(self, *, algorithm, **kwargs):
+        """Called once when RLlib algorithm is created."""
+        self._is_rllib = True
+        self._init_env()
+        try:
+            if not self.eval_env_id:
+                env_obj = algorithm.workers.local_worker().env
+                self.eval_env_id = env_obj.spec.id if hasattr(env_obj, "spec") else str(env_obj)
+        except Exception:
+            pass
+        logger.info(f"✅ MyoUnifiedVideoCallback active under RLlib for {self.eval_env_id}")
 
-        # --- save best model ---
-        if mean_reward > self.best_mean_reward:
+    def on_sub_environment_created(self, *, worker, sub_environment, env_context, **kwargs):
+        """Pin EGL device to worker GPU if available."""
+        cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if cuda_visible:
+            first_gpu = cuda_visible.split(",")[0].strip()
+            if os.environ.get("EGL_DEVICE_ID") != first_gpu:
+                os.environ["EGL_DEVICE_ID"] = first_gpu
+                logger.info(
+                    f"📌 Set EGL_DEVICE_ID={first_gpu} "
+                    f"(CUDA_VISIBLE_DEVICES={cuda_visible})"
+                )
+
+    def on_train_result(self, *, algorithm, result, **kwargs):
+        """Runs after each RLlib iteration."""
+        try:
+            timesteps = int(result.get("timesteps_total", 0))
+            if "evaluation" not in result:
+                return
+
+            policy = algorithm.get_policy()
+            model = type("ModelStub", (), {})()
+            model.predict = lambda obs, deterministic=True: (
+                policy.compute_single_action(obs, explore=False)[0],
+                None,
+            )
+
+            self._evaluate_and_record(model, timesteps)
+        except Exception as e:
+            logger.warning(f"⚠️ Video callback error in RLlib: {e}")
+
+    # ============================================================
+    #  SHARED LOGIC (EVALUATION + VIDEO RECORDING)
+    # ============================================================
+    def _evaluate_and_record(self, model, step_count: int):
+        """Perform evaluation and record an .mp4 video."""
+        self._init_env()
+
+        mean_reward, std_reward = (0.0, 0.0)
+        if evaluate_policy is not None and not self._is_rllib:
+            mean_reward, std_reward = evaluate_policy(
+                model,
+                self.eval_env,
+                n_eval_episodes=self.n_eval_episodes,
+                deterministic=True,
+            )
+            logger.info(f"🎯 Step {step_count}: mean_reward={mean_reward:.3f} ± {std_reward:.3f}")
+
+        if not self._is_rllib and mean_reward > self.best_mean_reward:
             self.best_mean_reward = mean_reward
-            best_model_path = os.path.join(self.best_model_dir, "best_model.zip")
-            self.model.save(best_model_path)
-            logger.info(f"💾 New best model saved: {best_model_path}")
+            best_path = os.path.join(self.best_model_dir, "best_model.zip")
+            model.save(best_path)
+            logger.info(f"💾 New best model saved: {best_path}")
 
-        # --- record video safely ---
-        video_path = os.path.join(self.video_dir, f"step_{self.n_calls}_r{mean_reward:.2f}")
+        video_path = os.path.join(self.video_dir, f"step_{step_count}_r{mean_reward:.2f}")
         os.makedirs(video_path, exist_ok=True)
-        video_file = os.path.join(video_path, f"eval_{self.n_calls}.mp4")
+        video_file = os.path.join(video_path, f"eval_{step_count}.mp4")
 
         try:
-            logger.info(f"🎥 Recording video to {video_file}")
             writer = imageio.get_writer(video_file, fps=30)
-
-            # get mujoco sim
             inner_env = self.eval_env
             while hasattr(inner_env, "env"):
                 inner_env = inner_env.env
             sim = inner_env.sim
-
-            # create a fresh EGL renderer each evaluation
-            renderer = sim.renderer
+            renderer = sim.renderer  # EGL renderer
 
             obs = self.eval_env.reset()
             if isinstance(obs, tuple):
                 obs = obs[0]
 
             for _ in range(300):
-                action, _ = self.model.predict(obs, deterministic=True)
+                action, _ = model.predict(obs, deterministic=True)
                 step_out = self.eval_env.step(action)
 
                 if len(step_out) == 5:
@@ -86,10 +176,8 @@ class VideoEvalCallback(BaseCallback):
                         obs = obs[0]
 
             writer.close()
-            renderer.close()  # ✅ ensures EGL context cleanup
-            logger.info(f"✅ Video saved successfully: {video_file}")
+            renderer.close()
+            logger.info(f"✅ Video saved: {video_file}")
 
         except Exception as e:
-            logger.warning(f"⚠️ Skipping video at step {self.n_calls} due to render error: {e}")
-
-        return True
+            logger.warning(f"⚠️ Video recording failed at step {step_count}: {e}")
