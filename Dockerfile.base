@@ -15,9 +15,13 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # Install Python 3.12 + essentials
 RUN apt-get clean && apt-get update && apt-get install -y --no-install-recommends \
     python3.12 python3.12-venv python3.12-dev python-is-python3 \
-    build-essential curl ca-certificates \
+    build-essential curl ca-certificates git \
+    # MuJoCo + EGL + rendering
     libgl1-mesa-dev libglfw3 libglfw3-dev libglew-dev patchelf \
-    git \
+    libosmesa6-dev libegl1 libglvnd-dev libxcb1 libxrandr2 libxinerama1 libxi6 \
+    ffmpeg \
+    # Optional quality-of-life tools
+    vim less \
     && rm -rf /var/lib/apt/lists/*
 
 # Verify Python version

@@ -13,7 +13,7 @@ from loguru import logger
 # =============================
 
 ENV_ID = "myoChallengeTableTennisP2-v0"
-N_ENVS = 25
+N_ENVS = 10
 TOTAL_TIMESTEPS = 1_000_000
 EVAL_FREQ = 50_000
 
@@ -26,8 +26,14 @@ os.makedirs(BEST_MODEL_DIR, exist_ok=True)
 # --- Optional: cleaner warnings ---
 warnings.filterwarnings("ignore", message=".*Unused kwargs found.*")
 warnings.filterwarnings("ignore", message=".*obs returned by the `step.*")
+warnings.filterwarnings("ignore", message="EGLError")  # silence destructor cleanup errors
 
-# --- Limit threads per process (important for MuJoCo parallelization) ---
+# Use GPU EGL (recommended if NVIDIA drivers are present)
+os.environ["MUJOCO_GL"] = "egl"            # or "osmesa" for CPU-only fallback
+os.environ["MUJOCO_EGL_DEVICE_ID"] = "0"   # choose GPU id if multiple
+os.environ["PYOPENGL_PLATFORM"] = "egl"    # helps some stacks
+
+# keep your thread limits too if you set them:
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 

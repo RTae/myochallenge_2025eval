@@ -1,27 +1,14 @@
 import os
 import numpy as np
-from stable_baselines3.common.env_util import make_vec_env
+import imageio
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.evaluation import evaluate_policy
-from stable_baselines3.common.vec_env import VecVideoRecorder, DummyVecEnv
 from loguru import logger
 from myosuite.utils import gym
 
 
-def make_myo_env_for_video(env_id):
-    """Create a MyoSuite env patched for rgb_array rendering."""
-    env = gym.make(env_id)
-    # Force render mode & patch metadata so SB3 won't assert
-    env.render_mode = "rgb_array"
-    env.metadata["render_modes"] = ["rgb_array"]
-    return env
-
-
 class VideoEvalCallback(BaseCallback):
-    """
-    Custom callback for periodic video evaluation.
-    Records a short evaluation episode as an .mp4 file and saves the best model.
-    """
+    """Periodic evaluation + .mp4 recording with persistent EGL renderer."""
 
     def __init__(self, eval_env_id, eval_freq, video_dir, best_model_dir, n_eval_episodes=3, verbose=1):
         super().__init__(verbose)
@@ -31,55 +18,77 @@ class VideoEvalCallback(BaseCallback):
         self.best_model_dir = best_model_dir
         self.n_eval_episodes = n_eval_episodes
         self.best_mean_reward = -np.inf
+        self.eval_env = None
+        self.renderer = None  # <- keep persistent
 
     def _init_callback(self) -> None:
         self.eval_env = gym.make(self.eval_env_id)
-        if self.verbose:
-            logger.info(f"Initialized evaluation environment: {self.eval_env_id}")
+        # get inner mujoco env
+        inner_env = self.eval_env
+        while hasattr(inner_env, "env"):
+            inner_env = inner_env.env
+        self.sim = inner_env.sim
+        try:
+            self.renderer = self.sim.renderer  # persistent EGL renderer
+            logger.info(f"✅ Persistent EGL renderer initialized for {self.eval_env_id}")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not create persistent renderer: {e}")
+        logger.info(f"Initialized evaluation environment: {self.eval_env_id}")
 
     def _on_step(self) -> bool:
-        # Trigger every ~eval_freq steps even with vectorized envs
-        if self.n_calls % self.eval_freq < self.training_env.num_envs:
-            mean_reward, std_reward = evaluate_policy(
-                self.model,
-                self.eval_env,
-                n_eval_episodes=self.n_eval_episodes,
-                deterministic=True,
-            )
+        if (self.n_calls % self.eval_freq) != 0:
+            return True
 
-            logger.info(f"🎯 Step {self.n_calls}: mean_reward={mean_reward:.3f} ± {std_reward:.3f}")
+        mean_reward, std_reward = evaluate_policy(
+            self.model,
+            self.eval_env,
+            n_eval_episodes=self.n_eval_episodes,
+            deterministic=True,
+        )
+        logger.info(f"🎯 Step {self.n_calls}: mean_reward={mean_reward:.3f} ± {std_reward:.3f}")
 
-            # Save best model
-            if mean_reward > self.best_mean_reward:
-                self.best_mean_reward = mean_reward
-                best_model_path = os.path.join(self.best_model_dir, "best_model.zip")
-                self.model.save(best_model_path)
-                logger.info(f"💾 New best model saved: {best_model_path} (mean_reward={mean_reward:.3f})")
+        # Save best model
+        if mean_reward > self.best_mean_reward:
+            self.best_mean_reward = mean_reward
+            best_model_path = os.path.join(self.best_model_dir, "best_model.zip")
+            self.model.save(best_model_path)
+            logger.info(f"💾 New best model saved: {best_model_path}")
 
-            # Record short video
-            video_path = os.path.join(self.video_dir, f"step_{self.n_calls}_r{mean_reward:.2f}")
-            os.makedirs(video_path, exist_ok=True)
+        # Record video safely
+        video_path = os.path.join(self.video_dir, f"step_{self.n_calls}_r{mean_reward:.2f}")
+        os.makedirs(video_path, exist_ok=True)
+        video_file = os.path.join(video_path, f"eval_{self.n_calls}.mp4")
 
-            # ✅ Create MyoSuite-compatible video env
-            env = make_myo_env_for_video(self.eval_env_id)
-            record_env = DummyVecEnv([lambda: env])
+        try:
+            logger.info(f"🎥 Recording video to {video_file}")
+            writer = imageio.get_writer(video_file, fps=30)
 
-            record_env = VecVideoRecorder(
-                record_env,
-                video_folder=video_path,
-                record_video_trigger=lambda step: step == 0,
-                video_length=300,  # about 10 seconds
-                name_prefix=f"eval_{self.n_calls}",
-            )
+            obs = self.eval_env.reset()
+            if isinstance(obs, tuple):
+                obs = obs[0]
 
-            obs = record_env.reset()
             for _ in range(300):
                 action, _ = self.model.predict(obs, deterministic=True)
-                obs, _, done, _ = record_env.step(action)
-                if done.any():
-                    obs = record_env.reset()
+                step_out = self.eval_env.step(action)
+                if len(step_out) == 5:
+                    obs, _, terminated, truncated, _ = step_out
+                    done = terminated or truncated
+                else:
+                    obs, _, done, _ = step_out
 
-            record_env.close()
-            logger.info(f"🎥 Video recorded and saved to: {video_path}")
+                # use persistent renderer
+                frame = self.renderer.render_offscreen(width=640, height=480)
+                writer.append_data(frame)
+
+                if done:
+                    obs = self.eval_env.reset()
+                    if isinstance(obs, tuple):
+                        obs = obs[0]
+
+            writer.close()
+            logger.info(f"✅ Video saved successfully: {video_file}")
+
+        except Exception as e:
+            logger.warning(f"⚠️ Skipping video at step {self.n_calls} due to render error: {e}")
 
         return True
