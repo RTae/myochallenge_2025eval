@@ -28,6 +28,8 @@ python train.py
 ```
 
 ### Run with Docker 
+
+1. Base image (Optional)
 ```bash
 docker run -it --rm \
   --gpus all \
@@ -36,10 +38,17 @@ docker run -it --rm \
   bash
 ```
 
+2. Build train image
+```bash
+docker build \
+  -t ghcr.io/rtae/myochallenge/myochallenge-train:latest \
+  -f Dockerfile.train .
+```
+
 ## Train
 1. Run with Docker
 ```bash
-docker run -d -name myochallenge_train \
+docker run -d --name myochallenge_train \
   --gpus all \
   -v ./logs:/app/logs \
   ghcr.io/rtae/myochallenge/myochallenge-train:latest

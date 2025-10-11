@@ -1,0 +1,11 @@
+#################################################
+### Base image with Python 3.12 + uv           ##
+#################################################
+FROM ghcr.io/rtae/myochallenge/myochallenge-base:latest
+
+WORKDIR /app
+
+COPY train.py ./
+COPY ./utils ./utils
+
+CMD ["python", "train.py"]

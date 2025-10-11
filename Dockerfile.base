@@ -79,6 +79,3 @@ COPY --from=builder-base $VENV_PATH $VENV_PATH
 # Default to venv python
 ENV VIRTUAL_ENV=$VENV_PATH
 ENV PATH="$VENV_PATH/bin:$PATH"
-
-# Add your project
-ENV PYTHONPATH="/app/utils:/app/agent:${PYTHONPATH}"
