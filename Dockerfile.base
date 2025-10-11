@@ -8,7 +8,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     UV_NO_CACHE=1 \
     PYSETUP_PATH="/opt/pysetup" \
-    VENV_PATH="/opt/pysetup/.venv"
+    VENV_PATH="/opt/pysetup/.venv" \
+    CPATH="" \
+    PYTHONPATH=""
 
 # Install Python 3.12 + essentials
 RUN apt-get clean && apt-get update && apt-get install -y --no-install-recommends \
@@ -37,7 +39,7 @@ WORKDIR $PYSETUP_PATH
 ENV MUJOCO_VERSION=3.3.0
 ENV MUJOCO_PATH=/root/.mujoco/mujoco-${MUJOCO_VERSION}
 ENV LD_LIBRARY_PATH=${MUJOCO_PATH}/bin:${LD_LIBRARY_PATH}
-ENV CPATH=${MUJOCO_PATH}/include:${CPATH:-""}
+ENV CPATH=${MUJOCO_PATH}/include:${CPATH}
 
 RUN mkdir -p /root/.mujoco && \
     curl -L https://github.com/deepmind/mujoco/releases/download/${MUJOCO_VERSION}/mujoco-${MUJOCO_VERSION}-linux-x86_64.tar.gz \
@@ -75,4 +77,4 @@ ENV VIRTUAL_ENV=$VENV_PATH
 ENV PATH="$VENV_PATH/bin:$PATH"
 
 # Add your project
-ENV PYTHONPATH="/app/utils:/app/agent:${PYTHONPATH:-""}"
+ENV PYTHONPATH="/app/utils:/app/agent:${PYTHONPATH}"
