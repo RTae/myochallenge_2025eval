@@ -126,6 +126,8 @@ class MyoUnifiedVideoCallback(BaseCallback, DefaultCallbacks):
         self._init_env()
 
         mean_reward, std_reward = (0.0, 0.0)
+
+        # Only run numeric evaluation for SB3
         if evaluate_policy is not None and not self._is_rllib:
             mean_reward, std_reward = evaluate_policy(
                 model,
@@ -135,40 +137,58 @@ class MyoUnifiedVideoCallback(BaseCallback, DefaultCallbacks):
             )
             logger.info(f"🎯 Step {step_count}: mean_reward={mean_reward:.3f} ± {std_reward:.3f}")
 
+        # Save best model (SB3 only)
         if not self._is_rllib and mean_reward > self.best_mean_reward:
             self.best_mean_reward = mean_reward
             best_path = os.path.join(self.best_model_dir, "best_model.zip")
             model.save(best_path)
             logger.info(f"💾 New best model saved: {best_path}")
 
-        video_path = os.path.join(self.video_dir, f"step_{step_count}_r{mean_reward:.2f}")
+        # --- absolute path fix ---
+        video_path = os.path.abspath(os.path.join(self.video_dir, f"step_{step_count}_r{mean_reward:.2f}"))
         os.makedirs(video_path, exist_ok=True)
         video_file = os.path.join(video_path, f"eval_{step_count}.mp4")
 
         try:
-            writer = imageio.get_writer(video_file, fps=30)
+            import imageio
+
+            # ✅ Use legacy writer API with explicit codec
+            writer = imageio.get_writer(video_file, fps=30, codec="libx264", quality=8, macro_block_size=None)
+
             inner_env = self.eval_env
             while hasattr(inner_env, "env"):
                 inner_env = inner_env.env
-            sim = inner_env.sim
-            renderer = sim.renderer  # EGL renderer
+
+            sim = getattr(inner_env, "sim", None)
+            renderer = getattr(sim, "renderer", None)
+
+            if renderer is None:
+                logger.warning("⚠️ No Mujoco renderer found in eval_env; skipping video.")
+                writer.close()
+                return
 
             obs = self.eval_env.reset()
             if isinstance(obs, tuple):
                 obs = obs[0]
 
+            n_frames = 0
             for _ in range(300):
                 action, _ = model.predict(obs, deterministic=True)
                 step_out = self.eval_env.step(action)
-
                 if len(step_out) == 5:
                     obs, _, terminated, truncated, _ = step_out
                     done = terminated or truncated
                 else:
                     obs, _, done, _ = step_out
 
-                frame = renderer.render_offscreen(width=640, height=480)
-                writer.append_data(frame)
+                try:
+                    frame = renderer.render_offscreen(width=640, height=480)
+                    if frame is not None:
+                        writer.append_data(frame)
+                        n_frames += 1
+                except Exception as re:
+                    logger.warning(f"⚠️ Render frame failed: {re}")
+                    continue
 
                 if done:
                     obs = self.eval_env.reset()
@@ -176,8 +196,12 @@ class MyoUnifiedVideoCallback(BaseCallback, DefaultCallbacks):
                         obs = obs[0]
 
             writer.close()
-            renderer.close()
-            logger.info(f"✅ Video saved: {video_file}")
+
+            if n_frames > 0 and os.path.exists(video_file):
+                size_mb = os.path.getsize(video_file) / (1024 * 1024)
+                logger.info(f"✅ Video saved: {video_file} ({n_frames} frames, {size_mb:.2f} MB)")
+            else:
+                logger.warning("⚠️ No frames rendered — file may be empty or missing.")
 
         except Exception as e:
             logger.warning(f"⚠️ Video recording failed at step {step_count}: {e}")
