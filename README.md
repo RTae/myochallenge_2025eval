@@ -7,12 +7,20 @@ This challenge consists of developing controllers for a physiologically realisti
 - A) **PingPong task** -- Successfully tally a incoming pingpong ball (`myoChallengeTableTennisP1-v0`).
 
 ## Build
-### Base image
+### Base image (Optional)
 ```bash
 docker build \
   -t ghcr.io/rtae/myochallenge/myochallenge-base:latest \
   -f Dockerfile.base .
 ```
+
+### Train image
+```bash
+docker build \
+  -t ghcr.io/rtae/myochallenge/myochallenge-train:latest \
+  -f Dockerfile.train .
+```
+
 
 ## Deverlopment
 ### Run with local python
@@ -28,8 +36,6 @@ python train.py
 ```
 
 ### Run with Docker 
-
-1. Base image (Optional)
 ```bash
 docker run -it --rm \
   --gpus all \
@@ -38,15 +44,8 @@ docker run -it --rm \
   bash
 ```
 
-2. Build train image
-```bash
-docker build \
-  -t ghcr.io/rtae/myochallenge/myochallenge-train:latest \
-  -f Dockerfile.train .
-```
 
 ## Train
-1. Run with Docker
 ```bash
 docker run -d --name myochallenge_train \
   --gpus all \

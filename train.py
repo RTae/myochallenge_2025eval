@@ -34,7 +34,7 @@ def main():
 
     ENV_ID = "myoChallengeTableTennisP2-v0"
     SAFE_ENV_NAME = "MyoSafeWrapper-v0"
-    TOTAL_TIMESTEPS = 1_000_000
+    TOTAL_TIMESTEPS = 10_000_000
     WORKSPACE_ROOT = os.getenv("WORKSPACE_DIR", os.getcwd())
     LOG_PATH = os.path.join(WORKSPACE_ROOT, "logs/rllib_tabletennis_unified")
     STORAGE_PATH = "file://" + os.path.abspath(LOG_PATH)
