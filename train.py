@@ -32,7 +32,7 @@ def main():
 
     ENV_ID = "myoChallengeTableTennisP2-v0"
     SAFE_ENV_NAME = "MyoSafeWrapper-v0"
-    TOTAL_TIMESTEPS = os.environ.get("TOTAL_TIMESTEPS", 20_000_000)
+    TOTAL_TIMESTEPS = os.environ.get("TOTAL_TIMESTEPS", 10_000_000)
     EVAL_TIMESTEPS = os.environ.get("EVAL_TIMESTEPS", 1_000_000)
     WORKSPACE_ROOT = os.getenv("WORKSPACE_DIR", os.getcwd())
     LOG_PATH = os.path.join(WORKSPACE_ROOT, "logs/rllib_tabletennis_unified")
@@ -70,7 +70,7 @@ def main():
         .resources(num_gpus=2)
         .env_runners(
             num_env_runners=13,
-            rollout_fragment_length=512,
+            rollout_fragment_length="auto",
             num_cpus_per_env_runner=2,
         )
         .training(
