@@ -7,8 +7,6 @@ from ray.rllib.algorithms.ppo import PPOConfig
 from loguru import logger
 from utils.callbacks import MyoUnifiedVideoCallback
 
-
-# --- Fix wrapper: expands observation space to infinite range ---
 class SafeObsWrapper(gym.ObservationWrapper):
     """Ensure observations never fail Box range checks."""
     def __init__(self, env):
@@ -34,7 +32,8 @@ def main():
 
     ENV_ID = "myoChallengeTableTennisP2-v0"
     SAFE_ENV_NAME = "MyoSafeWrapper-v0"
-    TOTAL_TIMESTEPS = 10_000_000
+    TOTAL_TIMESTEPS = os.environ.get("TOTAL_TIMESTEPS", 20_000_000)
+    EVAL_TIMESTEPS = os.environ.get("EVAL_TIMESTEPS", 1_000_000)
     WORKSPACE_ROOT = os.getenv("WORKSPACE_DIR", os.getcwd())
     LOG_PATH = os.path.join(WORKSPACE_ROOT, "logs/rllib_tabletennis_unified")
     STORAGE_PATH = "file://" + os.path.abspath(LOG_PATH)
@@ -66,11 +65,11 @@ def main():
     # =====================================================
     config = (
         PPOConfig()
-        .environment(env=SAFE_ENV_NAME)  # ✅ registered through Tune
+        .environment(env=SAFE_ENV_NAME)
         .framework("torch")
         .resources(num_gpus=2)
         .env_runners(
-            num_env_runners=12,
+            num_env_runners=13,
             rollout_fragment_length=512,
             num_cpus_per_env_runner=2,
         )
@@ -94,8 +93,8 @@ def main():
         .reporting(metrics_num_episodes_for_smoothing=5)
         .callbacks(
             lambda: MyoUnifiedVideoCallback(
-                eval_env_id=ENV_ID,  # still the base env for actual rendering
-                eval_freq=10_000,
+                eval_env_id=ENV_ID,
+                eval_freq=EVAL_TIMESTEPS,
                 video_dir=f"{LOG_PATH}/rllib_videos",
                 best_model_dir=f"{LOG_PATH}/rllib_best",
                 n_eval_episodes=3,
