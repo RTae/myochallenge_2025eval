@@ -68,7 +68,7 @@ class VideoCallback(BaseCallback):
         if self.eval_env is None:
             self.eval_env = gym.make(self.eval_env_id)
 
-        # Numeric evaluation
+        # --- numeric evaluation ---
         try:
             mean_reward, std_reward = evaluate_policy(
                 model,
@@ -81,7 +81,7 @@ class VideoCallback(BaseCallback):
             logger.warning(f"⚠️ evaluate_policy failed: {e}")
             mean_reward = -np.inf
 
-        # --- absolute path fix ---
+        # --- video output setup ---
         video_path = os.path.abspath(os.path.join(self.video_dir, f"step_{step_count}_r{float(mean_reward):.2f}"))
         os.makedirs(video_path, exist_ok=True)
         video_file = os.path.join(video_path, f"eval_{step_count}.mp4")
@@ -90,6 +90,7 @@ class VideoCallback(BaseCallback):
             import imageio
             writer = imageio.get_writer(video_file, fps=30, codec="libx264", quality=8, macro_block_size=None)
 
+            # 获取底层的 Mujoco 环境
             inner_env = self.eval_env
             while hasattr(inner_env, "env"):
                 inner_env = inner_env.env
@@ -98,11 +99,14 @@ class VideoCallback(BaseCallback):
             renderer = getattr(sim, "renderer", None)
 
             if renderer is None:
-                logger.warning("⚠️ No Mujoco renderer found in eval_env; skipping video.")
-                writer.close()
-                return
+                logger.info("Renderer not found in sim, it will be created on first render call.")
 
-            obs, _ = self.eval_env.reset(return_info=True) if "return_info" in self.eval_env.reset.__code__.co_varnames else (self.eval_env.reset(), {})
+            # reset obs (support both old/new gym API)
+            obs, _ = (
+                self.eval_env.reset(return_info=True)
+                if "return_info" in self.eval_env.reset.__code__.co_varnames
+                else (self.eval_env.reset(), {})
+            )
             if isinstance(obs, tuple):
                 obs = obs[0]
 
@@ -117,13 +121,19 @@ class VideoCallback(BaseCallback):
                     obs, _, done, _ = step_out
 
                 try:
-                    frame = renderer.render_offscreen(width=640, height=480)
+                    frame = self.eval_env.render(mode='rgb_array', width=640, height=480)
+                    
+                    if frame is None:
+                        renderer = getattr(inner_env.sim, "renderer", None)
+                        if renderer:
+                            frame = renderer.render_offscreen(width=640, height=480)
+
                     if frame is not None:
                         writer.append_data(frame)
                         n_frames += 1
                 except Exception as re:
                     logger.warning(f"⚠️ Render frame failed: {re}")
-                    continue
+                    break
 
                 if done:
                     obs = self.eval_env.reset()
@@ -140,3 +150,5 @@ class VideoCallback(BaseCallback):
 
         except Exception as e:
             logger.warning(f"⚠️ Video recording failed at step {step_count}: {e}")
+            import traceback
+            logger.warning(traceback.format_exc())

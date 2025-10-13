@@ -1,0 +1,32 @@
+services:
+  myochallenge_train:
+    container_name: myochallenge_train
+    image: ghcr.io/rtae/myochallenge/myochallenge-train:latest
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+    shm_size: 30gb
+    environment:
+      - MUJOCO_GL=egl
+      - EGL_DEVICE_ID=0
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=graphics,utility,compute
+    volumes:
+      - ./logs:/app/logs
+    tty: true
+
+  tensorboard:
+    container_name: tensorboard
+    image: tensorflow/tensorflow:2.15.0
+    command: >
+      bash -c "tensorboard --logdir /logs --host 0.0.0.0 --port 6606"
+    ports:
+      - "6606:6606"
+    volumes:
+      - ./logs:/logs
+    depends_on:
+      - myochallenge_train
+    restart: unless-stopped
