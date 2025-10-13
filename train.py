@@ -77,11 +77,9 @@ def main():
         )
         .framework("torch")
         .resources(
-            num_gpus=2,          # total GPUs for learner
-            num_cpus=28,         # total CPUs available
-            num_learners=1,      # 1 learner using both GPUs
-            num_cpus_per_learner=4,
-            num_gpus_per_learner=2,  # both GPUs on the learner
+            num_cpus_for_main_process=2,  # just enough for Ray driver + logging
+            num_gpus=2,                   # total GPUs visible to learner
+            placement_strategy="PACK",    # or "SPREAD"
         )
         .env_runners(
             num_env_runners=6,            # 6 runners × 4 CPUs = 24 cores
