@@ -103,12 +103,8 @@ def main():
     eval_env.obs_rms = train_env.obs_rms  # sync obs normalization
 
     # =====================================================
-    #  PPO CONFIG (mirrors your RLlib choices closely)
+    #  PPO CONFIG
     # =====================================================
-    # RLlib train_batch_size was 52*512 = 26624
-    # With SB3: total batch per update = n_steps * n_envs
-    # Pick n_steps so that n_steps * N_ENVS ~= 26624 (or a bit larger)
-    # Example: if N_ENVS=16 -> n_steps=2048 gives 32768 > 26624 (fine)
     n_steps = int(os.environ.get("N_STEPS", "2048"))
     batch_per_update = n_steps * N_ENVS
     logger.info(f"n_steps={n_steps}, total rollout per update={batch_per_update}")
