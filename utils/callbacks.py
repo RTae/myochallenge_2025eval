@@ -30,6 +30,7 @@ class VideoCallback(BaseCallback):
         height=480,
         max_frames=300,
         verbose=1,
+        num_worker=1
     ):
         super().__init__(verbose)
         self.eval_env_id = eval_env_id
@@ -43,6 +44,7 @@ class VideoCallback(BaseCallback):
         self.max_frames = max_frames
         self.best_mean_reward = -np.inf
         self.eval_env = None
+        self.num_worker = num_worker
 
         os.makedirs(self.video_dir, exist_ok=True)
         os.makedirs(self.best_model_dir, exist_ok=True)
@@ -105,7 +107,7 @@ class VideoCallback(BaseCallback):
             logger.info(f"💾 New best model saved: {best_path}")
 
         # --- Video recording ---
-        video_file = os.path.join(self.video_dir, f"eval_step{step_count}_r{mean_reward:.2f}.mp4")
+        video_file = os.path.join(self.video_dir, f"eval_step{step_count//self.num_worker}_r{mean_reward:.2f}.mp4")
 
         try:
             logger.info("🎥 Starting video recording...")
