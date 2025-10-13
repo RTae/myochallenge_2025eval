@@ -142,7 +142,7 @@ class VideoCallback(BaseCallback):
                             frame = (np.clip(frame, 0, 1) * 255).astype(np.uint8)
                         writer.append_data(frame)
                         n_frames += 1
-                        if n_frames % 30 == 0:
+                        if n_frames % 50 == 0:
                             logger.info(f"   • Recorded {n_frames} frames...")
                 except Exception:
                     logger.warning(f"⚠️ render_offscreen() failed:\n{traceback.format_exc()}")
