@@ -77,7 +77,7 @@ def main():
         )
         .framework("torch")
         .resources(
-            num_cpus_for_main_process=2,  # just enough for Ray driver + logging
+            num_cpus_for_main_process=1,  # just enough for Ray driver + logging
             num_gpus=2,                   # total GPUs visible to learner
             placement_strategy="PACK",    # or "SPREAD"
         )
@@ -138,7 +138,6 @@ def main():
                 num_to_keep=3,
                 checkpoint_at_end=True,
             ),
-            resources_per_trial={"CPU": 28, "GPU": 2},  # ✅ new location & capitalization
         ),
     )
 
