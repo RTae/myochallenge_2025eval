@@ -46,8 +46,6 @@ def main():
     # =====================================================
     #  ENV / RUNTIME SETUP
     # =====================================================
-    os.environ["MUJOCO_GL"] = "egl"
-    os.environ["EGL_DEVICE_ID"] = os.environ.get("EGL_DEVICE_ID", "0")
     os.environ.pop("DISPLAY", None)
 
     # keep Torch from hogging CPU threads (we parallelize via envs instead)
