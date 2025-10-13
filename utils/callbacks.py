@@ -94,7 +94,7 @@ class VideoCallback(BaseCallback):
                 deterministic=True,
                 render=False,
             )
-            logger.info(f"🎯 Step {step_count}: mean={mean_reward:.3f} ± {std_reward:.3f}")
+            logger.info(f"🎯 Step {int(step_count*self.num_worker)}: mean={mean_reward:.3f} ± {std_reward:.3f}")
         except Exception as e:
             logger.warning(f"⚠️ evaluate_policy failed: {e}")
             mean_reward = -np.inf
@@ -107,7 +107,7 @@ class VideoCallback(BaseCallback):
             logger.info(f"💾 New best model saved: {best_path}")
 
         # --- Video recording ---
-        video_file = os.path.join(self.video_dir, f"eval_step{step_count//self.num_worker}_r{mean_reward:.2f}.mp4")
+        video_file = os.path.join(self.video_dir, f"eval_step{int(step_count*self.num_worker)}_r{mean_reward:.2f}.mp4")
 
         try:
             logger.info("🎥 Starting video recording...")
