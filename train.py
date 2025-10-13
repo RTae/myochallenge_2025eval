@@ -11,7 +11,7 @@ from utils.callbacks import MyoUnifiedVideoCallback
 
 
 # =====================================================
-#  Safe Observation Wrapper
+#  SAFE OBSERVATION WRAPPER
 # =====================================================
 class SafeObsWrapper(gym.ObservationWrapper):
     """Ensure observations never fail Box range checks."""
@@ -38,7 +38,7 @@ def main():
     ENV_ID = "myoChallengeTableTennisP2-v0"
     SAFE_ENV_NAME = "MyoSafeWrapper-v0"
     TOTAL_TIMESTEPS = int(os.environ.get("TOTAL_TIMESTEPS", 10_000_000))
-    EVAL_TIMESTEPS = int(os.environ.get("EVAL_TIMESTEPS", 100_000))  # eval less often
+    EVAL_TIMESTEPS = int(os.environ.get("EVAL_TIMESTEPS", 5_000_000))
     WORKSPACE_ROOT = os.getenv("WORKSPACE_DIR", os.getcwd())
     LOG_PATH = os.path.join(WORKSPACE_ROOT, "logs/rllib_tabletennis")
     STORAGE_PATH = "file://" + os.path.abspath(LOG_PATH)
@@ -51,7 +51,7 @@ def main():
     #  REGISTER SAFE ENVIRONMENT
     # =====================================================
     def make_safe_env(cfg=None):
-        # ⚡ try 0.0015 (safe speedup). If unstable, set back to 0.001.
+        # Slightly faster physics, still stable
         env = gym.make(ENV_ID, sim_timestep=0.0015)
         return SafeObsWrapper(env)
 
@@ -67,40 +67,41 @@ def main():
     logger.info(f"Cluster resources → {NUM_CORES} CPU cores, {NUM_GPUS} GPUs")
 
     # =====================================================
-    #  PPO CONFIGURATION
-    #  7 workers × 4 CPUs = 28 cores; 56 envs total (7×8)
-    #  Per-iter samples: 56 envs × 128 fragment = 7168
+    #  PPO CONFIGURATION (No deprecated params)
     # =====================================================
     config = (
         PPOConfig()
-        .environment(env=SAFE_ENV_NAME)
+        .environment(
+            env=SAFE_ENV_NAME,
+            env_config={"horizon": 2000},
+        )
         .framework("torch")
         .resources(
-            num_gpus=NUM_GPUS,            # use both GPUs for learner
-            num_cpus_for_driver=2,        # reserve ~2 for driver/learner
+            num_gpus=2,          # total GPUs for learner
+            num_cpus=28,         # total CPUs available
+            num_learners=1,      # 1 learner using both GPUs
+            num_cpus_per_learner=4,
+            num_gpus_per_learner=2,  # both GPUs on the learner
         )
         .env_runners(
-            num_env_runners=7,
-            num_cpus_per_env_runner=4,    # ✅ 7×4 = 28 cores (matches your hardware)
-            num_gpus_per_env_runner=0.15, # small GPU slice for inference (optional)
-            num_envs_per_env_runner=8,    # strong vectorization → less IPC overhead
-            rollout_fragment_length=128,  # shorter rollouts → less sync waiting
+            num_env_runners=6,            # 6 runners × 4 CPUs = 24 cores
+            num_cpus_per_env_runner=4,
+            num_gpus_per_env_runner=0.15, # small GPU slice for inference
+            num_envs_per_env_runner=8,    # vectorized envs (6×8=48 total)
+            rollout_fragment_length=128,
+            enable_connectors=False,
         )
         .training(
             lr=3e-4,
             gamma=0.99,
-            train_batch_size=7168,        # ✅ exact multiple of rollout (56×128)
-            sgd_minibatch_size=1024,      # 7 minibatches/iter
+            train_batch_size=6144,        # 48 envs × 128 = 6144
+            sgd_minibatch_size=1024,
             num_sgd_iter=10,
             vf_clip_param=10.0,
-            clip_param=0.15,              # a bit tighter for stability
-            entropy_coeff=0.03,           # more exploration → more swing attempts
-            kl_coeff=0.1,                 # stabilize exploration
+            clip_param=0.15,
+            entropy_coeff=0.03,
+            kl_coeff=0.1,
             use_kl_loss=True,
-        )
-        .rollouts(
-            enable_connectors=False,
-            horizon=2000,                 # allow long trajectories for contact timing
         )
         .evaluation(
             evaluation_interval=10,
@@ -110,12 +111,12 @@ def main():
         )
         .reporting(
             metrics_num_episodes_for_smoothing=5,
-            min_time_s_per_iteration=10,  # print progress every ~10 s
+            min_time_s_per_iteration=10,
         )
         .callbacks(
             lambda: MyoUnifiedVideoCallback(
                 eval_env_id=ENV_ID,
-                eval_freq=EVAL_TIMESTEPS,  # less frequent → fewer stalls
+                eval_freq=EVAL_TIMESTEPS,
                 video_dir=VIDEO_DIR,
                 best_model_dir=BEST_MODEL_DIR,
                 n_eval_episodes=3,
@@ -130,6 +131,9 @@ def main():
     tuner = tune.Tuner(
         "PPO",
         param_space=config.to_dict(),
+        tune_config=tune.TuneConfig(
+            resources_per_trial={"cpu": 28, "gpu": 2},  # exact host resources
+        ),
         run_config=air.RunConfig(
             name="rllib_myo_tabletennis_p2",
             storage_path=STORAGE_PATH,
@@ -144,7 +148,7 @@ def main():
 
     tuner.fit()
     ray.shutdown()
-    logger.success("✅ Optimized PPO training complete!")
+    logger.success("✅ Training complete with full hardware utilization")
 
 
 if __name__ == "__main__":

@@ -49,6 +49,7 @@ docker run -it --rm \
 ```bash
 docker run -d --name myochallenge_train \
   --gpus all \
+  --shm-size=30gb \
   -v ./logs:/app/logs \
   ghcr.io/rtae/myochallenge/myochallenge-train:latest
 ```
