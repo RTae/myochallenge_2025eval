@@ -129,9 +129,6 @@ def main():
     tuner = tune.Tuner(
         "PPO",
         param_space=config.to_dict(),
-        tune_config=tune.TuneConfig(
-            resources_per_trial={"cpu": 28, "gpu": 2},  # exact host resources
-        ),
         run_config=air.RunConfig(
             name="rllib_myo_tabletennis_p2",
             storage_path=STORAGE_PATH,
@@ -141,6 +138,7 @@ def main():
                 num_to_keep=3,
                 checkpoint_at_end=True,
             ),
+            resources_per_trial={"CPU": 28, "GPU": 2},  # ✅ new location & capitalization
         ),
     )
 
