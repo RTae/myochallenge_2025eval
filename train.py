@@ -77,22 +77,22 @@ def main():
         )
         .framework("torch")
         .resources(
-            num_cpus_for_main_process=1,  # just enough for Ray driver + logging
-            num_gpus=2,                   # total GPUs visible to learner
-            placement_strategy="PACK",    # or "SPREAD"
+            num_cpus_for_main_process=1, 
+            num_gpus=2,
+            placement_strategy="PACK",
         )
         .env_runners(
-            num_env_runners=6,            # 6 runners × 4 CPUs = 24 cores
+            num_env_runners=6,
             num_cpus_per_env_runner=4,
-            num_gpus_per_env_runner=0.15, # small GPU slice for inference
-            num_envs_per_env_runner=8,    # vectorized envs (6×8=48 total)
+            num_gpus_per_env_runner=0.0,
+            num_envs_per_env_runner=8,
             rollout_fragment_length=128,
             enable_connectors=False,
         )
         .training(
             lr=3e-4,
             gamma=0.99,
-            train_batch_size=6144,        # 48 envs × 128 = 6144
+            train_batch_size=6144,
             sgd_minibatch_size=1024,
             num_sgd_iter=10,
             vf_clip_param=10.0,
@@ -122,6 +122,7 @@ def main():
             )
         )
     )
+
 
     # =====================================================
     #  RUN TRAINING
