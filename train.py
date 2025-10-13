@@ -166,7 +166,7 @@ def main():
 
     video_cb = VideoCallback(
         eval_env_id=ENV_ID,
-        eval_freq=EVAL_FREQ_STEPS,
+        eval_freq=EVAL_FREQ_STEPS // max(N_ENVS, 1),
         video_dir=VIDEO_DIR,
         best_model_dir=BEST_DIR,
         n_eval_episodes=3,
