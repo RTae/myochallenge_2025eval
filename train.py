@@ -38,7 +38,7 @@ def main():
     ENV_ID = "myoChallengeTableTennisP2-v0"
     SAFE_ENV_NAME = "MyoSafeWrapper-v0"
     TOTAL_TIMESTEPS = int(os.environ.get("TOTAL_TIMESTEPS", 10_000_000))
-    EVAL_TIMESTEPS = int(os.environ.get("EVAL_TIMESTEPS", 5_000_000))
+    EVAL_TIMESTEPS = int(os.environ.get("EVAL_TIMESTEPS", 100_000))
     WORKSPACE_ROOT = os.getenv("WORKSPACE_DIR", os.getcwd())
     LOG_PATH = os.path.join(WORKSPACE_ROOT, "logs/rllib_tabletennis")
     STORAGE_PATH = "file://" + os.path.abspath(LOG_PATH)
@@ -82,17 +82,17 @@ def main():
             placement_strategy="PACK",
         )
         .env_runners(
-            num_env_runners=6,
-            num_cpus_per_env_runner=4,
+            num_env_runners=13,
+            num_cpus_per_env_runner=2,
             num_gpus_per_env_runner=0.0,
-            num_envs_per_env_runner=8,
-            rollout_fragment_length=128,
+            num_envs_per_env_runner=4,
+            rollout_fragment_length=512,
             enable_connectors=False,
         )
         .training(
             lr=3e-4,
             gamma=0.99,
-            train_batch_size=6144,
+            train_batch_size=52 * 512,
             sgd_minibatch_size=1024,
             num_sgd_iter=10,
             vf_clip_param=10.0,
