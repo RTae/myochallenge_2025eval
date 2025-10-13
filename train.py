@@ -77,7 +77,7 @@ def main():
         )
         .framework("torch")
         .resources(
-            num_cpus_for_main_process=1, 
+            num_cpus_for_main_process=2, 
             num_gpus=2,
             placement_strategy="PACK",
         )
