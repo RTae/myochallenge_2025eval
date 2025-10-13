@@ -5,12 +5,6 @@ import traceback
 from loguru import logger
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.evaluation import evaluate_policy
-
-# --- Force headless rendering backend before MyoSuite import ---
-if "MUJOCO_GL" not in os.environ:
-    os.environ["MUJOCO_GL"] = "egl" if os.path.exists("/usr/lib/x86_64-linux-gnu/libEGL.so.1") else "osmesa"
-    os.environ["MUJOCO_GL_OFFSCREEN"] = "1"
-
 from myosuite.utils import gym
 
 

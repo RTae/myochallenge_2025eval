@@ -68,7 +68,7 @@ def main():
     os.makedirs(STATS_DIR, exist_ok=True)
 
     TOTAL_TIMESTEPS = int(os.environ.get("TOTAL_TIMESTEPS", 10_000_000))
-    EVAL_FREQ_STEPS = int(os.environ.get("EVAL_FREQ_STEPS", 100))
+    EVAL_FREQ_STEPS = int(os.environ.get("EVAL_FREQ_STEPS", 10_000))
     SEED = int(os.environ.get("SEED", 42))
 
     # choose #envs to use your CPUs well
