@@ -25,7 +25,7 @@ class VideoCallback(BaseCallback):
         video_dir="./logs/sb3_videos",
         best_model_dir="./logs/sb3_best",
         n_eval_episodes=3,
-        camera_id=1,
+        camera_id=0,
         width=640,
         height=480,
         max_frames=300,
