@@ -10,9 +10,10 @@ services:
             - capabilities: [gpu]
     shm_size: 30gb
     environment:
-      - MUJOCO_GL=osmesa        # 👈 use CPU software renderer
-      - OSMESA_FORCE_RATE=1     # optional: stable timing
-      - PYOPENGL_PLATFORM=osmesa
+      - MUJOCO_GL=egl
+      - EGL_DEVICE_ID=0
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=graphics,utility,compute
     volumes:
       - ./logs:/app/logs
     tty: true
