@@ -17,8 +17,10 @@ from myosuite.utils import gym
 class VideoCallback(BaseCallback):
     """
     Stable-Baselines3 Video Callback using MyoSuite's offscreen renderer.
+
     ✅ Works headless (EGL/OSMesa)
-    ✅ Uses env.sim.renderer.render_offscreen() just like the MyoSuite example
+    ✅ Uses env.sim.renderer.render_offscreen() just like MyoSuite example
+    ✅ Recreates evaluation env each time to avoid GL context freeze
     ✅ Saves best model and evaluation videos periodically
     """
 
@@ -64,9 +66,8 @@ class VideoCallback(BaseCallback):
     # SB3 Lifecycle
     # ------------------------------------------------------------
     def _init_callback(self):
-        if self.eval_env is None:
-            self.eval_env = gym.make(self.eval_env_id)
-            logger.info(f"Initialized eval env: {self.eval_env_id}")
+        # not used for env creation now; handled inside _evaluate_and_record
+        pass
 
     def _on_step(self):
         if (self.n_calls % self.eval_freq) != 0:
@@ -78,8 +79,15 @@ class VideoCallback(BaseCallback):
     # Evaluation + Offscreen Video Recording
     # ------------------------------------------------------------
     def _evaluate_and_record(self, model, step_count: int):
-        if self.eval_env is None:
-            self._init_callback()
+        # --- Always create a fresh evaluation env in this process ---
+        try:
+            if self.eval_env is not None:
+                self.eval_env.close()
+            self.eval_env = gym.make(self.eval_env_id)
+            logger.info(f"♻️  Recreated eval env (PID={os.getpid()}) at step {step_count}")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to create eval env: {e}")
+            return True
 
         # --- Numeric evaluation ---
         try:
@@ -103,13 +111,14 @@ class VideoCallback(BaseCallback):
             logger.info(f"💾 New best model saved: {best_path}")
 
         # --- Video recording ---
-        video_file = os.path.join(
-            self.video_dir, f"eval_step{step_count}_r{mean_reward:.2f}.mp4"
-        )
+        video_file = os.path.join(self.video_dir, f"eval_step{step_count}_r{mean_reward:.2f}.mp4")
 
         try:
-            logger.info("Starting video recording...")
-            writer = imageio.get_writer(video_file, fps=30, codec="libx264", quality=8, macro_block_size=None)
+            logger.info("🎥 Starting video recording...")
+            writer = imageio.get_writer(
+                video_file, fps=30, codec="libx264", quality=8, macro_block_size=None
+            )
+
             obs = self.eval_env.reset()
             if isinstance(obs, tuple):
                 obs = obs[0]
@@ -129,19 +138,19 @@ class VideoCallback(BaseCallback):
                     terminated = done
                     truncated = False
 
-                # --- use MyoSuite's offscreen renderer (like your example) ---
+                # --- Offscreen render (headless-safe) ---
                 try:
                     frame = self.eval_env.unwrapped.sim.renderer.render_offscreen(
-                        width=self.width,
-                        height=self.height,
-                        camera_id=self.camera_id,
+                        width=self.width, height=self.height, camera_id=self.camera_id
                     )
                     if frame is not None:
                         if frame.dtype != np.uint8:
                             frame = (np.clip(frame, 0, 1) * 255).astype(np.uint8)
                         writer.append_data(frame)
                         n_frames += 1
-                except Exception as re:
+                        if n_frames % 30 == 0:
+                            logger.info(f"   • Recorded {n_frames} frames...")
+                except Exception:
                     logger.warning(f"⚠️ render_offscreen() failed:\n{traceback.format_exc()}")
                     break
 
@@ -155,7 +164,9 @@ class VideoCallback(BaseCallback):
                 size_mb = os.path.getsize(video_file) / (1024 * 1024)
                 logger.info(f"✅ Saved video: {video_file} ({n_frames} frames, {size_mb:.2f} MB)")
             else:
-                logger.warning("⚠️ No frames rendered — empty file.")
+                logger.warning("⚠️ No frames rendered — empty or missing file.")
 
         except Exception as e:
-            logger.warning(f"⚠️ Video recording failed at step {step_count}: {e}\n{traceback.format_exc()}")
+            logger.warning(
+                f"⚠️ Video recording failed at step {step_count}: {e}\n{traceback.format_exc()}"
+            )
