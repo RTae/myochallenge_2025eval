@@ -54,7 +54,7 @@ def main():
     # =====================================================
     #  AUTO-INCREMENT EXPERIMENT FOLDER
     # =====================================================
-    base_exp_name = "exp_tabletennis"
+    base_exp_name = "tabletennis"
     i = 1
     while os.path.exists(os.path.join(WORKSPACE_ROOT, "logs", f"{base_exp_name}_run{i}")):
         i += 1
