@@ -2,7 +2,6 @@ services:
   myochallenge_train:
     container_name: myochallenge_train
     image: ghcr.io/rtae/myochallenge/myochallenge-train:latest
-    restart: unless-stopped
     deploy:
       resources:
         reservations:
