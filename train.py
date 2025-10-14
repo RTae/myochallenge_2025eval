@@ -9,7 +9,7 @@ from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNorma
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 from stable_baselines3.common.monitor import Monitor
 from myosuite.utils import gym
-from utils.callbacks import VideoCallback
+from utils.callbacks import VideoCallback, MetricCallback
 
 
 # =====================================================
@@ -160,7 +160,8 @@ def main():
         eval_env=eval_env,
         best_model_save_path=BEST_DIR,
         n_eval_episodes=3,
-        eval_freq=max(200_000, TOTAL_TIMESTEPS // 50),
+        #eval_freq=max(200_000, TOTAL_TIMESTEPS // 50),
+        eval_freq=10_000,
         deterministic=True,
         render=False,
         log_path=EVAL_DIR,
@@ -175,6 +176,8 @@ def main():
         verbose=1,
         num_worker=max(N_ENVS, 1),
     )
+    
+    metric_cb = MetricCallback()
 
     # =====================================================
     #  TRAINING
@@ -182,7 +185,7 @@ def main():
     logger.info("🚀 Starting SB3 PPO training")
     model.learn(
         total_timesteps=TOTAL_TIMESTEPS,
-        callback=[checkpoint_cb, eval_cb, video_cb],
+        callback=[checkpoint_cb, eval_cb, video_cb, metric_cb],
         progress_bar=True,
     )
 

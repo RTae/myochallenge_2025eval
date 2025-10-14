@@ -161,3 +161,68 @@ class VideoCallback(BaseCallback):
             logger.warning(
                 f"⚠️ Video recording failed at step {step_count}: {e}\n{traceback.format_exc()}"
             )
+
+import numpy as np
+from loguru import logger
+from stable_baselines3.common.callbacks import BaseCallback
+
+
+class MetricCallback(BaseCallback):
+    """
+    Logs custom metrics into the same TensorBoard file:
+        - return vs timestep
+        - success rate vs step
+        - actor loss
+        - critic loss
+        - entropy loss
+    """
+    def __init__(self, verbose=0):
+        super().__init__(verbose)
+        self.last_actor_loss = None
+        self.last_critic_loss = None
+        self.last_entropy_loss = None
+
+    def _on_rollout_end(self):
+        """Called after each rollout to capture PPO losses."""
+        try:
+            if hasattr(self.model, "logger") and hasattr(self.model.logger, "name_to_value"):
+                self.last_actor_loss = self.model.logger.name_to_value.get("train/actor_loss")
+                self.last_critic_loss = self.model.logger.name_to_value.get("train/critic_loss")
+                self.last_entropy_loss = self.model.logger.name_to_value.get("train/entropy_loss")
+        except Exception as e:
+            logger.warning(f"Failed to read losses from logger: {e}")
+
+    def _on_step(self) -> bool:
+        infos = self.locals.get("infos", [])
+        if not infos or not hasattr(self.model, "logger"):
+            return True
+
+        rewards, success_flags = [], []
+
+        # collect episode rewards and success flags
+        for info in infos:
+            logger.info(info)  # changed to debug to avoid excessive spam
+            if "episode" in info:
+                rewards.append(info["episode"]["r"])
+            if "success" in info:
+                success_flags.append(float(info["success"]))
+
+        # log average return
+        if rewards:
+            mean_return = np.mean(rewards)
+            self.model.logger.record("custom/return_vs_timestep", mean_return)
+
+        # log success rate
+        if success_flags:
+            success_rate = np.mean(success_flags)
+            self.model.logger.record("custom/success_rate_vs_step", success_rate)
+
+        # log PPO losses (actor, critic, entropy)
+        if self.last_actor_loss is not None:
+            self.model.logger.record("custom/actor_loss", self.last_actor_loss)
+        if self.last_critic_loss is not None:
+            self.model.logger.record("custom/critic_loss", self.last_critic_loss)
+        if self.last_entropy_loss is not None:
+            self.model.logger.record("custom/entropy_loss", self.last_entropy_loss)
+
+        return True

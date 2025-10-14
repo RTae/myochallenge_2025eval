@@ -1,3 +1,7 @@
+build:
+	docker build \
+	-t ghcr.io/rtae/myochallenge/myochallenge-train:latest \
+	-f Dockerfile.train .
 
 train:
 	docker compose -p myochallenge up -d
