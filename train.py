@@ -37,6 +37,8 @@ def make_env(env_id,seed=0):
         return env
     return _thunk
 
+def linear_schedule(v0, v_end):
+    return lambda progress_remaining: v_end + (v0 - v_end) * progress_remaining
 
 def main():
     # =====================================================
@@ -114,29 +116,32 @@ def main():
     batch_per_update = n_steps * N_ENVS
     logger.info(f"n_steps={n_steps}, total rollout per update={batch_per_update}")
 
-    policy_kwargs = dict(
-        net_arch=[dict(pi=[256, 256], vf=[256, 256])],
-        ortho_init=False,
-    )
-
     model = PPO(
         "MlpPolicy",
         train_env,
         verbose=1,
         tensorboard_log=TB_LOG,
         seed=SEED,
-        n_steps=n_steps,
-        batch_size=int(os.environ.get("BATCH_SIZE", "1024")),
-        n_epochs=int(os.environ.get("N_EPOCHS", "10")),
-        learning_rate=float(os.environ.get("LR", "3e-4")),
+
+        n_steps=4096,                 # was 2048
+        batch_size=2048,              # was 1024
+
+        learning_rate=linear_schedule(3e-4, 1e-5),
+        clip_range=linear_schedule(0.15, 0.05),
+
+        target_kl=None,               # was 0.1
+
+        n_epochs=10,
+
         gamma=0.99,
-        ent_coef=float(os.environ.get("ENT_COEF", "0.03")),
-        clip_range=float(os.environ.get("CLIP_RANGE", "0.15")),
-        vf_coef=float(os.environ.get("VF_COEF", "0.5")),
-        clip_range_vf=float(os.environ.get("VF_CLIP", "10.0")),
-        max_grad_norm=0.5,
-        target_kl=float(os.environ.get("TARGET_KL", "0.1")),
-        policy_kwargs=policy_kwargs,
+        ent_coef=0.01,                # was 0.03; less entropy once learning stabilizes
+        vf_coef=0.5,
+        clip_range_vf=None,           # was 10.0; use default behavior
+
+        policy_kwargs=dict(
+            net_arch=[dict(pi=[256, 256], vf=[256, 256])],
+            ortho_init=False,
+        ),
         device=device,
     )
 
@@ -155,7 +160,7 @@ def main():
         eval_env=eval_env,
         best_model_save_path=BEST_DIR,
         n_eval_episodes=3,
-        eval_freq=EVAL_FREQ_STEPS // max(N_ENVS, 1),
+        eval_freq=max(200_000, TOTAL_TIMESTEPS // 50),
         deterministic=True,
         render=False,
         log_path=EVAL_DIR,

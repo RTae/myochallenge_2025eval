@@ -11,11 +11,6 @@ from myosuite.utils import gym
 class VideoCallback(BaseCallback):
     """
     Stable-Baselines3 Video Callback using MyoSuite's offscreen renderer.
-
-    ✅ Works headless (EGL/OSMesa)
-    ✅ Uses env.sim.renderer.render_offscreen() just like MyoSuite example
-    ✅ Recreates evaluation env each time to avoid GL context freeze
-    ✅ Saves best model and evaluation videos periodically
     """
 
     def __init__(
