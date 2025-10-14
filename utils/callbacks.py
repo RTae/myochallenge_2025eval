@@ -201,7 +201,8 @@ class MetricCallback(BaseCallback):
 
         # collect episode rewards and success flags
         for info in infos:
-            logger.info(info)  # changed to debug to avoid excessive spam
+            # print info key
+            logger.info(info.keys())
             if "episode" in info:
                 rewards.append(info["episode"]["r"])
             if "success" in info:
