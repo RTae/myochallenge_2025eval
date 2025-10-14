@@ -131,7 +131,6 @@ def main():
         policy_kwargs=dict(
             net_arch=[512, 512],
             log_std_init=-1.0,
-            ortho_init=False,
         ),
         device=device,
     )
