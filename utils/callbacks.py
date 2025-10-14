@@ -224,7 +224,5 @@ class MetricCallback(BaseCallback):
             self.model.logger.record("custom/actor_loss", self.last_actor_loss)
         if self.last_critic_loss is not None:
             self.model.logger.record("custom/critic_loss", self.last_critic_loss)
-        if self.last_entropy_loss is not None:
-            self.model.logger.record("custom/entropy_loss", self.last_entropy_loss)
 
         return True
