@@ -162,16 +162,6 @@ class VideoCallback(BaseCallback):
                 f"⚠️ Video recording failed at step {step_count}: {e}\n{traceback.format_exc()}"
             )
 
-import numpy as np
-from loguru import logger
-from stable_baselines3.common.callbacks import BaseCallback
-
-
-import numpy as np
-from loguru import logger
-from stable_baselines3.common.callbacks import BaseCallback
-
-
 class MetricCallback(BaseCallback):
     """
     Custom metrics for MyoSuite environments:
@@ -185,7 +175,6 @@ class MetricCallback(BaseCallback):
         self.episode_successes = {}
         self.last_actor_loss = None
         self.last_critic_loss = None
-        self.last_entropy_loss = None
 
     def _on_rollout_end(self):
         """Capture PPO losses after each rollout."""
@@ -193,7 +182,6 @@ class MetricCallback(BaseCallback):
             if hasattr(self.model.logger, "name_to_value"):
                 self.last_actor_loss = self.model.logger.name_to_value.get("train/actor_loss")
                 self.last_critic_loss = self.model.logger.name_to_value.get("train/critic_loss")
-                self.last_entropy_loss = self.model.logger.name_to_value.get("train/entropy_loss")
         except Exception as e:
             logger.warning(f"Failed to get losses: {e}")
 
