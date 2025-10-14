@@ -122,22 +122,16 @@ def main():
         verbose=1,
         tensorboard_log=TB_LOG,
         seed=SEED,
-
-        n_steps=4096,                 # was 2048
-        batch_size=2048,              # was 1024
-
+        n_steps=4096,
+        batch_size=2048,
         learning_rate=linear_schedule(3e-4, 1e-5),
         clip_range=linear_schedule(0.15, 0.05),
-
-        target_kl=None,               # was 0.1
-
+        target_kl=None,
         n_epochs=10,
-
         gamma=0.99,
-        ent_coef=0.01,                # was 0.03; less entropy once learning stabilizes
+        ent_coef=0.01,
         vf_coef=0.5,
-        clip_range_vf=None,           # was 10.0; use default behavior
-
+        clip_range_vf=None,
         policy_kwargs=dict(
             net_arch=[dict(pi=[256, 256], vf=[256, 256])],
             ortho_init=False,

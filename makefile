@@ -11,3 +11,6 @@ stop:
 
 log:
 	docker compose -p myochallenge logs -f
+
+clean_exp:
+	sudo rm -rf ./logs/tabletennis_*
