@@ -207,10 +207,4 @@ class MetricCallback(BaseCallback):
                 self.model.logger.record("custom/return_vs_timestep", ep_ret)
                 self.model.logger.record("custom/success_rate_vs_step", solved)
 
-        # log PPO losses
-        if self.last_actor_loss is not None:
-            self.model.logger.record("custom/actor_loss", self.last_actor_loss)
-        if self.last_critic_loss is not None:
-            self.model.logger.record("custom/critic_loss", self.last_critic_loss)
-
         return True
