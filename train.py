@@ -1,65 +1,32 @@
 from config import Config
 from loguru import logger
 from typing import Tuple
-
-import os
-import numpy as np
-import jax
-import jax.numpy as jnp
+import os, numpy as np, jax, jax.numpy as jnp
 from jax import random
-import optax
-import flax.linen as nn
-import distrax
+import optax, flax.linen as nn, distrax
 from tqdm.auto import trange
 
-from myosuite.utils import gym
+import envpool
 from utils.callbacks import JaxVideoMetricLogger
 
 os.environ["MUJOCO_GL"] = "egl"
 os.environ["DISPLAY"] = ":0"
 
 # =====================================================
-#  SAFE OBSERVATION WRAPPER
-# =====================================================
-class SafeObsWrapper(gym.ObservationWrapper):
-    def __init__(self, env):
-        super().__init__(env)
-        low = np.full(env.observation_space.shape, -np.inf, dtype=np.float32)
-        high = np.full(env.observation_space.shape, np.inf, dtype=np.float32)
-        self.observation_space = gym.spaces.Box(low, high, dtype=np.float32)
-
-    def observation(self, obs):
-        return np.nan_to_num(obs, nan=0.0, posinf=1e6, neginf=-1e6)
-
-
-def make_env(env_id: str, seed: int):
-    def _thunk():
-        env = gym.make(env_id)
-        env = SafeObsWrapper(env)
-        env = gym.wrappers.RecordEpisodeStatistics(env)
-        env.reset(seed=seed)
-        return env
-    return _thunk
-
-
-# =====================================================
 #  NETWORKS
 # =====================================================
 class MLP(nn.Module):
     features: Tuple[int, ...]
-
     @nn.compact
     def __call__(self, x):
         for f in self.features[:-1]:
             x = nn.relu(nn.Dense(f)(x))
-        x = nn.Dense(self.features[-1])(x)
-        return x
+        return nn.Dense(self.features[-1])(x)
 
-
+# Policy-Value Network
 class PolicyValueNet(nn.Module):
     hidden: int
     act_dim: int
-
     @nn.compact
     def __call__(self, x, rng_key):
         h = MLP((self.hidden, self.hidden))(x)
@@ -67,244 +34,264 @@ class PolicyValueNet(nn.Module):
         log_std = self.param("log_std", nn.initializers.constant(-0.5), (self.act_dim,))
         std = jnp.exp(log_std)
         dist = distrax.Normal(mu, std)
-        action = dist.sample(seed=rng_key)
-        log_prob = jnp.sum(dist.log_prob(action), axis=-1)
-        value = nn.Dense(1)(h)
-        return jnp.tanh(action), log_prob, jnp.squeeze(value, -1)
+        act = dist.sample(seed=rng_key)
+        logp = jnp.sum(dist.log_prob(act), axis=-1)
+        val = nn.Dense(1)(h)
+        return jnp.tanh(act), logp, jnp.squeeze(val, -1)
 
-
+# Hierarchical RL
 class Manager(nn.Module):
     hidden: int
     skills: int
-
     @nn.compact
     def __call__(self, x):
         x = nn.relu(nn.Dense(self.hidden)(x))
         x = nn.relu(nn.Dense(self.hidden)(x))
-        logits = nn.Dense(self.skills)(x)
-        return logits
-
+        return nn.Dense(self.skills)(x)
 
 # =====================================================
-#  PPO + ES MANAGER
+#  HELPER FUNCTIONS
 # =====================================================
-def tree_add(tree, upd):
-    return jax.tree_util.tree_map(lambda a, b: a + b, tree, upd)
+def tree_add(a,b): return jax.tree_util.tree_map(lambda x,y:x+y,a,b)
+def tree_scale(a,s): return jax.tree_util.tree_map(lambda x:x*s,a)
+def sample_noise_like(k,t):
+    leaves, td = jax.tree_util.tree_flatten(t)
+    ks = random.split(k, len(leaves))
+    noises = [random.normal(kk, shape=x.shape) for kk,x in zip(ks,leaves)]
+    return jax.tree_util.tree_unflatten(td,noises)
 
+def one_hot_np(ids, n):
+    oh = np.zeros((ids.shape[0], n), dtype=np.float32)
+    oh[np.arange(ids.shape[0]), ids] = 1.0
+    return oh
 
-def tree_scale(tree, scale):
-    return jax.tree_util.tree_map(lambda a: a * scale, tree)
-
-
-def sample_noise_like(key, tree):
-    leaves, treedef = jax.tree_util.tree_flatten(tree)
-    keys = random.split(key, len(leaves))
-    noisy = [random.normal(k, shape=x.shape) for k, x in zip(keys, leaves)]
-    return jax.tree_util.tree_unflatten(treedef, noisy)
-
-
-def one_hot(i, n):
-    v = np.zeros((n,), dtype=np.float32)
-    v[i] = 1.0
-    return v
-
-
-def select_skill(manager_params, manager_net, obs_np, cfg: Config):
-    logits = manager_net.apply(manager_params, jnp.expand_dims(jnp.asarray(obs_np), 0))
-    sk = int(jnp.argmax(logits, axis=-1)[0])
-    return sk
-
+def select_skill_batch(params, net, obs, nskills):
+    logits = net.apply(params, jnp.asarray(obs))
+    return np.asarray(jnp.argmax(logits, axis=-1))
 
 # =====================================================
 #  EVOLUTION STRATEGY
 # =====================================================
-def es_evaluate(env, manager_params, manager_net, policy_params, policy_net, cfg: Config, steps: int):
-    obs, _ = env.reset()
-    total_r = 0.0
-    skill_id = select_skill(manager_params, manager_net, obs, cfg)
-    skill_oh = one_hot(skill_id, cfg.skills)
+def es_evaluate(env, mgr_p, mgr_n, pol_p, pol_n, cfg, steps: int):
+    """
+    Evaluate a given manager parameter set (mgr_p) within one environment instance.
+
+    This function rolls out the environment for a fixed number of steps using:
+        - The manager (mgr_n) to select a discrete skill every H steps
+        - The policy (pol_n) conditioned on that skill to produce continuous actions
+    It returns the total accumulated reward (episodic return).
+
+    Args:
+        env: environment (e.g., EnvPool vectorized with 1 env)
+        mgr_p: current manager parameters (θ)
+        mgr_n: manager network
+        pol_p: current policy parameters
+        pol_n: policy network
+        cfg: configuration object (contains horizon_H, skills, etc.)
+        steps: number of environment steps to simulate
+
+    Returns:
+        total (float): total reward accumulated during evaluation
+    """
+    obs = env.reset().obs
+    total = 0.0
+
+    # Initial skill selection from manager
+    skill = int(jnp.argmax(mgr_n.apply(mgr_p, jnp.expand_dims(jnp.asarray(obs[0]), 0))[0]))
+    skill_oh = one_hot_np(np.array([skill]), cfg.skills)[0]
     H = cfg.horizon_H
+
+    # Rollout loop
     for t in range(steps):
+
+        # Periodically resample the high-level skill every H steps
         if t % H == 0:
-            skill_id = select_skill(manager_params, manager_net, obs, cfg)
-            skill_oh = one_hot(skill_id, cfg.skills)
-        obs_skill = np.concatenate([obs.astype(np.float32), skill_oh], axis=-1)
+            skill = int(jnp.argmax(mgr_n.apply(mgr_p, jnp.expand_dims(jnp.asarray(obs[0]), 0))[0]))
+            skill_oh = one_hot_np(np.array([skill]), cfg.skills)[0]
+
+        # Concatenate observation with one-hot skill vector → hierarchical input
+        obs_s = np.concatenate([obs[0].astype(np.float32), skill_oh])[None]
+
+        # Sample low-level continuous action from PPO policy
         key = random.PRNGKey((t + 7) % 2**31)
-        act, _, _ = policy_net.apply(policy_params, jnp.expand_dims(jnp.asarray(obs_skill), 0), key)
-        next_obs, r, done, trunc, _ = env.step(np.asarray(act[0]))
-        total_r += float(r)
-        obs = next_obs
-        if done or trunc:
-            obs, _ = env.reset()
-    return total_r
+        act, _, _ = pol_n.apply(pol_p, jnp.asarray(obs_s), key)
+
+        # Step environment and collect reward
+        obs = env.step(np.asarray(act))[0]
+        total += float(obs.reward[0])
+
+        # Reset if the episode terminates early
+        if obs.done[0]:
+            obs = env.reset()
+
+    return total
 
 
-def es_update(env_maker, manager_params, manager_net, policy_params, policy_net, cfg: Config):
-    key = random.PRNGKey(cfg.seed + 123)
-    grads_acc = jax.tree_util.tree_map(jnp.zeros_like, manager_params)
+def es_update(make_env, mp, mn, pp, pn, cfg):
+    """
+    Evolution Strategies update for the manager network.
+
+    This performs n=cfg.es_batch perturbation evaluations and computes a
+    finite-difference gradient estimate for the manager parameters.
+
+    Args:
+        make_env: callable returning a new single-environment instance
+        mp: current manager parameters θ
+        mn: manager network
+        pp: policy parameters (fixed PPO-trained low-level controller)
+        pn: policy network
+        cfg: configuration with ES hyperparameters (es_batch, es_sigma, es_alpha)
+
+    Returns:
+        (new_mp, rewards): updated manager parameters and list of (r_plus, r_minus) tuples
+    """
+    k = random.PRNGKey(cfg.seed + 123)
+    g_acc = jax.tree_util.tree_map(jnp.zeros_like, mp)  # accumulated ES gradient
     rewards = []
-    for i in range(cfg.es_batch):
-        key, k1 = random.split(key)
-        eps = sample_noise_like(k1, manager_params)
-        params_plus = tree_add(manager_params, tree_scale(eps, cfg.es_sigma))
-        params_minus = tree_add(manager_params, tree_scale(eps, -cfg.es_sigma))
-        env_p = env_maker()
-        env_m = env_maker()
-        r_plus = es_evaluate(env_p, params_plus, manager_net, policy_params, policy_net, cfg, steps=512)
-        r_minus = es_evaluate(env_m, params_minus, manager_net, policy_params, policy_net, cfg, steps=512)
-        rewards.append((r_plus, r_minus))
-        g_i = tree_scale(eps, (r_plus - r_minus) / (2.0 * cfg.es_sigma))
-        grads_acc = jax.tree_util.tree_map(lambda a, b: a + b, grads_acc, g_i)
-        env_p.close(); env_m.close()
-    grads_acc = tree_scale(grads_acc, cfg.es_alpha / float(cfg.es_batch))
-    new_params = tree_add(manager_params, grads_acc)
-    return new_params, rewards
+
+    # Sample perturbations (ε_i) and evaluate in parallel environments
+    for _ in range(cfg.es_batch):
+        k, k1 = random.split(k)
+
+        # Sample Gaussian noise ε_i for all parameters
+        eps = sample_noise_like(k1, mp)
+
+        # Antithetic parameter sets: θ+σε and θ−σε
+        p_plus = tree_add(mp, tree_scale(eps,  cfg.es_sigma))
+        p_minus = tree_add(mp, tree_scale(eps, -cfg.es_sigma))
+
+        # Create independent environment copies for both evaluations
+        envp, envm = make_env(), make_env()
+
+        # Evaluate rewards of perturbed managers
+        r_p = es_evaluate(envp, p_plus, mn, pp, pn, cfg, steps=512)
+        r_m = es_evaluate(envm, p_minus, mn, pp, pn, cfg, steps=512)
+        rewards.append((r_p, r_m))
+
+        # Compute finite-difference gradient contribution
+        #   g_i = (r_plus - r_minus) / (2σ) * ε_i
+        g_i = tree_scale(eps, (r_p - r_m) / (2 * cfg.es_sigma))
+
+        # Accumulate estimated gradients across perturbations
+        g_acc = jax.tree_util.tree_map(lambda a, b: a + b, g_acc, g_i)
+
+        # Close environments to free resources
+        envp.close(); envm.close()
+
+    # Average and scale by learning rate α
+    g_acc = tree_scale(g_acc, cfg.es_alpha / float(cfg.es_batch))
+
+    # Update manager parameters: θ ← θ + α * g_acc
+    new_mp = tree_add(mp, g_acc)
+
+    return new_mp, rewards
 
 
 # =====================================================
-#  TRAIN
+#  TRAIN : PPO + ES + HRL
 # =====================================================
 def train(cfg: Config):
-    # --- Auto-generate log path ./logs/exp1, exp2, exp3 ---
-    base_dir = "./logs"
-    os.makedirs(base_dir, exist_ok=True)
-    existing = [d for d in os.listdir(base_dir) if d.startswith("exp") and os.path.isdir(os.path.join(base_dir, d))]
-    exp_nums = [int(d.replace("exp", "")) for d in existing if d.replace("exp", "").isdigit()]
-    next_exp = max(exp_nums) + 1 if exp_nums else 1
-    exp_dir = os.path.join(base_dir, f"exp{next_exp}")
-    os.makedirs(exp_dir, exist_ok=True)
-    cfg.logdir = exp_dir
+    base_dir="./logs"; os.makedirs(base_dir,exist_ok=True)
+    exps=[int(d[3:]) for d in os.listdir(base_dir) if d.startswith("exp") and d[3:].isdigit()]
+    exp_dir=os.path.join(base_dir,f"exp{max(exps)+1 if exps else 1}")
+    os.makedirs(exp_dir,exist_ok=True)
+    cfg.logdir=exp_dir
 
-    logger.info(f"📁 Starting new experiment: {exp_dir}")
+    n_cpus=os.cpu_count() or 4
+    n_envs=getattr(cfg,"n_envs",min(28,n_cpus))
+    logger.info(f"📁 {exp_dir} | Using EnvPool {n_envs} envs on {n_cpus} cores")
 
-    # === Env + setup ===
-    env = make_env(cfg.env_id, cfg.seed)()
-    obs, _ = env.reset()
-    obs_dim = env.observation_space.shape[0]
+    # --- EnvPool vectorized env ---
+    env = envpool.make_gym(cfg.env_id, num_envs=n_envs, batch_size=n_envs)
+    obs = env.reset().obs
+    obs_dim = obs.shape[1]
     act_dim = env.action_space.shape[0]
 
-    # === Nets ===
-    input_dim = obs_dim + cfg.skills
-    policy_net = PolicyValueNet(cfg.policy_hidden, act_dim)
-    key = random.PRNGKey(cfg.seed)
-    policy_params = policy_net.init(key, jnp.zeros((1, input_dim)), key)
-    optimizer = optax.adam(cfg.ppo_lr)
-    opt_state = optimizer.init(policy_params)
+    # --- Nets ---
+    input_dim=obs_dim+cfg.skills
+    key=random.PRNGKey(cfg.seed)
+    pol_net=PolicyValueNet(cfg.policy_hidden, act_dim)
+    pol_p=pol_net.init(key,jnp.zeros((1,input_dim)),key)
+    opt=optax.adam(cfg.ppo_lr)
+    opt_state=opt.init(pol_p)
 
-    manager_net = Manager(cfg.policy_hidden, cfg.skills)
-    manager_params = manager_net.init(random.PRNGKey(cfg.seed + 999), jnp.zeros((1, obs_dim)))
+    mgr_net=Manager(cfg.policy_hidden,cfg.skills)
+    mgr_p=mgr_net.init(random.PRNGKey(cfg.seed+999),jnp.zeros((1,obs_dim)))
 
-    gamma = cfg.ppo_gamma
-    clip = cfg.ppo_clip
-    logger_tb = JaxVideoMetricLogger(cfg)
+    gamma,clip=cfg.ppo_gamma,cfg.ppo_clip
+    tb=JaxVideoMetricLogger(cfg)
 
-    # === PPO loss with aux metrics (actor, critic, entropy) ===
-    def ppo_loss_and_metrics(params, obs_skill, actions, adv, old_logp, returns, key_rng):
-        a, logp, v = policy_net.apply(params, obs_skill, key_rng)
-        # ratio using sampled actions' logp vs old_logp
-        ratio = jnp.exp(logp - old_logp)
-        clip_adv = jnp.clip(ratio, 1 - clip, 1 + clip) * adv
-
-        actor_loss = -jnp.mean(jnp.minimum(ratio * adv, clip_adv))
-        critic_loss = jnp.mean((returns - v) ** 2)
-        entropy = -jnp.mean(logp)
-
-        total = actor_loss + 0.5 * critic_loss - 0.01 * entropy
-        metrics = {
-            "actor_loss": actor_loss,
-            "critic_loss": critic_loss,
-            "entropy": entropy,
-            "value_mean": jnp.mean(v),
-        }
-        return total, metrics
+    # PPO loss
+    def ppo_loss(params, obs_s, act, adv, oldlp, ret, rng):
+        a, lp, v = pol_net.apply(params, obs_s, rng)
+        ratio = jnp.exp(lp - oldlp)
+        clip_adv = jnp.clip(ratio, 1-clip, 1+clip)*adv
+        actor = -jnp.mean(jnp.minimum(ratio*adv, clip_adv))
+        critic = jnp.mean((ret-v)**2)
+        ent = -jnp.mean(lp)
+        total = actor + 0.5*critic - 0.01*ent
+        return total, dict(actor_loss=actor, critic_loss=critic, entropy=ent, value_mean=jnp.mean(v))
 
     @jax.jit
-    def ppo_update(params, opt_state, batch, key_rng):
-        (loss, metrics), grads = jax.value_and_grad(ppo_loss_and_metrics, has_aux=True)(
-            params, *batch, key_rng
-        )
-        updates, opt_state = optimizer.update(grads, opt_state)
-        new_params = optax.apply_updates(params, updates)
-        return new_params, opt_state, metrics
+    def ppo_update(p, s, b, k):
+        (l,m),g=jax.value_and_grad(ppo_loss,has_aux=True)(p,*b,k)
+        u,s=opt.update(g,s)
+        return optax.apply_updates(p,u),s,m
 
-    # === Training ===
-    H = cfg.horizon_H
-    total_return = 0.0
-    episode_return = 0.0
-    success_flag = 0.0  # track last episode's success if provided by env
+    H=cfg.horizon_H
+    ep_ret=np.zeros((n_envs,),np.float32)
+    succ=np.zeros((n_envs,),np.float32)
 
-    skill_id = select_skill(manager_params, manager_net, obs, cfg)
-    skill_oh = one_hot(skill_id, cfg.skills)
+    sk_ids=select_skill_batch(mgr_p,mgr_net,obs,cfg.skills)
+    sk_oh=one_hot_np(sk_ids,cfg.skills)
 
-    logger.info(f"[Start] worker on {cfg.env_id}")
     for step in trange(cfg.total_timesteps):
-        logger_tb.global_step = step
+        tb.global_step=step
+        if step%H==0:
+            sk_ids=select_skill_batch(mgr_p,mgr_net,obs,cfg.skills)
+            sk_oh=one_hot_np(sk_ids,cfg.skills)
 
-        if step % H == 0:
-            skill_id = select_skill(manager_params, manager_net, obs, cfg)
-            skill_oh = one_hot(skill_id, cfg.skills)
+        obs_s=np.concatenate([obs.astype(np.float32),sk_oh],1)
+        key,sub=random.split(key)
+        acts,logp,v=pol_net.apply(pol_p,jnp.asarray(obs_s),sub)
+        trans=env.step(np.asarray(acts))
+        next_obs,rew,done,trunc,info=trans.obs,trans.reward,trans.done,trans.trunc,trans.info
+        done=np.logical_or(done,trunc)
+        ep_ret+=rew
+        obs_s2=np.concatenate([next_obs.astype(np.float32),sk_oh],1)
+        _,_,v2=pol_net.apply(pol_p,jnp.asarray(obs_s2),sub)
+        td=rew+gamma*np.asarray(v2)*(~done)
+        adv=td-np.asarray(v)
 
-        obs_skill = np.concatenate([obs.astype(np.float32), skill_oh], axis=-1)
-        key, sub = random.split(key)
-        act, logp, v = policy_net.apply(policy_params, jnp.expand_dims(jnp.asarray(obs_skill), 0), sub)
+        batch=(jnp.asarray(obs_s),jnp.asarray(acts),jnp.asarray(adv),
+               jnp.asarray(logp),jnp.asarray(td))
+        pol_p,opt_state,met=ppo_update(pol_p,opt_state,batch,sub)
 
-        # unpack info to read 'solved'
-        next_obs, r, done, trunc, info = env.step(np.asarray(act[0]))
-        total_return += float(r)
-        episode_return += float(r)
-        if isinstance(info, dict):
-            success_flag = float(info.get("solved", success_flag))
+        tb.log_scalar("train/return",float(np.mean(ep_ret)))
+        tb.log_scalar("train/actor_loss",float(met["actor_loss"]))
+        tb.log_scalar("train/critic_loss",float(met["critic_loss"]))
+        tb.log_scalar("train/entropy",float(met["entropy"]))
+        tb.log_scalar("train/value_mean",float(met["value_mean"]))
 
-        next_obs_skill = np.concatenate([next_obs.astype(np.float32), skill_oh], axis=-1)
-        _, _, v_next = policy_net.apply(policy_params, jnp.expand_dims(jnp.asarray(next_obs_skill), 0), sub)
-        td_target = float(r) + (0.0 if (done or trunc) else gamma * float(v_next[0]))
-        adv = td_target - float(v[0])
+        if np.any(done):
+            # reset done envs efficiently
+            next_obs = env.reset_done(done).obs
+            tb.log_scalar("custom/episodic_return",float(np.mean(ep_ret[done])))
+            ep_ret[done]=0
 
-        batch = (
-            jnp.expand_dims(jnp.asarray(obs_skill), 0),
-            jnp.expand_dims(jnp.asarray(act[0]), 0),
-            jnp.asarray([adv], dtype=jnp.float32),
-            jnp.asarray([float(logp[0])], dtype=jnp.float32),
-            jnp.asarray([td_target], dtype=jnp.float32),
-        )
-        policy_params, opt_state, ppo_metrics = ppo_update(policy_params, opt_state, batch, sub)
+        obs=next_obs
 
-        # --- Step-wise logs (return vs timestep; losses) ---
-        logger_tb.log_scalar("train/return", total_return)
-        logger_tb.log_scalar("train/advantage", float(adv))
-        logger_tb.log_scalar("train/actor_loss", float(ppo_metrics["actor_loss"]))
-        logger_tb.log_scalar("train/critic_loss", float(ppo_metrics["critic_loss"]))
-        logger_tb.log_scalar("train/entropy", float(ppo_metrics["entropy"]))
-        logger_tb.log_scalar("train/value_mean", float(ppo_metrics["value_mean"]))
-
-        obs = next_obs
-        if done or trunc:
-            # --- Episode-end logs: episodic return + success rate ---
-            logger_tb.log_scalar("custom/episodic_return", episode_return)
-            logger_tb.log_scalar("custom/success_rate_vs_step", success_flag)
-            episode_return = 0.0
-            success_flag = 0.0
-            obs, _ = env.reset()
-            skill_id = select_skill(manager_params, manager_net, obs, cfg)
-            skill_oh = one_hot(skill_id, cfg.skills)
-
-        if (step + 1) % 10000 == 0:
-            logger.info("[ES] Updating manager with OpenES...")
-            manager_params, es_stats = es_update(lambda: make_env(cfg.env_id, cfg.seed)(),
-                                                 manager_params, manager_net,
-                                                 policy_params, policy_net, cfg)
-            mean_r = np.mean([0.5*(rp+rm) for rp, rm in es_stats]) if len(es_stats) else 0.0
-            logger.info(f"[ES] mean pair return ~ {mean_r:.2f}")
-            logger_tb.log_scalar("es/mean_pair_return", float(mean_r))
-            logger_tb.record_eval_video(cfg.env_id, policy_net, policy_params, manager_net, manager_params)
-
-        if (step + 1) % 5000 == 0:
-            logger.info(f"Step {step+1} | running return ~ {total_return:.2f}")
+        if (step+1)%10000==0:
+            logger.info("[ES] manager update")
+            mgr_p,stats=es_update(lambda: envpool.make_gym(cfg.env_id,num_envs=1,batch_size=1),
+                                  mgr_p,mgr_net,pol_p,pol_net,cfg)
+            m_r=np.mean([0.5*(rp+rm) for rp,rm in stats]) if stats else 0
+            tb.log_scalar("es/mean_pair_return",float(m_r))
+            tb.record_eval_video(cfg.env_id,pol_net,pol_p,mgr_net,mgr_p)
 
     env.close()
-    logger_tb.close()
+    tb.close()
 
-
-if __name__ == "__main__":
-    cfg = Config()
+if __name__=="__main__":
+    cfg=Config()
     train(cfg)
