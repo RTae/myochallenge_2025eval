@@ -2,6 +2,7 @@ from config import Config
 from loguru import logger
 from typing import Tuple
 
+import os
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -12,8 +13,8 @@ import distrax
 from tqdm.auto import trange
 
 from myosuite.utils import gym
-
 from utils.callbacks import JaxVideoMetricLogger
+
 
 # =====================================================
 #  SAFE OBSERVATION WRAPPER
@@ -37,6 +38,7 @@ def make_env(env_id: str, seed: int):
         env.reset(seed=seed)
         return env
     return _thunk
+
 
 # =====================================================
 #  NETWORKS
@@ -80,14 +82,17 @@ class Manager(nn.Module):
         logits = nn.Dense(self.skills)(x)
         return logits
 
+
 # =====================================================
 #  PPO + ES MANAGER
 # =====================================================
 def tree_add(tree, upd):
     return jax.tree_util.tree_map(lambda a, b: a + b, tree, upd)
 
+
 def tree_scale(tree, scale):
     return jax.tree_util.tree_map(lambda a: a * scale, tree)
+
 
 def sample_noise_like(key, tree):
     leaves, treedef = jax.tree_util.tree_flatten(tree)
@@ -95,17 +100,22 @@ def sample_noise_like(key, tree):
     noisy = [random.normal(k, shape=x.shape) for k, x in zip(keys, leaves)]
     return jax.tree_util.tree_unflatten(treedef, noisy)
 
+
 def one_hot(i, n):
     v = np.zeros((n,), dtype=np.float32)
     v[i] = 1.0
     return v
+
 
 def select_skill(manager_params, manager_net, obs_np, cfg: Config):
     logits = manager_net.apply(manager_params, jnp.expand_dims(jnp.asarray(obs_np), 0))
     sk = int(jnp.argmax(logits, axis=-1)[0])
     return sk
 
-# Evaluate the policy using the selected skill
+
+# =====================================================
+#  EVOLUTION STRATEGY
+# =====================================================
 def es_evaluate(env, manager_params, manager_net, policy_params, policy_net, cfg: Config, steps: int):
     obs, _ = env.reset()
     total_r = 0.0
@@ -126,7 +136,7 @@ def es_evaluate(env, manager_params, manager_net, policy_params, policy_net, cfg
             obs, _ = env.reset()
     return total_r
 
-# Update the manager and policy networks using the collected experience
+
 def es_update(env_maker, manager_params, manager_net, policy_params, policy_net, cfg: Config):
     key = random.PRNGKey(cfg.seed + 123)
     grads_acc = jax.tree_util.tree_map(jnp.zeros_like, manager_params)
@@ -148,17 +158,30 @@ def es_update(env_maker, manager_params, manager_net, policy_params, policy_net,
     new_params = tree_add(manager_params, grads_acc)
     return new_params, rewards
 
+
 # =====================================================
 #  TRAIN
 # =====================================================
 def train(cfg: Config):
-    # Env + shapes
+    # --- Auto-generate log path ./logs/exp1, exp2, exp3 ---
+    base_dir = "./logs"
+    os.makedirs(base_dir, exist_ok=True)
+    existing = [d for d in os.listdir(base_dir) if d.startswith("exp") and os.path.isdir(os.path.join(base_dir, d))]
+    exp_nums = [int(d.replace("exp", "")) for d in existing if d.replace("exp", "").isdigit()]
+    next_exp = max(exp_nums) + 1 if exp_nums else 1
+    exp_dir = os.path.join(base_dir, f"exp{next_exp}")
+    os.makedirs(exp_dir, exist_ok=True)
+    cfg.logdir = exp_dir
+
+    logger.info(f"📁 Starting new experiment: {exp_dir}")
+
+    # === Env + setup ===
     env = make_env(cfg.env_id, cfg.seed)()
     obs, _ = env.reset()
     obs_dim = env.observation_space.shape[0]
     act_dim = env.action_space.shape[0]
 
-    # Nets
+    # === Nets ===
     input_dim = obs_dim + cfg.skills
     policy_net = PolicyValueNet(cfg.policy_hidden, act_dim)
     key = random.PRNGKey(cfg.seed)
@@ -173,7 +196,7 @@ def train(cfg: Config):
     clip = cfg.ppo_clip
     logger_tb = JaxVideoMetricLogger(cfg)
 
-    # PPO loss/update
+    # === PPO loss/update ===
     def ppo_loss(params, obs_skill, actions, adv, old_logp, returns, key):
         a, logp, v = policy_net.apply(params, obs_skill, key)
         ratio = jnp.exp(logp - old_logp)
@@ -190,6 +213,7 @@ def train(cfg: Config):
         new_params = optax.apply_updates(params, updates)
         return new_params, opt_state
 
+    # === Training ===
     H = cfg.horizon_H
     total_return = 0.0
     skill_id = select_skill(manager_params, manager_net, obs, cfg)
@@ -199,25 +223,21 @@ def train(cfg: Config):
     for step in trange(cfg.total_timesteps):
         logger_tb.global_step = step
 
-        # High-level skill switch
         if step % H == 0:
             skill_id = select_skill(manager_params, manager_net, obs, cfg)
             skill_oh = one_hot(skill_id, cfg.skills)
 
-        # Policy act
         obs_skill = np.concatenate([obs.astype(np.float32), skill_oh], axis=-1)
         key, sub = random.split(key)
         act, logp, v = policy_net.apply(policy_params, jnp.expand_dims(jnp.asarray(obs_skill), 0), sub)
         next_obs, r, done, trunc, _ = env.step(np.asarray(act[0]))
         total_return += float(r)
 
-        # TD target (1-step GAE-lite)
         next_obs_skill = np.concatenate([next_obs.astype(np.float32), skill_oh], axis=-1)
         _, _, v_next = policy_net.apply(policy_params, jnp.expand_dims(jnp.asarray(next_obs_skill), 0), sub)
         td_target = float(r) + (0.0 if (done or trunc) else gamma * float(v_next[0]))
         adv = td_target - float(v[0])
 
-        # PPO single-step update (your structure preserved)
         batch = (
             jnp.expand_dims(jnp.asarray(obs_skill), 0),
             jnp.expand_dims(jnp.asarray(act[0]), 0),
@@ -227,18 +247,15 @@ def train(cfg: Config):
         )
         policy_params, opt_state = ppo_update(policy_params, opt_state, batch, sub)
 
-        # Log basics
         logger_tb.log_scalar("train/return", total_return)
         logger_tb.log_scalar("train/advantage", float(adv))
 
-        # Roll
         obs = next_obs
         if done or trunc:
             obs, _ = env.reset()
             skill_id = select_skill(manager_params, manager_net, obs, cfg)
             skill_oh = one_hot(skill_id, cfg.skills)
 
-        # ES update + eval video
         if (step + 1) % 10000 == 0:
             logger.info("[ES] Updating manager with OpenES...")
             manager_params, es_stats = es_update(lambda: make_env(cfg.env_id, cfg.seed)(),
@@ -254,6 +271,7 @@ def train(cfg: Config):
 
     env.close()
     logger_tb.close()
+
 
 if __name__ == "__main__":
     cfg = Config()
