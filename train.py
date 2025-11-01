@@ -205,12 +205,11 @@ def train(cfg: Config):
         tb.log_scalar("train/entropy",float(met["entropy"]))
         tb.log_scalar("train/value_mean",float(met["value_mean"]))
 
-        # reset finished envs
         if np.any(done):
-            obs_reset, _ = env.reset_done(done)
-            next_obs[done] = obs_reset[done]
-            tb.log_scalar("custom/episodic_return",float(np.mean(ep_ret[done])))
-            ep_ret[done]=0
+            # reset only the finished envs using mask
+            next_obs, _ = env.reset(seed=None, options={"indices": np.where(done)[0]})
+            tb.log_scalar("custom/episodic_return", float(np.mean(ep_ret[done])))
+            ep_ret[done] = 0
 
         obs=next_obs
 
