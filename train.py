@@ -198,7 +198,7 @@ def train(cfg: Config):
     cfg.logdir=exp_dir
 
     n_cpus=os.cpu_count() or 4
-    n_envs=getattr(cfg,"n_envs", min(28, n_cpus))
+    n_envs=getattr(cfg, "n_envs", min(28, n_cpus))
     logger.info(f"📁 {exp_dir} | Using EnvPool {n_envs} envs on {n_cpus} cores")
 
     # --- EnvPool vectorized env ---
