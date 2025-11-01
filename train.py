@@ -5,12 +5,11 @@ from loguru import logger
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
 from stable_baselines3.common.utils import set_random_seed
+from stable_baselines3.common.callbacks import EvalCallback
 from myosuite.utils import gym
 
 from config import Config
 from utils.callbacks import VideoCallback
-
-
 
 # =====================================================
 #  Vector Env Factory
@@ -56,8 +55,6 @@ def train(cfg: Config):
     os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
     os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
-    # SB3 uses PyTorch; JAX/XLA vars not needed.
-
     # --- Logs ---
     exp_dir = next_exp_dir("./logs")
     cfg.logdir = exp_dir
@@ -71,9 +68,7 @@ def train(cfg: Config):
     vec_env = make_vec_env(cfg.env_id, cfg.seed, n_envs)
     # Keep VecMonitor (episode stats) and optional VecNormalize for obs/returns
     vec_env = VecMonitor(vec_env)
-    # Optional normalization; comment out if you don’t want it:
-    # vec_env = VecNormalize(vec_env, norm_obs=True, norm_reward=True, clip_obs=10.0, clip_reward=10.0)
-
+    
     # --- PPO Model (PyTorch) ---
     policy_kwargs = dict(
         net_arch=[dict(pi=[cfg.policy_hidden, cfg.policy_hidden],
@@ -83,7 +78,7 @@ def train(cfg: Config):
         policy="MlpPolicy",
         env=vec_env,
         learning_rate=cfg.ppo_lr,
-        n_steps=getattr(cfg, "n_steps", 2048 // n_envs * n_envs),   # ensure divisible by n_envs
+        n_steps=getattr(cfg, "n_steps", 2048 // n_envs * n_envs),
         batch_size=getattr(cfg, "batch_size", 64),
         n_epochs=getattr(cfg, "ppo_epochs", 10),
         gamma=getattr(cfg, "ppo_gamma", 0.99),
@@ -98,7 +93,11 @@ def train(cfg: Config):
         verbose=1,
     )
 
-    cb = VideoCallback(
+    # --- Callbacks: Video + Evaluation ---
+    eval_env = make_vec_env(cfg.env_id, cfg.seed + 999, 1)  # single-env eval
+    eval_env = VecMonitor(eval_env)
+
+    video_cb = VideoCallback(
         env_id=cfg.env_id,
         seed=cfg.seed,
         logdir=exp_dir,
@@ -107,9 +106,21 @@ def train(cfg: Config):
         verbose=0,
     )
 
+    eval_cb = EvalCallback(
+        eval_env=eval_env,
+        best_model_save_path=exp_dir,
+        log_path=exp_dir,
+        eval_freq=getattr(cfg, "eval_freq", 25_000) // n_envs,
+        deterministic=True,
+        render=False,
+    )
+
+    # Combine both
+    callback_list = [video_cb, eval_cb]
+
     # --- Train ---
     total_timesteps = int(cfg.total_timesteps)
-    model.learn(total_timesteps=total_timesteps, callback=cb, progress_bar=True)
+    model.learn(total_timesteps=total_timesteps, callback=callback_list, progress_bar=True)
 
     # --- Save artifacts ---
     save_path = os.path.join(exp_dir, "ppo_policy.zip")
