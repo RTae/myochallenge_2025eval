@@ -3,16 +3,17 @@ name = "myochallenge-2025eval"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = "==3.11.*"
 dependencies = [
     "distrax>=0.1.5",
+    "envpool>=0.8.4",
     "flax>=0.10.6",
     "grpcio>=1.75.1",
     "grpcio-tools>=1.75.1",
     "gymnasium[other]==0.29.1",
     "imageio>=2.37.0",
     "imageio-ffmpeg>=0.6.0",
-    "jax[cuda12,cuda13]>=0.5.3",
+    "jax[cuda12]>=0.5.3",
     "jaxlib>=0.5.3",
     "loguru>=0.7.3",
     "matplotlib>=3.10.6",
@@ -21,9 +22,7 @@ dependencies = [
     "numpy<2.0.0",
     "optax>=0.2.6",
     "protobuf>=6.32.1",
-    "ray[default,tune]==2.31.0",
     "requests>=2.32.5",
-    "stable-baselines3[extra]>=2.7.0",
     "torch>=2.8.0",
     "typer>=0.19.2",
 ]
