@@ -1,22 +1,24 @@
-import os
-import torch
-import psutil
-import numpy as np
-
+from config import Config
 from loguru import logger
-from stable_baselines3 import SAC
-from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize
-from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
-from stable_baselines3.common.monitor import Monitor
-from myosuite.utils import gym
-from utils.callbacks import VideoCallback, MetricCallback
+from typing import Tuple
 
+import numpy as np
+import jax
+import jax.numpy as jnp
+from jax import random
+import optax
+import flax.linen as nn
+import distrax
+from tqdm.auto import trange
+
+from myosuite.utils import gym
+
+from utils.callbacks import JaxVideoMetricLogger
 
 # =====================================================
 #  SAFE OBSERVATION WRAPPER
 # =====================================================
 class SafeObsWrapper(gym.ObservationWrapper):
-    """Ensure observations never fail Box range checks."""
     def __init__(self, env):
         super().__init__(env)
         low = np.full(env.observation_space.shape, -np.inf, dtype=np.float32)
@@ -27,163 +29,232 @@ class SafeObsWrapper(gym.ObservationWrapper):
         return np.nan_to_num(obs, nan=0.0, posinf=1e6, neginf=-1e6)
 
 
-def make_env(env_id, seed=0):
-    """Factory so SubprocVecEnv can create isolated envs."""
+def make_env(env_id: str, seed: int):
     def _thunk():
         env = gym.make(env_id)
         env = SafeObsWrapper(env)
-        env = Monitor(env)
+        env = gym.wrappers.RecordEpisodeStatistics(env)
         env.reset(seed=seed)
         return env
     return _thunk
 
+# =====================================================
+#  NETWORKS
+# =====================================================
+class MLP(nn.Module):
+    features: Tuple[int, ...]
 
-def linear_schedule(v0, v_end):
-    return lambda progress_remaining: v_end + (v0 - v_end) * progress_remaining
+    @nn.compact
+    def __call__(self, x):
+        for f in self.features[:-1]:
+            x = nn.relu(nn.Dense(f)(x))
+        x = nn.Dense(self.features[-1])(x)
+        return x
 
 
-def main():
-    # =====================================================
-    #  ENV / RUNTIME SETUP
-    # =====================================================
-    os.environ.pop("DISPLAY", None)
-    torch.set_num_threads(int(os.environ.get("TORCH_NUM_THREADS", "1")))
-    os.environ["OMP_NUM_THREADS"] = os.environ.get("OMP_NUM_THREADS", "1")
-    os.environ["MKL_NUM_THREADS"] = os.environ.get("MKL_NUM_THREADS", "1")
+class PolicyValueNet(nn.Module):
+    hidden: int
+    act_dim: int
 
-    ENV_ID = os.environ.get("ENV_ID", "myoChallengeTableTennisP2-v0")
-    WORKSPACE_ROOT = os.getenv("WORKSPACE_DIR", os.getcwd())
+    @nn.compact
+    def __call__(self, x, rng_key):
+        h = MLP((self.hidden, self.hidden))(x)
+        mu = nn.Dense(self.act_dim)(h)
+        log_std = self.param("log_std", nn.initializers.constant(-0.5), (self.act_dim,))
+        std = jnp.exp(log_std)
+        dist = distrax.Normal(mu, std)
+        action = dist.sample(seed=rng_key)
+        log_prob = jnp.sum(dist.log_prob(action), axis=-1)
+        value = nn.Dense(1)(h)
+        return jnp.tanh(action), log_prob, jnp.squeeze(value, -1)
 
-    # =====================================================
-    #  AUTO-INCREMENT EXPERIMENT FOLDER
-    # =====================================================
-    base_exp_name = "tabletennis_sac"
-    i = 1
-    while os.path.exists(os.path.join(WORKSPACE_ROOT, "logs", f"{base_exp_name}_run{i}")):
-        i += 1
-    EXPERIMENT_NAME = f"{base_exp_name}_run{i}"
 
-    EXP_DIR = os.path.join(WORKSPACE_ROOT, "logs", EXPERIMENT_NAME)
-    TB_LOG = os.path.join(EXP_DIR, "tb")
-    MODELS_DIR = os.path.join(EXP_DIR, "models")
-    VIDEO_DIR = os.path.join(EXP_DIR, "videos")
-    BEST_DIR = os.path.join(EXP_DIR, "best")
-    EVAL_DIR = os.path.join(EXP_DIR, "eval")
-    STATS_DIR = os.path.join(EXP_DIR, "vecnormalize")
+class Manager(nn.Module):
+    hidden: int
+    skills: int
 
-    for d in [TB_LOG, MODELS_DIR, VIDEO_DIR, BEST_DIR, EVAL_DIR, STATS_DIR]:
-        os.makedirs(d, exist_ok=True)
+    @nn.compact
+    def __call__(self, x):
+        x = nn.relu(nn.Dense(self.hidden)(x))
+        x = nn.relu(nn.Dense(self.hidden)(x))
+        logits = nn.Dense(self.skills)(x)
+        return logits
 
-    logger.info(f"📂 Logging to {EXP_DIR}")
+# =====================================================
+#  PPO + ES MANAGER
+# =====================================================
+def tree_add(tree, upd):
+    return jax.tree_util.tree_map(lambda a, b: a + b, tree, upd)
 
-    # =====================================================
-    #  HYPERPARAMETERS
-    # =====================================================
-    TOTAL_TIMESTEPS = int(os.environ.get("TOTAL_TIMESTEPS", 10_000_000))
-    EVAL_FREQ_STEPS = int(os.environ.get("EVAL_FREQ_STEPS", 200_000))
-    VIDEO_FREQ_STEPS = int(os.environ.get("VIDEO_FREQ_STEPS", 1_000_000))
-    SEED = int(os.environ.get("SEED", 42))
+def tree_scale(tree, scale):
+    return jax.tree_util.tree_map(lambda a: a * scale, tree)
 
-    total_cpus = psutil.cpu_count(logical=True)
-    default_envs = max(4, total_cpus - 2)
-    N_ENVS = int(os.environ.get("N_ENVS", str(default_envs)))
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    logger.info(f"Using {N_ENVS} parallel envs on {total_cpus} CPUs, device={device}")
+def sample_noise_like(key, tree):
+    leaves, treedef = jax.tree_util.tree_flatten(tree)
+    keys = random.split(key, len(leaves))
+    noisy = [random.normal(k, shape=x.shape) for k, x in zip(keys, leaves)]
+    return jax.tree_util.tree_unflatten(treedef, noisy)
 
-    # =====================================================
-    #  ENVIRONMENT SETUP
-    # =====================================================
-    train_env = SubprocVecEnv([make_env(ENV_ID, seed=SEED + i) for i in range(N_ENVS)])
-    train_env = VecMonitor(train_env)
+def one_hot(i, n):
+    v = np.zeros((n,), dtype=np.float32)
+    v[i] = 1.0
+    return v
 
-    norm_stats_path = os.path.join(STATS_DIR, "stats.pkl")
-    train_env = VecNormalize(train_env, norm_obs=True, norm_reward=True, clip_obs=10.0, gamma=0.99)
-    if os.path.exists(norm_stats_path):
-        logger.info(f"Loading VecNormalize stats from {norm_stats_path}")
-        train_env = VecNormalize.load(norm_stats_path, train_env)
-    train_env.training = True
+def select_skill(manager_params, manager_net, obs_np, cfg: Config):
+    logits = manager_net.apply(manager_params, jnp.expand_dims(jnp.asarray(obs_np), 0))
+    sk = int(jnp.argmax(logits, axis=-1)[0])
+    return sk
 
-    eval_env = SubprocVecEnv([make_env(ENV_ID, seed=SEED + 10_000 + i) for i in range(2)])
-    eval_env = VecMonitor(eval_env)
-    eval_env = VecNormalize(eval_env, norm_obs=True, norm_reward=False, clip_obs=10.0, gamma=0.99)
-    eval_env.training = False
-    eval_env.obs_rms = train_env.obs_rms
+# Evaluate the policy using the selected skill
+def es_evaluate(env, manager_params, manager_net, policy_params, policy_net, cfg: Config, steps: int):
+    obs, _ = env.reset()
+    total_r = 0.0
+    skill_id = select_skill(manager_params, manager_net, obs, cfg)
+    skill_oh = one_hot(skill_id, cfg.skills)
+    H = cfg.horizon_H
+    for t in range(steps):
+        if t % H == 0:
+            skill_id = select_skill(manager_params, manager_net, obs, cfg)
+            skill_oh = one_hot(skill_id, cfg.skills)
+        obs_skill = np.concatenate([obs.astype(np.float32), skill_oh], axis=-1)
+        key = random.PRNGKey((t + 7) % 2**31)
+        act, _, _ = policy_net.apply(policy_params, jnp.expand_dims(jnp.asarray(obs_skill), 0), key)
+        next_obs, r, done, trunc, _ = env.step(np.asarray(act[0]))
+        total_r += float(r)
+        obs = next_obs
+        if done or trunc:
+            obs, _ = env.reset()
+    return total_r
 
-    # =====================================================
-    #  SAC CONFIGURATION
-    # =====================================================
-    logger.info("⚙️ Initializing SAC model")
+# Update the manager and policy networks using the collected experience
+def es_update(env_maker, manager_params, manager_net, policy_params, policy_net, cfg: Config):
+    key = random.PRNGKey(cfg.seed + 123)
+    grads_acc = jax.tree_util.tree_map(jnp.zeros_like, manager_params)
+    rewards = []
+    for i in range(cfg.es_batch):
+        key, k1 = random.split(key)
+        eps = sample_noise_like(k1, manager_params)
+        params_plus = tree_add(manager_params, tree_scale(eps, cfg.es_sigma))
+        params_minus = tree_add(manager_params, tree_scale(eps, -cfg.es_sigma))
+        env_p = env_maker()
+        env_m = env_maker()
+        r_plus = es_evaluate(env_p, params_plus, manager_net, policy_params, policy_net, cfg, steps=512)
+        r_minus = es_evaluate(env_m, params_minus, manager_net, policy_params, policy_net, cfg, steps=512)
+        rewards.append((r_plus, r_minus))
+        g_i = tree_scale(eps, (r_plus - r_minus) / (2.0 * cfg.es_sigma))
+        grads_acc = jax.tree_util.tree_map(lambda a, b: a + b, grads_acc, g_i)
+        env_p.close(); env_m.close()
+    grads_acc = tree_scale(grads_acc, cfg.es_alpha / float(cfg.es_batch))
+    new_params = tree_add(manager_params, grads_acc)
+    return new_params, rewards
 
-    model = SAC(
-        "MlpPolicy",
-        train_env,
-        verbose=1,
-        tensorboard_log=TB_LOG,
-        seed=SEED,
-        learning_rate=linear_schedule(3e-4, 1e-5),
-        buffer_size=1_000_000,
-        batch_size=512,
-        tau=0.005,
-        gamma=0.98,
-        train_freq=64,
-        gradient_steps=64,
-        ent_coef="auto",  # automatic entropy tuning
-        policy_kwargs=dict(
-            net_arch=[512, 512],
-            log_std_init=-1.0,
-        ),
-        device=device,
-    )
+# =====================================================
+#  TRAIN
+# =====================================================
+def train(cfg: Config):
+    # Env + shapes
+    env = make_env(cfg.env_id, cfg.seed)()
+    obs, _ = env.reset()
+    obs_dim = env.observation_space.shape[0]
+    act_dim = env.action_space.shape[0]
 
-    # =====================================================
-    #  CALLBACKS (CHECKPOINT / EVAL / VIDEO)
-    # =====================================================
-    checkpoint_cb = CheckpointCallback(
-        save_freq=EVAL_FREQ_STEPS // max(N_ENVS, 1),
-        save_path=MODELS_DIR,
-        name_prefix="sac_myo",
-        save_replay_buffer=True,
-        save_vecnormalize=True,
-    )
+    # Nets
+    input_dim = obs_dim + cfg.skills
+    policy_net = PolicyValueNet(cfg.policy_hidden, act_dim)
+    key = random.PRNGKey(cfg.seed)
+    policy_params = policy_net.init(key, jnp.zeros((1, input_dim)), key)
+    optimizer = optax.adam(cfg.ppo_lr)
+    opt_state = optimizer.init(policy_params)
 
-    eval_cb = EvalCallback(
-        eval_env=eval_env,
-        best_model_save_path=BEST_DIR,
-        n_eval_episodes=3,
-        eval_freq=EVAL_FREQ_STEPS // max(N_ENVS, 1),
-        deterministic=True,
-        render=False,
-        log_path=EVAL_DIR,
-    )
+    manager_net = Manager(cfg.policy_hidden, cfg.skills)
+    manager_params = manager_net.init(random.PRNGKey(cfg.seed + 999), jnp.zeros((1, obs_dim)))
 
-    video_cb = VideoCallback(
-        eval_env_id=ENV_ID,
-        eval_freq=VIDEO_FREQ_STEPS // max(N_ENVS, 1),
-        video_dir=VIDEO_DIR,
-        best_model_dir=BEST_DIR,
-        n_eval_episodes=3,
-        verbose=1,
-        num_worker=max(N_ENVS, 1),
-    )
+    gamma = cfg.ppo_gamma
+    clip = cfg.ppo_clip
+    logger_tb = JaxVideoMetricLogger(cfg)
 
-    metric_cb = MetricCallback()
+    # PPO loss/update
+    def ppo_loss(params, obs_skill, actions, adv, old_logp, returns, key):
+        a, logp, v = policy_net.apply(params, obs_skill, key)
+        ratio = jnp.exp(logp - old_logp)
+        clip_adv = jnp.clip(ratio, 1 - clip, 1 + clip) * adv
+        policy_loss = -jnp.mean(jnp.minimum(ratio * adv, clip_adv))
+        value_loss = jnp.mean((returns - v) ** 2)
+        entropy = -jnp.mean(logp)
+        return policy_loss + 0.5 * value_loss - 0.01 * entropy
 
-    # =====================================================
-    #  TRAINING
-    # =====================================================
-    logger.info("🚀 Starting SB3 SAC training")
-    model.learn(
-        total_timesteps=TOTAL_TIMESTEPS,
-        callback=[checkpoint_cb, eval_cb, video_cb, metric_cb],
-        progress_bar=True,
-    )
+    @jax.jit
+    def ppo_update(params, opt_state, batch, key):
+        grads = jax.grad(ppo_loss)(params, *batch, key)
+        updates, opt_state = optimizer.update(grads, opt_state)
+        new_params = optax.apply_updates(params, updates)
+        return new_params, opt_state
 
-    train_env.save(norm_stats_path)
-    logger.success("✅ SAC training complete")
+    H = cfg.horizon_H
+    total_return = 0.0
+    skill_id = select_skill(manager_params, manager_net, obs, cfg)
+    skill_oh = one_hot(skill_id, cfg.skills)
 
-    train_env.close()
-    eval_env.close()
+    logger.info(f"[Start] worker on {cfg.env_id}")
+    for step in trange(cfg.total_timesteps):
+        logger_tb.global_step = step
 
+        # High-level skill switch
+        if step % H == 0:
+            skill_id = select_skill(manager_params, manager_net, obs, cfg)
+            skill_oh = one_hot(skill_id, cfg.skills)
+
+        # Policy act
+        obs_skill = np.concatenate([obs.astype(np.float32), skill_oh], axis=-1)
+        key, sub = random.split(key)
+        act, logp, v = policy_net.apply(policy_params, jnp.expand_dims(jnp.asarray(obs_skill), 0), sub)
+        next_obs, r, done, trunc, _ = env.step(np.asarray(act[0]))
+        total_return += float(r)
+
+        # TD target (1-step GAE-lite)
+        next_obs_skill = np.concatenate([next_obs.astype(np.float32), skill_oh], axis=-1)
+        _, _, v_next = policy_net.apply(policy_params, jnp.expand_dims(jnp.asarray(next_obs_skill), 0), sub)
+        td_target = float(r) + (0.0 if (done or trunc) else gamma * float(v_next[0]))
+        adv = td_target - float(v[0])
+
+        # PPO single-step update (your structure preserved)
+        batch = (
+            jnp.expand_dims(jnp.asarray(obs_skill), 0),
+            jnp.expand_dims(jnp.asarray(act[0]), 0),
+            jnp.asarray([adv], dtype=jnp.float32),
+            jnp.asarray([float(logp[0])], dtype=jnp.float32),
+            jnp.asarray([td_target], dtype=jnp.float32),
+        )
+        policy_params, opt_state = ppo_update(policy_params, opt_state, batch, sub)
+
+        # Log basics
+        logger_tb.log_scalar("train/return", total_return)
+        logger_tb.log_scalar("train/advantage", float(adv))
+
+        # Roll
+        obs = next_obs
+        if done or trunc:
+            obs, _ = env.reset()
+            skill_id = select_skill(manager_params, manager_net, obs, cfg)
+            skill_oh = one_hot(skill_id, cfg.skills)
+
+        # ES update + eval video
+        if (step + 1) % 10000 == 0:
+            logger.info("[ES] Updating manager with OpenES...")
+            manager_params, es_stats = es_update(lambda: make_env(cfg.env_id, cfg.seed)(),
+                                                 manager_params, manager_net,
+                                                 policy_params, policy_net, cfg)
+            mean_r = np.mean([0.5*(rp+rm) for rp, rm in es_stats]) if len(es_stats) else 0.0
+            logger.info(f"[ES] mean pair return ~ {mean_r:.2f}")
+            logger_tb.log_scalar("es/mean_pair_return", float(mean_r))
+            logger_tb.record_eval_video(cfg.env_id, policy_net, policy_params, manager_net, manager_params)
+
+        if (step + 1) % 5000 == 0:
+            logger.info(f"Step {step+1} | running return ~ {total_return:.2f}")
+
+    env.close()
+    logger_tb.close()
 
 if __name__ == "__main__":
-    main()
+    cfg = Config()
+    train(cfg)

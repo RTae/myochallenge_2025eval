@@ -13,6 +13,7 @@ services:
       - EGL_DEVICE_ID=0
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=graphics,utility,compute
+      - TOTAL_TIMESTEPS=30_000_000
     volumes:
       - ./logs:/app/logs
     tty: true
