@@ -11,6 +11,9 @@ from myosuite.utils import gym
 from config import Config
 from utils.callbacks import VideoCallback
 
+os.environ["MUJOCO_GL"] = "egl"
+os.environ.pop("DISPLAY", None)  # ensure no X11 display is used
+
 # =====================================================
 #  Vector Env Factory
 # =====================================================
@@ -79,7 +82,7 @@ def train(cfg: Config):
         env=vec_env,
         learning_rate=cfg.ppo_lr,
         n_steps=getattr(cfg, "n_steps", 2048 // n_envs * n_envs),
-        batch_size=getattr(cfg, "ppo_batch_size", 64),
+        batch_size=getattr(cfg, "n_steps", 2048 // n_envs * n_envs) * n_envs,
         n_epochs=getattr(cfg, "ppo_epochs", 10),
         gamma=getattr(cfg, "ppo_gamma", 0.99),
         gae_lambda=getattr(cfg, "gae_lambda", 0.95),
@@ -91,6 +94,7 @@ def train(cfg: Config):
         tensorboard_log=exp_dir,
         policy_kwargs=policy_kwargs,
         verbose=1,
+        device='cpu',
     )
 
     # --- Callbacks: Video + Evaluation ---
@@ -101,7 +105,7 @@ def train(cfg: Config):
         env_id=cfg.env_id,
         seed=cfg.seed,
         logdir=exp_dir,
-        video_freq=getattr(cfg, "video_freq", 50_000) // n_envs,
+        video_freq=getattr(cfg, "video_freq", 50_000),
         eval_episodes=getattr(cfg, "eval_episodes", 1),
         verbose=0,
     )
@@ -110,7 +114,7 @@ def train(cfg: Config):
         eval_env=eval_env,
         best_model_save_path=exp_dir,
         log_path=exp_dir,
-        eval_freq=getattr(cfg, "eval_freq", 25_000) // n_envs,
+        eval_freq=getattr(cfg, "eval_freq", 25_000),
         deterministic=True,
         render=False,
     )
