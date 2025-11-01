@@ -62,7 +62,7 @@ def train(cfg: Config):
 
     # --- Vec envs ---
     cpus = os.cpu_count() or 4
-    n_envs = max(1, min(cfg.n_envs, cpus)) if hasattr(cfg, "n_envs") else min(8, cpus)
+    n_envs = max(cfg.n_envs, cpus)
     logger.info(f"Using {n_envs} envs")
 
     vec_env = make_vec_env(cfg.env_id, cfg.seed, n_envs)
@@ -125,7 +125,7 @@ def train(cfg: Config):
     # --- Save artifacts ---
     save_path = os.path.join(exp_dir, "ppo_policy.zip")
     model.save(save_path)
-    logger.info(f"✅ Saved model to {save_path}")
+    logger.info(f"Saved model to {save_path}")
 
     # Close envs
     vec_env.close()
