@@ -3,7 +3,7 @@ from dataclasses import dataclass
 @dataclass
 class Config:
     env_id: str = "myoChallengeTableTennisP2-v0"
-    total_timesteps: int = 100_000
+    total_timesteps: int = 10_000_000
     seed: int = 42
     n_envs: int = 4
     ppo_lr: float = 3e-4
@@ -15,13 +15,11 @@ class Config:
     policy_hidden: int = 256
     value_hidden: int = 256
     norm_clip: float = 10.0
-    # Added for HRL+ES flow used below
     skills: int = 4
     es_batch: int = 8
     es_sigma: float = 0.1
     es_alpha: float = 0.02
     horizon_H: int = 20
-    # Logging
     logdir: str = "./logs/exp_temp"
     video_freq: int = 10_000
     eval_episodes: int = 2

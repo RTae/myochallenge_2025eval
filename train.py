@@ -5,27 +5,26 @@ import os, time, numpy as np, jax, jax.numpy as jnp
 from jax import random
 import optax, flax.linen as nn, distrax
 from tqdm.auto import trange
+
 from myosuite.utils import gym
-from gymnasium.vector import SyncVectorEnv
+from stable_baselines3.common.vec_env import SubprocVecEnv
 from utils.callbacks import VideoMetricLogger
 from utils.model_helper import one_hot, sample_noise_like, tree_add, tree_scale, select_skill
 
-# Headless mujoco (no X11)
+# =====================================================
+#  Runtime configuration
+# =====================================================
 os.environ["MUJOCO_GL"] = "egl"
 os.environ.pop("DISPLAY", None)
-
-# Limit threading in physics/BLAS to avoid oversubscription
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
-
-# JAX GPU memory handling (optional: avoid preallocating all VRAM)
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 
-# =========================
+# =====================================================
 #  NETWORKS
-# =========================
+# =====================================================
 class MLP(nn.Module):
     features: Tuple[int, ...]
     @nn.compact
@@ -58,22 +57,23 @@ class Manager(nn.Module):
         x = nn.relu(nn.Dense(self.hidden)(x))
         return nn.Dense(self.skills)(x)
 
-# =========================
-#  VECTOR ENV (SyncVectorEnv)
-# =========================
+# =====================================================
+#  VECTOR ENV (multiprocess)
+# =====================================================
 def make_vec_env(env_id, seed, n_envs):
+    """Create parallel MyoSuite envs using subprocesses for true CPU parallelism."""
     def make_one(i):
         def _factory():
-            e = gym.make(env_id)
+            e = gym.make(env_id, render_mode=None)
             e = gym.wrappers.RecordEpisodeStatistics(e)
             e.reset(seed=seed + i)
             return e
         return _factory
-    return SyncVectorEnv([make_one(i) for i in range(n_envs)])
+    return SubprocVecEnv([make_one(i) for i in range(n_envs)])
 
-# =========================
+# =====================================================
 #  EVOLUTION STRATEGY
-# =========================
+# =====================================================
 def es_evaluate(env, mgr_p, mgr_n, pol_p, pol_n, cfg, steps: int):
     obs, _ = env.reset()
     total = 0.0
@@ -107,18 +107,17 @@ def es_update(make_env, mp, mn, pp, pn, cfg):
         r_m = es_evaluate(envm, p_minus, mn, pp, pn, cfg, steps=512)
         rewards.append((r_p, r_m))
         g_i = tree_scale(eps, (r_p - r_m) / (2 * cfg.es_sigma))
-        g_acc = jax.tree_util.tree_map(lambda a,b: a + b, g_acc, g_i)
+        g_acc = jax.tree_util.tree_map(lambda a, b: a + b, g_acc, g_i)
         envp.close(); envm.close()
     g_acc = tree_scale(g_acc, cfg.es_alpha / float(cfg.es_batch))
     return tree_add(mp, g_acc), rewards
 
-# =========================
-#  TRAIN (PPO + ES + HRL) with CPU-friendly defaults
-# =========================
+# =====================================================
+#  TRAIN (PPO + ES + HRL)
+# =====================================================
 def _choose_n_envs():
     """Heuristic: MuJoCo scales best around 4–8 envs per socket."""
     cpus = os.cpu_count() or 4
-    # use ~1/3 of cores, clamp to [4, 8]
     return max(4, min(8, max(1, cpus // 3)))
 
 def train(cfg: Config):
@@ -129,15 +128,16 @@ def train(cfg: Config):
     os.makedirs(exp_dir, exist_ok=True)
     cfg.logdir = exp_dir
 
-    # --- Parallel env count (heuristic) ---
-    n_envs = _choose_n_envs() if getattr(cfg, "n_envs", None) in (None, 0) else cfg.n_envs
-    logger.info(f"📁 {exp_dir} | n_envs={n_envs} | OMP_NUM_THREADS={os.environ.get('OMP_NUM_THREADS')}")
+    n_envs = cfg.n_envs or _choose_n_envs()
+    logger.info(f"📁 {exp_dir} | using {n_envs} SubprocVecEnv workers")
 
     # --- Create vectorized MyoSuite env ---
     env = make_vec_env(cfg.env_id, cfg.seed, n_envs)
-    obs, _ = env.reset()
+    obs = env.reset()
+    if isinstance(obs, tuple):  # Gymnasium compatibility
+        obs = obs[0]
     obs_dim = obs.shape[1]
-    act_dim = env.single_action_space.shape[0]
+    act_dim = env.action_space.shape[0]
 
     # --- Networks ---
     input_dim = obs_dim + cfg.skills
@@ -173,12 +173,9 @@ def train(cfg: Config):
     # --- Train loop ---
     H = cfg.horizon_H
     ep_ret = np.zeros((n_envs,), np.float32)
-
-    # initial skills
     sk_ids = select_skill(mgr_p, mgr_net, obs, cfg.skills)
     sk_oh  = one_hot(sk_ids, cfg.skills)
 
-    # steps/sec meter
     t0 = time.time()
     steps_acc = 0
 
@@ -211,38 +208,38 @@ def train(cfg: Config):
         )
         pol_p, opt_state, met = ppo_update(pol_p, opt_state, batch, sub)
 
-        # logging
         tb.log_scalar("train/return", float(np.mean(ep_ret)))
         tb.log_scalar("train/actor_loss", float(met["actor_loss"]))
         tb.log_scalar("train/critic_loss", float(met["critic_loss"]))
         tb.log_scalar("train/entropy", float(met["entropy"]))
         tb.log_scalar("train/value_mean", float(met["value_mean"]))
 
-        # partial reset (Gymnasium: reset selected indices returns full batch)
         if np.any(done):
-            next_obs, _ = env.reset(seed=None, options={"indices": np.where(done)[0]})
+            next_obs = env.reset_done(done)
+            if isinstance(next_obs, tuple):
+                next_obs = next_obs[0]
             tb.log_scalar("custom/episodic_return", float(np.mean(ep_ret[done])))
             ep_ret[done] = 0.0
 
         obs = next_obs
 
-        # steps/sec meter (every ~5k env-steps)
+        # Performance log
         steps_acc += n_envs
         if steps_acc >= 5000:
             dt = time.time() - t0
-            tb.log_scalar("sys/env_steps_per_sec", float(steps_acc / max(dt, 1e-6)))
-            logger.info(f"⚡ {steps_acc / max(dt, 1e-6):.0f} env-steps/sec @ n_envs={n_envs}")
-            steps_acc = 0
+            rate = steps_acc / max(dt, 1e-6)
+            tb.log_scalar("sys/env_steps_per_sec", float(rate))
+            logger.info(f"⚡ {rate:.0f} env-steps/sec @ {n_envs} envs")
             t0 = time.time()
+            steps_acc = 0
 
-        # infrequent ES manager update + video
-        if (step + 1) % 10000 == 0:
-            logger.info("[ES] manager update")
+        # Periodic ES update + video
+        if (step + 1) % cfg.video_freq == 0:
+            logger.info("[ES] manager update + video checkpoint")
             mgr_p, stats = es_update(lambda: gym.make(cfg.env_id), mgr_p, mgr_net, pol_p, pol_net, cfg)
-            m_r = np.mean([0.5 * (rp + rm) for rp, rm in stats]) if stats else 0.0
-            tb.log_scalar("es/mean_pair_return", float(m_r))
-            if (step + 1) % (10 * 10000) == 0:
-                tb.record_eval_video(cfg.env_id, pol_net, pol_p, mgr_net, mgr_p)
+            mean_r = np.mean([0.5 * (rp + rm) for rp, rm in stats]) if stats else 0.0
+            tb.log_scalar("es/mean_pair_return", float(mean_r))
+            tb.record_eval_video(cfg.env_id, pol_net, pol_p, mgr_net, mgr_p)
 
     env.close()
     tb.close()
