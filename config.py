@@ -3,7 +3,7 @@ from dataclasses import dataclass
 @dataclass
 class Config:
     env_id: str = "myoChallengeTableTennisP2-v0"
-    total_timesteps: int = 1_000_000
+    total_timesteps: int = 100_000
     seed: int = 42
     n_envs: int = 4
     ppo_lr: float = 3e-4

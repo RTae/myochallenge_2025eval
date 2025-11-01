@@ -15,6 +15,8 @@ from tqdm.auto import trange
 from myosuite.utils import gym
 from utils.callbacks import JaxVideoMetricLogger
 
+os.environ["MUJOCO_GL"] = "egl"
+os.environ["DISPLAY"] = ":0"
 
 # =====================================================
 #  SAFE OBSERVATION WRAPPER
