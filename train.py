@@ -79,7 +79,7 @@ def train(cfg: Config):
         env=vec_env,
         learning_rate=cfg.ppo_lr,
         n_steps=getattr(cfg, "n_steps", 2048 // n_envs * n_envs),
-        batch_size=getattr(cfg, "batch_size", 64),
+        batch_size=getattr(cfg, "ppo_batch_size", 64),
         n_epochs=getattr(cfg, "ppo_epochs", 10),
         gamma=getattr(cfg, "ppo_gamma", 0.99),
         gae_lambda=getattr(cfg, "gae_lambda", 0.95),

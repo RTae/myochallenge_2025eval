@@ -10,7 +10,7 @@ class Config:
     ppo_gamma: float = 0.99
     ppo_clip: float = 0.2
     ppo_update_epochs: int = 4
-    ppo_batch_size: int = 256
+    ppo_batch_size: int = 64
     ppo_lambda: float = 0.95
     policy_hidden: int = 256
     value_hidden: int = 256
