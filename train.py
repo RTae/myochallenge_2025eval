@@ -196,26 +196,41 @@ def train(cfg: Config):
     clip = cfg.ppo_clip
     logger_tb = JaxVideoMetricLogger(cfg)
 
-    # === PPO loss/update ===
-    def ppo_loss(params, obs_skill, actions, adv, old_logp, returns, key):
-        a, logp, v = policy_net.apply(params, obs_skill, key)
+    # === PPO loss with aux metrics (actor, critic, entropy) ===
+    def ppo_loss_and_metrics(params, obs_skill, actions, adv, old_logp, returns, key_rng):
+        a, logp, v = policy_net.apply(params, obs_skill, key_rng)
+        # ratio using sampled actions' logp vs old_logp
         ratio = jnp.exp(logp - old_logp)
         clip_adv = jnp.clip(ratio, 1 - clip, 1 + clip) * adv
-        policy_loss = -jnp.mean(jnp.minimum(ratio * adv, clip_adv))
-        value_loss = jnp.mean((returns - v) ** 2)
+
+        actor_loss = -jnp.mean(jnp.minimum(ratio * adv, clip_adv))
+        critic_loss = jnp.mean((returns - v) ** 2)
         entropy = -jnp.mean(logp)
-        return policy_loss + 0.5 * value_loss - 0.01 * entropy
+
+        total = actor_loss + 0.5 * critic_loss - 0.01 * entropy
+        metrics = {
+            "actor_loss": actor_loss,
+            "critic_loss": critic_loss,
+            "entropy": entropy,
+            "value_mean": jnp.mean(v),
+        }
+        return total, metrics
 
     @jax.jit
-    def ppo_update(params, opt_state, batch, key):
-        grads = jax.grad(ppo_loss)(params, *batch, key)
+    def ppo_update(params, opt_state, batch, key_rng):
+        (loss, metrics), grads = jax.value_and_grad(ppo_loss_and_metrics, has_aux=True)(
+            params, *batch, key_rng
+        )
         updates, opt_state = optimizer.update(grads, opt_state)
         new_params = optax.apply_updates(params, updates)
-        return new_params, opt_state
+        return new_params, opt_state, metrics
 
     # === Training ===
     H = cfg.horizon_H
     total_return = 0.0
+    episode_return = 0.0
+    success_flag = 0.0  # track last episode's success if provided by env
+
     skill_id = select_skill(manager_params, manager_net, obs, cfg)
     skill_oh = one_hot(skill_id, cfg.skills)
 
@@ -230,8 +245,13 @@ def train(cfg: Config):
         obs_skill = np.concatenate([obs.astype(np.float32), skill_oh], axis=-1)
         key, sub = random.split(key)
         act, logp, v = policy_net.apply(policy_params, jnp.expand_dims(jnp.asarray(obs_skill), 0), sub)
-        next_obs, r, done, trunc, _ = env.step(np.asarray(act[0]))
+
+        # unpack info to read 'solved'
+        next_obs, r, done, trunc, info = env.step(np.asarray(act[0]))
         total_return += float(r)
+        episode_return += float(r)
+        if isinstance(info, dict):
+            success_flag = float(info.get("solved", success_flag))
 
         next_obs_skill = np.concatenate([next_obs.astype(np.float32), skill_oh], axis=-1)
         _, _, v_next = policy_net.apply(policy_params, jnp.expand_dims(jnp.asarray(next_obs_skill), 0), sub)
@@ -245,13 +265,23 @@ def train(cfg: Config):
             jnp.asarray([float(logp[0])], dtype=jnp.float32),
             jnp.asarray([td_target], dtype=jnp.float32),
         )
-        policy_params, opt_state = ppo_update(policy_params, opt_state, batch, sub)
+        policy_params, opt_state, ppo_metrics = ppo_update(policy_params, opt_state, batch, sub)
 
+        # --- Step-wise logs (return vs timestep; losses) ---
         logger_tb.log_scalar("train/return", total_return)
         logger_tb.log_scalar("train/advantage", float(adv))
+        logger_tb.log_scalar("train/actor_loss", float(ppo_metrics["actor_loss"]))
+        logger_tb.log_scalar("train/critic_loss", float(ppo_metrics["critic_loss"]))
+        logger_tb.log_scalar("train/entropy", float(ppo_metrics["entropy"]))
+        logger_tb.log_scalar("train/value_mean", float(ppo_metrics["value_mean"]))
 
         obs = next_obs
         if done or trunc:
+            # --- Episode-end logs: episodic return + success rate ---
+            logger_tb.log_scalar("custom/episodic_return", episode_return)
+            logger_tb.log_scalar("custom/success_rate_vs_step", success_flag)
+            episode_return = 0.0
+            success_flag = 0.0
             obs, _ = env.reset()
             skill_id = select_skill(manager_params, manager_net, obs, cfg)
             skill_oh = one_hot(skill_id, cfg.skills)
