@@ -64,7 +64,7 @@ def make_vec_env(env_id, seed, n_envs):
     """Create parallel MyoSuite envs using subprocesses for true CPU parallelism."""
     def make_one(i):
         def _factory():
-            e = gym.make(env_id, render_mode=None)
+            e = gym.make(env_id)
             e = gym.wrappers.RecordEpisodeStatistics(e)
             e.reset(seed=seed + i)
             return e
@@ -186,8 +186,7 @@ def train(cfg: Config):
         key, sub = random.split(key)
         acts, logp, v = pol_net.apply(pol_p, jnp.asarray(obs_s), sub)
 
-        next_obs, rew, done, trunc, info = env.step(np.asarray(acts))
-        done = np.logical_or(done, trunc)
+        next_obs, rew, done, info = env.step(np.asarray(acts))
         ep_ret += rew
 
         obs_s2 = np.concatenate([next_obs.astype(np.float32), sk_oh], 1)
