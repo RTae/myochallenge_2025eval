@@ -1,7 +1,7 @@
 from config import Config
 from loguru import logger
 from typing import Tuple
-import os, numpy as np, jax, jax.numpy as jnp
+import os, time, numpy as np, jax, jax.numpy as jnp
 from jax import random
 import optax, flax.linen as nn, distrax
 from tqdm.auto import trange
@@ -10,12 +10,22 @@ from gymnasium.vector import SyncVectorEnv
 from utils.callbacks import VideoMetricLogger
 from utils.model_helper import one_hot, sample_noise_like, tree_add, tree_scale, select_skill
 
+# Headless mujoco (no X11)
 os.environ["MUJOCO_GL"] = "egl"
-os.environ["DISPLAY"] = ":0"
+os.environ.pop("DISPLAY", None)
 
-# =====================================================
+# Limit threading in physics/BLAS to avoid oversubscription
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+
+# JAX GPU memory handling (optional: avoid preallocating all VRAM)
+os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+
+# =========================
 #  NETWORKS
-# =====================================================
+# =========================
 class MLP(nn.Module):
     features: Tuple[int, ...]
     @nn.compact
@@ -48,9 +58,9 @@ class Manager(nn.Module):
         x = nn.relu(nn.Dense(self.hidden)(x))
         return nn.Dense(self.skills)(x)
 
-# =====================================================
-#  VECTOR ENV (AsyncVectorEnv)
-# =====================================================
+# =========================
+#  VECTOR ENV (SyncVectorEnv)
+# =========================
 def make_vec_env(env_id, seed, n_envs):
     def make_one(i):
         def _factory():
@@ -61,9 +71,9 @@ def make_vec_env(env_id, seed, n_envs):
         return _factory
     return SyncVectorEnv([make_one(i) for i in range(n_envs)])
 
-# =====================================================
+# =========================
 #  EVOLUTION STRATEGY
-# =====================================================
+# =========================
 def es_evaluate(env, mgr_p, mgr_n, pol_p, pol_n, cfg, steps: int):
     obs, _ = env.reset()
     total = 0.0
@@ -90,10 +100,10 @@ def es_update(make_env, mp, mn, pp, pn, cfg):
     for _ in range(cfg.es_batch):
         k, k1 = random.split(k)
         eps = sample_noise_like(k1, mp)
-        p_plus = tree_add(mp, tree_scale(eps,  cfg.es_sigma))
+        p_plus  = tree_add(mp, tree_scale(eps,  cfg.es_sigma))
         p_minus = tree_add(mp, tree_scale(eps, -cfg.es_sigma))
         envp, envm = make_env(), make_env()
-        r_p = es_evaluate(envp, p_plus, mn, pp, pn, cfg, steps=512)
+        r_p = es_evaluate(envp, p_plus,  mn, pp, pn, cfg, steps=512)
         r_m = es_evaluate(envm, p_minus, mn, pp, pn, cfg, steps=512)
         rewards.append((r_p, r_m))
         g_i = tree_scale(eps, (r_p - r_m) / (2 * cfg.es_sigma))
@@ -102,19 +112,26 @@ def es_update(make_env, mp, mn, pp, pn, cfg):
     g_acc = tree_scale(g_acc, cfg.es_alpha / float(cfg.es_batch))
     return tree_add(mp, g_acc), rewards
 
-# =====================================================
-#  TRAIN (PPO + ES + HRL)
-# =====================================================
-def train(cfg: Config):
-    base_dir="./logs"; os.makedirs(base_dir,exist_ok=True)
-    exps=[int(d[3:]) for d in os.listdir(base_dir) if d.startswith("exp") and d[3:].isdigit()]
-    exp_dir=os.path.join(base_dir,f"exp{max(exps)+1 if exps else 1}")
-    os.makedirs(exp_dir,exist_ok=True)
-    cfg.logdir=exp_dir
+# =========================
+#  TRAIN (PPO + ES + HRL) with CPU-friendly defaults
+# =========================
+def _choose_n_envs():
+    """Heuristic: MuJoCo scales best around 4–8 envs per socket."""
+    cpus = os.cpu_count() or 4
+    # use ~1/3 of cores, clamp to [4, 8]
+    return max(4, min(8, max(1, cpus // 3)))
 
-    n_cpus=os.cpu_count() or 4
-    n_envs=4
-    logger.info(f"📁 {exp_dir} | training with {n_envs} environments, on {n_cpus} CPUs")
+def train(cfg: Config):
+    # --- Auto-increment logdir ---
+    base_dir = "./logs"; os.makedirs(base_dir, exist_ok=True)
+    exps = [int(d[3:]) for d in os.listdir(base_dir) if d.startswith("exp") and d[3:].isdigit()]
+    exp_dir = os.path.join(base_dir, f"exp{max(exps)+1 if exps else 1}")
+    os.makedirs(exp_dir, exist_ok=True)
+    cfg.logdir = exp_dir
+
+    # --- Parallel env count (heuristic) ---
+    n_envs = _choose_n_envs() if getattr(cfg, "n_envs", None) in (None, 0) else cfg.n_envs
+    logger.info(f"📁 {exp_dir} | n_envs={n_envs} | OMP_NUM_THREADS={os.environ.get('OMP_NUM_THREADS')}")
 
     # --- Create vectorized MyoSuite env ---
     env = make_vec_env(cfg.env_id, cfg.seed, n_envs)
@@ -123,87 +140,113 @@ def train(cfg: Config):
     act_dim = env.single_action_space.shape[0]
 
     # --- Networks ---
-    input_dim=obs_dim+cfg.skills
-    key=random.PRNGKey(cfg.seed)
-    pol_net=PolicyValueNet(cfg.policy_hidden, act_dim)
-    pol_p=pol_net.init(key,jnp.zeros((1,input_dim)),key)
-    opt=optax.adam(cfg.ppo_lr)
-    opt_state=opt.init(pol_p)
+    input_dim = obs_dim + cfg.skills
+    key = random.PRNGKey(cfg.seed)
+    pol_net = PolicyValueNet(cfg.policy_hidden, act_dim)
+    pol_p   = pol_net.init(key, jnp.zeros((1, input_dim)), key)
+    opt     = optax.adam(cfg.ppo_lr)
+    opt_state = opt.init(pol_p)
 
-    mgr_net=Manager(cfg.policy_hidden,cfg.skills)
-    mgr_p=mgr_net.init(random.PRNGKey(cfg.seed+999),jnp.zeros((1,obs_dim)))
+    mgr_net = Manager(cfg.policy_hidden, cfg.skills)
+    mgr_p   = mgr_net.init(random.PRNGKey(cfg.seed + 999), jnp.zeros((1, obs_dim)))
 
-    gamma,clip=cfg.ppo_gamma,cfg.ppo_clip
-    tb=VideoMetricLogger(cfg)
+    gamma, clip = cfg.ppo_gamma, cfg.ppo_clip
+    tb = VideoMetricLogger(cfg)
 
     # --- PPO loss ---
     def ppo_loss(params, obs_s, act, adv, oldlp, ret, rng):
         a, lp, v = pol_net.apply(params, obs_s, rng)
-        ratio = jnp.exp(lp - oldlp)
-        clip_adv = jnp.clip(ratio, 1-clip, 1+clip)*adv
-        actor = -jnp.mean(jnp.minimum(ratio*adv, clip_adv))
-        critic = jnp.mean((ret-v)**2)
-        ent = -jnp.mean(lp)
-        total = actor + 0.5*critic - 0.01*ent
+        ratio    = jnp.exp(lp - oldlp)
+        clip_adv = jnp.clip(ratio, 1 - clip, 1 + clip) * adv
+        actor    = -jnp.mean(jnp.minimum(ratio * adv, clip_adv))
+        critic   = jnp.mean((ret - v) ** 2)
+        ent      = -jnp.mean(lp)
+        total    = actor + 0.5 * critic - 0.01 * ent
         return total, dict(actor_loss=actor, critic_loss=critic, entropy=ent, value_mean=jnp.mean(v))
 
     @jax.jit
     def ppo_update(p, s, b, k):
-        (l,m),g=jax.value_and_grad(ppo_loss,has_aux=True)(p,*b,k)
-        u,s=opt.update(g,s)
-        return optax.apply_updates(p,u),s,m
+        (l, m), g = jax.value_and_grad(ppo_loss, has_aux=True)(p, *b, k)
+        u, s = opt.update(g, s)
+        return optax.apply_updates(p, u), s, m
 
-    H=cfg.horizon_H
-    ep_ret=np.zeros((n_envs,),np.float32)
+    # --- Train loop ---
+    H = cfg.horizon_H
+    ep_ret = np.zeros((n_envs,), np.float32)
 
-    sk_ids=select_skill(mgr_p,mgr_net,obs,cfg.skills)
-    sk_oh=one_hot(sk_ids,cfg.skills)
+    # initial skills
+    sk_ids = select_skill(mgr_p, mgr_net, obs, cfg.skills)
+    sk_oh  = one_hot(sk_ids, cfg.skills)
 
-    for step in trange(cfg.total_timesteps):
-        tb.global_step=step
-        if step%H==0:
-            sk_ids=select_skill(mgr_p,mgr_net,obs,cfg.skills)
-            sk_oh=one_hot(sk_ids,cfg.skills)
+    # steps/sec meter
+    t0 = time.time()
+    steps_acc = 0
 
-        obs_s=np.concatenate([obs.astype(np.float32),sk_oh],1)
-        key,sub=random.split(key)
-        acts,logp,v=pol_net.apply(pol_p,jnp.asarray(obs_s),sub)
-        next_obs,rew,done,trunc,info=env.step(np.asarray(acts))
-        done=np.logical_or(done,trunc)
-        ep_ret+=rew
-        obs_s2=np.concatenate([next_obs.astype(np.float32),sk_oh],1)
-        _,_,v2=pol_net.apply(pol_p,jnp.asarray(obs_s2),sub)
-        td=rew+gamma*np.asarray(v2)*(~done)
-        adv=td-np.asarray(v)
+    for step in trange(cfg.total_timesteps, desc="training"):
+        tb.global_step = step
 
-        batch=(jnp.asarray(obs_s),jnp.asarray(acts),jnp.asarray(adv),
-               jnp.asarray(logp),jnp.asarray(td))
-        pol_p,opt_state,met=ppo_update(pol_p,opt_state,batch,sub)
+        if step % H == 0:
+            sk_ids = select_skill(mgr_p, mgr_net, obs, cfg.skills)
+            sk_oh  = one_hot(sk_ids, cfg.skills)
 
-        tb.log_scalar("train/return",float(np.mean(ep_ret)))
-        tb.log_scalar("train/actor_loss",float(met["actor_loss"]))
-        tb.log_scalar("train/critic_loss",float(met["critic_loss"]))
-        tb.log_scalar("train/entropy",float(met["entropy"]))
-        tb.log_scalar("train/value_mean",float(met["value_mean"]))
+        obs_s = np.concatenate([obs.astype(np.float32), sk_oh], 1)
+        key, sub = random.split(key)
+        acts, logp, v = pol_net.apply(pol_p, jnp.asarray(obs_s), sub)
 
+        next_obs, rew, done, trunc, info = env.step(np.asarray(acts))
+        done = np.logical_or(done, trunc)
+        ep_ret += rew
+
+        obs_s2 = np.concatenate([next_obs.astype(np.float32), sk_oh], 1)
+        _, _, v2 = pol_net.apply(pol_p, jnp.asarray(obs_s2), sub)
+        td  = rew + gamma * np.asarray(v2) * (~done)
+        adv = td - np.asarray(v)
+
+        batch = (
+            jnp.asarray(obs_s),
+            jnp.asarray(acts),
+            jnp.asarray(adv),
+            jnp.asarray(logp),
+            jnp.asarray(td),
+        )
+        pol_p, opt_state, met = ppo_update(pol_p, opt_state, batch, sub)
+
+        # logging
+        tb.log_scalar("train/return", float(np.mean(ep_ret)))
+        tb.log_scalar("train/actor_loss", float(met["actor_loss"]))
+        tb.log_scalar("train/critic_loss", float(met["critic_loss"]))
+        tb.log_scalar("train/entropy", float(met["entropy"]))
+        tb.log_scalar("train/value_mean", float(met["value_mean"]))
+
+        # partial reset (Gymnasium: reset selected indices returns full batch)
         if np.any(done):
-            # reset only the finished envs using mask
             next_obs, _ = env.reset(seed=None, options={"indices": np.where(done)[0]})
             tb.log_scalar("custom/episodic_return", float(np.mean(ep_ret[done])))
-            ep_ret[done] = 0
+            ep_ret[done] = 0.0
 
-        obs=next_obs
+        obs = next_obs
 
-        if (step+1)%10000==0:
+        # steps/sec meter (every ~5k env-steps)
+        steps_acc += n_envs
+        if steps_acc >= 5000:
+            dt = time.time() - t0
+            tb.log_scalar("sys/env_steps_per_sec", float(steps_acc / max(dt, 1e-6)))
+            logger.info(f"⚡ {steps_acc / max(dt, 1e-6):.0f} env-steps/sec @ n_envs={n_envs}")
+            steps_acc = 0
+            t0 = time.time()
+
+        # infrequent ES manager update + video
+        if (step + 1) % 10000 == 0:
             logger.info("[ES] manager update")
-            mgr_p,stats=es_update(lambda: gym.make(cfg.env_id), mgr_p,mgr_net,pol_p,pol_net,cfg)
-            m_r=np.mean([0.5*(rp+rm) for rp,rm in stats]) if stats else 0
-            tb.log_scalar("es/mean_pair_return",float(m_r))
-            tb.record_eval_video(cfg.env_id,pol_net,pol_p,mgr_net,mgr_p)
+            mgr_p, stats = es_update(lambda: gym.make(cfg.env_id), mgr_p, mgr_net, pol_p, pol_net, cfg)
+            m_r = np.mean([0.5 * (rp + rm) for rp, rm in stats]) if stats else 0.0
+            tb.log_scalar("es/mean_pair_return", float(m_r))
+            if (step + 1) % (10 * 10000) == 0:
+                tb.record_eval_video(cfg.env_id, pol_net, pol_p, mgr_net, mgr_p)
 
     env.close()
     tb.close()
 
-if __name__=="__main__":
-    cfg=Config()
+if __name__ == "__main__":
+    cfg = Config()
     train(cfg)
