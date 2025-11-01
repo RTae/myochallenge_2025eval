@@ -6,8 +6,9 @@ from jax import random
 import optax, flax.linen as nn, distrax
 from tqdm.auto import trange
 from myosuite.utils import gym
-from gymnasium.vector import AsyncVectorEnv
-from utils.callbacks import JaxVideoMetricLogger
+from gymnasium.vector import SyncVectorEnv
+from utils.callbacks import VideoMetricLogger
+from utils.model_helper import one_hot, sample_noise_like, tree_add, tree_scale, select_skill
 
 os.environ["MUJOCO_GL"] = "egl"
 os.environ["DISPLAY"] = ":0"
@@ -48,29 +49,9 @@ class Manager(nn.Module):
         return nn.Dense(self.skills)(x)
 
 # =====================================================
-#  HELPERS
-# =====================================================
-def tree_add(a,b): return jax.tree_util.tree_map(lambda x,y:x+y,a,b)
-def tree_scale(a,s): return jax.tree_util.tree_map(lambda x:x*s,a)
-def sample_noise_like(k,t):
-    leaves, td = jax.tree_util.tree_flatten(t)
-    ks = random.split(k, len(leaves))
-    noises = [random.normal(kk, shape=x.shape) for kk,x in zip(ks,leaves)]
-    return jax.tree_util.tree_unflatten(td,noises)
-
-def one_hot_np(ids, n):
-    oh = np.zeros((ids.shape[0], n), dtype=np.float32)
-    oh[np.arange(ids.shape[0]), ids] = 1.0
-    return oh
-
-def select_skill_batch(params, net, obs, nskills):
-    logits = net.apply(params, jnp.asarray(obs))
-    return np.asarray(jnp.argmax(logits, axis=-1))
-
-# =====================================================
 #  VECTOR ENV (AsyncVectorEnv)
 # =====================================================
-def make_vec_env(env_id: str, seed: int, n_envs: int):
+def make_vec_env(env_id, seed, n_envs):
     def make_one(i):
         def _factory():
             e = gym.make(env_id)
@@ -78,7 +59,7 @@ def make_vec_env(env_id: str, seed: int, n_envs: int):
             e.reset(seed=seed + i)
             return e
         return _factory
-    return AsyncVectorEnv([make_one(i) for i in range(n_envs)])
+    return SyncVectorEnv([make_one(i) for i in range(n_envs)])
 
 # =====================================================
 #  EVOLUTION STRATEGY
@@ -87,12 +68,12 @@ def es_evaluate(env, mgr_p, mgr_n, pol_p, pol_n, cfg, steps: int):
     obs, _ = env.reset()
     total = 0.0
     skill = int(jnp.argmax(mgr_n.apply(mgr_p, jnp.expand_dims(jnp.asarray(obs), 0))[0]))
-    skill_oh = one_hot_np(np.array([skill]), cfg.skills)[0]
+    skill_oh = one_hot(np.array([skill]), cfg.skills)[0]
     H = cfg.horizon_H
     for t in range(steps):
         if t % H == 0:
             skill = int(jnp.argmax(mgr_n.apply(mgr_p, jnp.expand_dims(jnp.asarray(obs), 0))[0]))
-            skill_oh = one_hot_np(np.array([skill]), cfg.skills)[0]
+            skill_oh = one_hot(np.array([skill]), cfg.skills)[0]
         obs_s = np.concatenate([obs.astype(np.float32), skill_oh])[None]
         key = random.PRNGKey((t + 7) % 2**31)
         act, _, _ = pol_n.apply(pol_p, jnp.asarray(obs_s), key)
@@ -132,7 +113,7 @@ def train(cfg: Config):
     cfg.logdir=exp_dir
 
     n_cpus=os.cpu_count() or 4
-    n_envs=max(cfg.n_envs, n_cpus)
+    n_envs=4
     logger.info(f"📁 {exp_dir} | training with {n_envs} environments, on {n_cpus} CPUs")
 
     # --- Create vectorized MyoSuite env ---
@@ -153,7 +134,7 @@ def train(cfg: Config):
     mgr_p=mgr_net.init(random.PRNGKey(cfg.seed+999),jnp.zeros((1,obs_dim)))
 
     gamma,clip=cfg.ppo_gamma,cfg.ppo_clip
-    tb=JaxVideoMetricLogger(cfg)
+    tb=VideoMetricLogger(cfg)
 
     # --- PPO loss ---
     def ppo_loss(params, obs_s, act, adv, oldlp, ret, rng):
@@ -175,14 +156,14 @@ def train(cfg: Config):
     H=cfg.horizon_H
     ep_ret=np.zeros((n_envs,),np.float32)
 
-    sk_ids=select_skill_batch(mgr_p,mgr_net,obs,cfg.skills)
-    sk_oh=one_hot_np(sk_ids,cfg.skills)
+    sk_ids=select_skill(mgr_p,mgr_net,obs,cfg.skills)
+    sk_oh=one_hot(sk_ids,cfg.skills)
 
     for step in trange(cfg.total_timesteps):
         tb.global_step=step
         if step%H==0:
-            sk_ids=select_skill_batch(mgr_p,mgr_net,obs,cfg.skills)
-            sk_oh=one_hot_np(sk_ids,cfg.skills)
+            sk_ids=select_skill(mgr_p,mgr_net,obs,cfg.skills)
+            sk_oh=one_hot(sk_ids,cfg.skills)
 
         obs_s=np.concatenate([obs.astype(np.float32),sk_oh],1)
         key,sub=random.split(key)

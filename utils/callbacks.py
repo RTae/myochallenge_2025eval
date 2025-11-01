@@ -11,11 +11,12 @@ from jax import random
 
 from loguru import logger
 from myosuite.utils import gym
+from utils.model_helper import select_skill, one_hot
 
 # =====================================================
 #  TENSORBOARD + VIDEO LOGGER
 # =====================================================
-class JaxVideoMetricLogger:
+class VideoMetricLogger:
     def __init__(self, cfg: Config):
         os.makedirs(cfg.logdir, exist_ok=True)
         self.writer = SummaryWriter(cfg.logdir)
@@ -31,7 +32,7 @@ class JaxVideoMetricLogger:
     def record_eval_video(self, env_id, policy_net, policy_params, manager_net, manager_params):
         if (self.global_step % self.cfg.video_freq) != 0:
             return
-        logger.info(f"🎬 Recording evaluation video at step {self.global_step}")
+        logger.info(f"Recording evaluation video at step {self.global_step}")
         try:
             eval_env = gym.make(env_id)
             frames, ep_rews = [], []

@@ -22,7 +22,7 @@ class Config:
     es_alpha: float = 0.02
     horizon_H: int = 20
     # Logging
-    logdir: str = "./logs/jax_hier"
+    logdir: str = "./logs/exp_temp"
     video_freq: int = 10_000
     eval_episodes: int = 2
     max_eval_frames: int = 300
