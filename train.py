@@ -115,11 +115,6 @@ def es_update(make_env, mp, mn, pp, pn, cfg):
 # =====================================================
 #  TRAIN (PPO + ES + HRL)
 # =====================================================
-def _choose_n_envs():
-    """Heuristic: MuJoCo scales best around 4–8 envs per socket."""
-    cpus = os.cpu_count() or 4
-    return max(4, min(8, max(1, cpus // 3)))
-
 def train(cfg: Config):
     # --- Auto-increment logdir ---
     base_dir = "./logs"; os.makedirs(base_dir, exist_ok=True)
@@ -128,8 +123,9 @@ def train(cfg: Config):
     os.makedirs(exp_dir, exist_ok=True)
     cfg.logdir = exp_dir
 
-    n_envs = cfg.n_envs or _choose_n_envs()
-    logger.info(f"📁 {exp_dir} | using {n_envs} SubprocVecEnv workers")
+    cpus = os.cpu_count() or 4
+    n_envs = cfg.n_envs or max(4, cpus)
+    logger.info(f"📁 {exp_dir} | using {n_envs} envs")
 
     # --- Create vectorized MyoSuite env ---
     env = make_vec_env(cfg.env_id, cfg.seed, n_envs)
