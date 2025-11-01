@@ -5,8 +5,8 @@ import os, numpy as np, jax, jax.numpy as jnp
 from jax import random
 import optax, flax.linen as nn, distrax
 from tqdm.auto import trange
-
-import envpool
+from myosuite.utils import gym
+from gymnasium.vector import AsyncVectorEnv
 from utils.callbacks import JaxVideoMetricLogger
 
 os.environ["MUJOCO_GL"] = "egl"
@@ -23,7 +23,6 @@ class MLP(nn.Module):
             x = nn.relu(nn.Dense(f)(x))
         return nn.Dense(self.features[-1])(x)
 
-# Policy-Value Network
 class PolicyValueNet(nn.Module):
     hidden: int
     act_dim: int
@@ -39,7 +38,6 @@ class PolicyValueNet(nn.Module):
         val = nn.Dense(1)(h)
         return jnp.tanh(act), logp, jnp.squeeze(val, -1)
 
-# Hierarchical RL
 class Manager(nn.Module):
     hidden: int
     skills: int
@@ -50,7 +48,7 @@ class Manager(nn.Module):
         return nn.Dense(self.skills)(x)
 
 # =====================================================
-#  HELPER FUNCTIONS
+#  HELPERS
 # =====================================================
 def tree_add(a,b): return jax.tree_util.tree_map(lambda x,y:x+y,a,b)
 def tree_scale(a,s): return jax.tree_util.tree_map(lambda x:x*s,a)
@@ -70,125 +68,61 @@ def select_skill_batch(params, net, obs, nskills):
     return np.asarray(jnp.argmax(logits, axis=-1))
 
 # =====================================================
+#  VECTOR ENV (AsyncVectorEnv)
+# =====================================================
+def make_vec_env(env_id: str, seed: int, n_envs: int):
+    def make_one(i):
+        def _factory():
+            e = gym.make(env_id)
+            e = gym.wrappers.RecordEpisodeStatistics(e)
+            e.reset(seed=seed + i)
+            return e
+        return _factory
+    return AsyncVectorEnv([make_one(i) for i in range(n_envs)])
+
+# =====================================================
 #  EVOLUTION STRATEGY
 # =====================================================
 def es_evaluate(env, mgr_p, mgr_n, pol_p, pol_n, cfg, steps: int):
-    """
-    Evaluate a given manager parameter set (mgr_p) within one environment instance.
-
-    This function rolls out the environment for a fixed number of steps using:
-        - The manager (mgr_n) to select a discrete skill every H steps
-        - The policy (pol_n) conditioned on that skill to produce continuous actions
-    It returns the total accumulated reward (episodic return).
-
-    Args:
-        env: environment (e.g., EnvPool vectorized with 1 env)
-        mgr_p: current manager parameters (θ)
-        mgr_n: manager network
-        pol_p: current policy parameters
-        pol_n: policy network
-        cfg: configuration object (contains horizon_H, skills, etc.)
-        steps: number of environment steps to simulate
-
-    Returns:
-        total (float): total reward accumulated during evaluation
-    """
-    obs = env.reset().obs
+    obs, _ = env.reset()
     total = 0.0
-
-    # Initial skill selection from manager
-    skill = int(jnp.argmax(mgr_n.apply(mgr_p, jnp.expand_dims(jnp.asarray(obs[0]), 0))[0]))
+    skill = int(jnp.argmax(mgr_n.apply(mgr_p, jnp.expand_dims(jnp.asarray(obs), 0))[0]))
     skill_oh = one_hot_np(np.array([skill]), cfg.skills)[0]
     H = cfg.horizon_H
-
-    # Rollout loop
     for t in range(steps):
-
-        # Periodically resample the high-level skill every H steps
         if t % H == 0:
-            skill = int(jnp.argmax(mgr_n.apply(mgr_p, jnp.expand_dims(jnp.asarray(obs[0]), 0))[0]))
+            skill = int(jnp.argmax(mgr_n.apply(mgr_p, jnp.expand_dims(jnp.asarray(obs), 0))[0]))
             skill_oh = one_hot_np(np.array([skill]), cfg.skills)[0]
-
-        # Concatenate observation with one-hot skill vector → hierarchical input
-        obs_s = np.concatenate([obs[0].astype(np.float32), skill_oh])[None]
-
-        # Sample low-level continuous action from PPO policy
+        obs_s = np.concatenate([obs.astype(np.float32), skill_oh])[None]
         key = random.PRNGKey((t + 7) % 2**31)
         act, _, _ = pol_n.apply(pol_p, jnp.asarray(obs_s), key)
-
-        # Step environment and collect reward
-        obs = env.step(np.asarray(act))[0]
-        total += float(obs.reward[0])
-
-        # Reset if the episode terminates early
-        if obs.done[0]:
-            obs = env.reset()
-
+        obs, r, done, trunc, _ = env.step(np.asarray(act[0]))
+        total += float(r)
+        if done or trunc:
+            obs, _ = env.reset()
     return total
 
-
 def es_update(make_env, mp, mn, pp, pn, cfg):
-    """
-    Evolution Strategies update for the manager network.
-
-    This performs n=cfg.es_batch perturbation evaluations and computes a
-    finite-difference gradient estimate for the manager parameters.
-
-    Args:
-        make_env: callable returning a new single-environment instance
-        mp: current manager parameters θ
-        mn: manager network
-        pp: policy parameters (fixed PPO-trained low-level controller)
-        pn: policy network
-        cfg: configuration with ES hyperparameters (es_batch, es_sigma, es_alpha)
-
-    Returns:
-        (new_mp, rewards): updated manager parameters and list of (r_plus, r_minus) tuples
-    """
     k = random.PRNGKey(cfg.seed + 123)
-    g_acc = jax.tree_util.tree_map(jnp.zeros_like, mp)  # accumulated ES gradient
+    g_acc = jax.tree_util.tree_map(jnp.zeros_like, mp)
     rewards = []
-
-    # Sample perturbations (ε_i) and evaluate in parallel environments
     for _ in range(cfg.es_batch):
         k, k1 = random.split(k)
-
-        # Sample Gaussian noise ε_i for all parameters
         eps = sample_noise_like(k1, mp)
-
-        # Antithetic parameter sets: θ+σε and θ−σε
         p_plus = tree_add(mp, tree_scale(eps,  cfg.es_sigma))
         p_minus = tree_add(mp, tree_scale(eps, -cfg.es_sigma))
-
-        # Create independent environment copies for both evaluations
         envp, envm = make_env(), make_env()
-
-        # Evaluate rewards of perturbed managers
         r_p = es_evaluate(envp, p_plus, mn, pp, pn, cfg, steps=512)
         r_m = es_evaluate(envm, p_minus, mn, pp, pn, cfg, steps=512)
         rewards.append((r_p, r_m))
-
-        # Compute finite-difference gradient contribution
-        #   g_i = (r_plus - r_minus) / (2σ) * ε_i
         g_i = tree_scale(eps, (r_p - r_m) / (2 * cfg.es_sigma))
-
-        # Accumulate estimated gradients across perturbations
-        g_acc = jax.tree_util.tree_map(lambda a, b: a + b, g_acc, g_i)
-
-        # Close environments to free resources
+        g_acc = jax.tree_util.tree_map(lambda a,b: a + b, g_acc, g_i)
         envp.close(); envm.close()
-
-    # Average and scale by learning rate α
     g_acc = tree_scale(g_acc, cfg.es_alpha / float(cfg.es_batch))
-
-    # Update manager parameters: θ ← θ + α * g_acc
-    new_mp = tree_add(mp, g_acc)
-
-    return new_mp, rewards
-
+    return tree_add(mp, g_acc), rewards
 
 # =====================================================
-#  TRAIN : PPO + ES + HRL
+#  TRAIN (PPO + ES + HRL)
 # =====================================================
 def train(cfg: Config):
     base_dir="./logs"; os.makedirs(base_dir,exist_ok=True)
@@ -198,16 +132,16 @@ def train(cfg: Config):
     cfg.logdir=exp_dir
 
     n_cpus=os.cpu_count() or 4
-    n_envs=getattr(cfg, "n_envs", min(28, n_cpus))
-    logger.info(f"📁 {exp_dir} | Using EnvPool {n_envs} envs on {n_cpus} cores")
+    n_envs=max(cfg.n_envs, n_cpus)
+    logger.info(f"📁 {exp_dir} | training with {n_envs} environments, on {n_cpus} CPUs")
 
-    # --- EnvPool vectorized env ---
-    env = envpool.make_gym(cfg.env_id, num_envs=n_envs, batch_size=n_envs)
-    obs = env.reset().obs
+    # --- Create vectorized MyoSuite env ---
+    env = make_vec_env(cfg.env_id, cfg.seed, n_envs)
+    obs, _ = env.reset()
     obs_dim = obs.shape[1]
-    act_dim = env.action_space.shape[0]
+    act_dim = env.single_action_space.shape[0]
 
-    # --- Nets ---
+    # --- Networks ---
     input_dim=obs_dim+cfg.skills
     key=random.PRNGKey(cfg.seed)
     pol_net=PolicyValueNet(cfg.policy_hidden, act_dim)
@@ -221,7 +155,7 @@ def train(cfg: Config):
     gamma,clip=cfg.ppo_gamma,cfg.ppo_clip
     tb=JaxVideoMetricLogger(cfg)
 
-    # PPO loss
+    # --- PPO loss ---
     def ppo_loss(params, obs_s, act, adv, oldlp, ret, rng):
         a, lp, v = pol_net.apply(params, obs_s, rng)
         ratio = jnp.exp(lp - oldlp)
@@ -240,7 +174,6 @@ def train(cfg: Config):
 
     H=cfg.horizon_H
     ep_ret=np.zeros((n_envs,),np.float32)
-    succ=np.zeros((n_envs,),np.float32)
 
     sk_ids=select_skill_batch(mgr_p,mgr_net,obs,cfg.skills)
     sk_oh=one_hot_np(sk_ids,cfg.skills)
@@ -254,8 +187,7 @@ def train(cfg: Config):
         obs_s=np.concatenate([obs.astype(np.float32),sk_oh],1)
         key,sub=random.split(key)
         acts,logp,v=pol_net.apply(pol_p,jnp.asarray(obs_s),sub)
-        trans=env.step(np.asarray(acts))
-        next_obs,rew,done,trunc,info=trans.obs,trans.reward,trans.done,trans.trunc,trans.info
+        next_obs,rew,done,trunc,info=env.step(np.asarray(acts))
         done=np.logical_or(done,trunc)
         ep_ret+=rew
         obs_s2=np.concatenate([next_obs.astype(np.float32),sk_oh],1)
@@ -273,9 +205,10 @@ def train(cfg: Config):
         tb.log_scalar("train/entropy",float(met["entropy"]))
         tb.log_scalar("train/value_mean",float(met["value_mean"]))
 
+        # reset finished envs
         if np.any(done):
-            # reset done envs efficiently
-            next_obs = env.reset_done(done).obs
+            obs_reset, _ = env.reset_done(done)
+            next_obs[done] = obs_reset[done]
             tb.log_scalar("custom/episodic_return",float(np.mean(ep_ret[done])))
             ep_ret[done]=0
 
@@ -283,8 +216,7 @@ def train(cfg: Config):
 
         if (step+1)%10000==0:
             logger.info("[ES] manager update")
-            mgr_p,stats=es_update(lambda: envpool.make_gym(cfg.env_id,num_envs=1,batch_size=1),
-                                  mgr_p,mgr_net,pol_p,pol_net,cfg)
+            mgr_p,stats=es_update(lambda: gym.make(cfg.env_id), mgr_p,mgr_net,pol_p,pol_net,cfg)
             m_r=np.mean([0.5*(rp+rm) for rp,rm in stats]) if stats else 0
             tb.log_scalar("es/mean_pair_return",float(m_r))
             tb.record_eval_video(cfg.env_id,pol_net,pol_p,mgr_net,mgr_p)
