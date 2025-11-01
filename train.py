@@ -210,9 +210,6 @@ def train(cfg: Config):
         tb.log_scalar("train/value_mean", float(met["value_mean"]))
 
         if np.any(done):
-            next_obs = env.reset_done(done)
-            if isinstance(next_obs, tuple):
-                next_obs = next_obs[0]
             tb.log_scalar("custom/episodic_return", float(np.mean(ep_ret[done])))
             ep_ret[done] = 0.0
 
