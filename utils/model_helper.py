@@ -3,6 +3,9 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 from jax import random
+from myosuite.utils import gym
+from typing import Callable
+
 
 # =====================================================
 #  EVOLUTION STRATEGIES HELPERS
@@ -92,3 +95,22 @@ def save_tree(params, path_prefix: str):
 def split_keys(key, n):
     """Convenience wrapper around jax.random.split()."""
     return random.split(key, n)
+
+
+# =====================================================
+#  Minimal Video Helper (gym.wrappers.RecordVideo)
+# =====================================================
+def make_video_env(env_id: str, seed: int, video_dir: str, episode_trigger: Callable[[int], bool]):
+    """
+    Creates a single env wrapped with RecordVideo. SB3 uses monitor for stats; we add it here too.
+    """
+    os.makedirs(video_dir, exist_ok=True)
+
+    def _make():
+        env = gym.make(env_id)
+        env = gym.wrappers.RecordEpisodeStatistics(env)
+        env = gym.wrappers.RecordVideo(env, video_dir=video_dir, episode_trigger=episode_trigger)
+        env.reset(seed=seed)
+        return env
+
+    return _make()
