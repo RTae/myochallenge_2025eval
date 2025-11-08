@@ -1,215 +1,147 @@
 import os
 import numpy as np
-
 from loguru import logger
-from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
-from stable_baselines3.common.utils import set_random_seed
-from stable_baselines3.common.callbacks import EvalCallback
+from concurrent.futures import ProcessPoolExecutor
 from myosuite.utils import gym
 
 from config import Config
 from utils.callbacks import VideoCallback
+from utils.helper import next_exp_dir
 
 os.environ["MUJOCO_GL"] = "egl"
-os.environ.pop("DISPLAY", None)  # ensure no X11 display is used
+os.environ.pop("DISPLAY", None)
+os.environ.setdefault("OMP_NUM_THREADS", "1")
 
-# =====================================================
-#  Auto-increment log dir (unchanged)
-# =====================================================
-def next_exp_dir(base="./logs") -> str:
-    os.makedirs(base, exist_ok=True)
-    exps = [int(d[3:]) for d in os.listdir(base) if d.startswith("exp") and d[3:].isdigit()]
-    exp_dir = os.path.join(base, f"exp{max(exps)+1 if exps else 1}")
-    os.makedirs(exp_dir, exist_ok=True)
-    return exp_dir
+class MorphologyAwareController:
+    """Simple joint-space PD controller mapping posture error to muscle activation."""
+    def __init__(self, env, kp=10.0, kd=2.0):
+        self.env = env
+        self.kp = kp
+        self.kd = kd
 
-
-# =====================================================
-#  Vector Env Factory (supports optional wrapper)
-# =====================================================
-def make_vec_env(env_id: str, seed: int, n_envs: int, wrapper_fn=None) -> SubprocVecEnv:
-    """
-    Create parallel MyoSuite envs using subprocesses for true CPU parallelism.
-    Optionally wraps each env with `wrapper_fn(env) -> env` (e.g., HRL/SHRL wrapper).
-    """
-    def thunk(rank: int):
-        def _init():
-            env = gym.make(env_id)
-            if wrapper_fn is not None:
-                env = wrapper_fn(env)
-            env = gym.wrappers.RecordEpisodeStatistics(env)
-            env.reset(seed=seed + rank)
-            return env
-        return _init
-
-    set_random_seed(seed)
-    return SubprocVecEnv([thunk(i) for i in range(n_envs)])
+    def compute_action(self, q_target):
+        q = self.env.sim.data.qpos.copy()
+        qd = self.env.sim.data.qvel.copy()
+        e_q = q_target - q
+        u = self.kp * e_q - self.kd * qd
+        u = np.tanh(u)
+        return np.clip(u, 0.0, 1.0)
 
 
-# =====================================================
-#  Subgoal Reward Wrapper (HRL / SHRL)
-# =====================================================
-class SubgoalRewardWrapper(gym.Wrapper):
-    """Adds intrinsic reward based on progress toward a periodically refreshed subgoal."""
-    def __init__(self, env, subgoal_interval=10, intrinsic_coef=0.1):
-        super().__init__(env)
-        self.subgoal_interval = max(1, subgoal_interval)
-        self.intrinsic_coef = intrinsic_coef
-        self._t = 0
-        self._subgoal = None
-        self._ext_scale = 1.0  # running magnitude of extrinsic reward for simple normalization
+class ParallelCEMPlanner:
+    """Sampling-based high-level posture planner with parallel rollout evaluation."""
+    def __init__(self, env_id, horizon=10, pop=64, elites=6, sigma=0.15, seed=42):
+        self.env_id = env_id
+        self.horizon = horizon
+        self.pop = pop
+        self.elites = elites
+        self.sigma = sigma
+        self.rng = np.random.default_rng(seed)
 
-    def reset(self, **kwargs):
-        obs = self.env.reset(**kwargs)
-        self._t = 0
-        self._subgoal = self._sample_subgoal(obs)
-        return obs
+    def plan(self, base_qpos):
+        """Parallel rollout-based planning using multiple processes."""
+        samples = self.rng.normal(base_qpos, self.sigma, size=(self.pop, len(base_qpos)))
 
-    def step(self, action):
-        result = self.env.step(action)
+        with ProcessPoolExecutor(max_workers=os.cpu_count()) as pool:
+            costs = list(pool.map(self.evaluate_rollout, samples))
 
-        # Gymnasium: (obs, reward, terminated, truncated, info)
-        if len(result) == 5:
-            obs, ext_r, terminated, truncated, info = result
-            done = terminated or truncated
-        else:  # older Gym: (obs, reward, done, info)
-            obs, ext_r, done, info = result
+        elite_idx = np.argsort(costs)[:self.elites]
+        z_star = samples[elite_idx].mean(axis=0)
+        return z_star
 
-        self._t += 1
-        if self._t % self.subgoal_interval == 0:
-            self._subgoal = self._sample_subgoal(obs)
+    def evaluate_rollout(self, q_target):
+        """Each worker creates its own MyoSuite environment (MuJoCo not thread-safe)."""
+        import numpy as np
+        from myosuite.utils import gym as myogym
 
-        intrinsic = -np.linalg.norm(self._obs_to_vec(obs) - self._subgoal)
-        shaped = ext_r + self.intrinsic_coef * intrinsic
+        env = myogym.make(self.env_id)
+        env.reset()
+        ctrl = MorphologyAwareController(env)
+        cost = 0.0
 
-        info["ext_r"] = ext_r
-        info["intr_r"] = intrinsic
-        info["shaped_r"] = shaped
-        return obs, shaped, done, info
+        for _ in range(self.horizon):
+            u = ctrl.compute_action(q_target)
+            obs, rew, done, info = env.step(u)
+            q = env.sim.data.qpos.copy()
+            e = q - q_target
+            cost += np.dot(e, e)
+            if done:
+                break
 
-
-    def _sample_subgoal(self, obs):
-        v = self._obs_to_vec(obs)
-        return v + np.random.normal(0, 0.05, size=v.shape)
-
-    def _obs_to_vec(self, obs):
-        """
-        Safely flatten observation to 1D float32 vector.
-        Works with dicts, tuples, lists, and nested arrays (MyoSuite-friendly).
-        """
-        if isinstance(obs, dict):
-            parts = []
-            for v in obs.values():
-                parts.append(self._obs_to_vec(v))
-            return np.concatenate(parts) if parts else np.zeros(1, dtype=np.float32)
-
-        elif isinstance(obs, (list, tuple)):
-            parts = []
-            for v in obs:
-                parts.append(self._obs_to_vec(v))
-            return np.concatenate(parts) if parts else np.zeros(1, dtype=np.float32)
-
-        else:
-            arr = np.asarray(obs, dtype=np.float32).reshape(-1)
-            return arr
+        env.close()
+        return cost
 
 
-
-# =====================================================
-#  Main train()  — HRL (no ES)
-# =====================================================
-def train(cfg: Config):
-    # --- Runtime env vars (headless EGL etc.) ---
-    os.environ.setdefault("MUJOCO_GL", "egl")
-    os.environ.pop("DISPLAY", None)
-    os.environ.setdefault("OMP_NUM_THREADS", "1")
-    os.environ.setdefault("MKL_NUM_THREADS", "1")
-    os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
-    os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
-
-    # --- Logs ---
-    exp_dir = next_exp_dir("./logs")
+def run(cfg: Config):
+    # --- Setup logs ---
+    exp_dir = next_exp_dir()
     cfg.logdir = exp_dir
-    logger.info(f"📁 {exp_dir}")
 
-    # --- Vec envs ---
-    cpus = os.cpu_count() or 4
-    n_envs = max(cfg.n_envs, cpus)
-    logger.info(f"Using {n_envs} envs")
+    # --- Make env ---
+    env = gym.make(cfg.env_id)
+    env.reset(seed=cfg.seed)
 
-    # HRL: wrap each env with subgoal-based intrinsic reward
-    vec_env = make_vec_env(
-        cfg.env_id, cfg.seed, n_envs,
-        wrapper_fn=lambda e: SubgoalRewardWrapper(e, subgoal_interval=getattr(cfg, "horizon_H", 20), intrinsic_coef=0.1)
-    )
-    vec_env = VecMonitor(vec_env)
-
-    # --- PPO Model (worker policy) ---
-    policy_kwargs = dict(
-        net_arch=dict(
-            pi=[cfg.policy_hidden, cfg.policy_hidden],
-            vf=[cfg.policy_hidden, cfg.policy_hidden],
-        )
-    )
-
-    model = PPO(
-        policy="MlpPolicy",
-        env=vec_env,
-        learning_rate=cfg.ppo_lr,
-        n_steps=getattr(cfg, "n_steps", 2048 // n_envs * n_envs),
-        batch_size=getattr(cfg, "n_steps", 2048 // n_envs * n_envs) * n_envs,
-        n_epochs=getattr(cfg, "ppo_epochs", 10),
-        gamma=getattr(cfg, "ppo_gamma", 0.99),
-        gae_lambda=getattr(cfg, "gae_lambda", 0.95),
-        clip_range=getattr(cfg, "ppo_clip", 0.2),
-        ent_coef=getattr(cfg, "ent_coef", 0.0),
-        vf_coef=getattr(cfg, "vf_coef", 0.5),
-        max_grad_norm=getattr(cfg, "max_grad_norm", 0.5),
+    # --- Controller + Planner ---
+    controller = MorphologyAwareController(env, kp=10.0, kd=2.0)
+    planner = ParallelCEMPlanner(
+        env_id=cfg.env_id,
+        horizon=cfg.horizon_H,
+        pop=cfg.es_batch * 8,
+        elites=max(4, cfg.es_batch // 2),
+        sigma=cfg.es_sigma,
         seed=cfg.seed,
-        tensorboard_log=exp_dir,
-        policy_kwargs=policy_kwargs,
-        verbose=1,
-        device='cpu',
     )
 
-    # --- Callbacks: Video + Evaluation ---
-    eval_env = make_vec_env(cfg.env_id, cfg.seed + 999, 1,
-                            wrapper_fn=lambda e: SubgoalRewardWrapper(e, subgoal_interval=getattr(cfg, "horizon_H", 20), intrinsic_coef=0.1))
-    eval_env = VecMonitor(eval_env)
-
+    # Video logging ---
     video_cb = VideoCallback(
         env_id=cfg.env_id,
         seed=cfg.seed,
         logdir=exp_dir,
-        video_freq=getattr(cfg, "video_freq", 50_000),
-        eval_episodes=getattr(cfg, "eval_episodes", 1),
+        video_freq=cfg.video_freq,
+        eval_episodes=cfg.eval_episodes,
         verbose=0,
     )
 
-    eval_cb = EvalCallback(
-        eval_env=eval_env,
-        best_model_save_path=exp_dir,
-        log_path=exp_dir,
-        eval_freq=getattr(cfg, "eval_freq", 25_000),
-        deterministic=True,
-        render=False,
-    )
+    _ = env.reset()
+    done = False
+    total_steps = 0
+    episode = 0
+    total_reward = 0.0
+    max_steps = cfg.total_timesteps
 
-    callback_list = [video_cb, eval_cb]
+    # Initialize video callback
+    video_cb._init_callback(model=None)
+    video_cb._on_training_start(locals(), globals())
 
-    # --- Train ---
-    total_timesteps = int(cfg.total_timesteps)
-    model.learn(total_timesteps=total_timesteps, callback=callback_list, progress_bar=True)
+    while total_steps < max_steps:
+        q_now = env.sim.data.qpos.copy()
+        z_star = planner.plan(q_now)
 
-    # --- Save artifacts ---
-    save_path = os.path.join(exp_dir, "hrl_policy.zip")
-    model.save(save_path)
-    logger.info(f"Saved model to {save_path}")
+        for _ in range(3):
+            u = controller.compute_action(z_star)
+            _, rew, done, info = env.step(u)
+            total_reward += rew
+            total_steps += 1
 
-    # Close envs
-    vec_env.close()
+            if done:
+                logger.info(f"Episode {episode} done | Step={total_steps} | Reward={total_reward:.2f}")
+                _ = env.reset()
+                total_reward = 0.0
+                episode += 1
+                video_cb._on_step()
+                break
 
+        if total_steps % 200 == 0:
+            logger.info(f"Step {total_steps:6d} | Partial reward={total_reward:.2f}")
+
+    video_cb._on_training_end()
+    env.close()
+    logger.info("✅ Finished parallel MPC² run.")
+
+
+# =====================================================
+#  Entry point
+# =====================================================
 if __name__ == "__main__":
     cfg = Config()
-    train(cfg)
+    run(cfg)
