@@ -53,6 +53,7 @@ class VideoCallback:
         env = gym.make(self.env_id)
         obs, _ = env.reset(seed=self.seed + 123)
 
+        # Warm up renderer
         _ = env.sim.renderer.render_offscreen(
             width=self.video_w,
             height=self.video_h,
