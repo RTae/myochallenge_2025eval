@@ -17,15 +17,18 @@ class VideoCallback:
         camera_id: int = 1,
         video_w: int = 640,
         video_h: int = 420,
+        verbose: int = 0,
     ):
         self.env_id = env_id
         self.seed = seed
         self.logdir = logdir
         self.video_freq = video_freq
+        self.eval_episodes = eval_episodes
         self.video_frames = video_frames
         self.camera_id = camera_id
         self.video_w = video_w
         self.video_h = video_h
+        self.verbose = verbose
 
         self._video_dir = os.path.join(logdir, "videos")
         os.makedirs(self._video_dir, exist_ok=True)
@@ -37,21 +40,19 @@ class VideoCallback:
         self._predict_fn = fn
 
     def step(self, step_count: int):
-        if self.video_freq <= 0:
-            return
         if (step_count - self._last_recorded) >= self.video_freq:
-            video_path = os.path.join(self._video_dir, f"step_{step_count}.mp4")
-            self._record(video_path)
+            path = os.path.join(self._video_dir, f"step_{step_count}.mp4")
+            self._record(path)
             self._last_recorded = step_count
 
-    def _record(self, video_path: str):
+    def _record(self, video_path):
+
         os.environ["MUJOCO_GL"] = "egl"
         os.environ.pop("DISPLAY", None)
 
         env = gym.make(self.env_id)
         obs, _ = env.reset(seed=self.seed + 123)
 
-        # warm-up renderer
         _ = env.sim.renderer.render_offscreen(
             width=self.video_w,
             height=self.video_h,
@@ -62,6 +63,7 @@ class VideoCallback:
         logger.info(f"🎥 Recording MyoSuite video → {video_path}")
 
         for _ in range(self.video_frames):
+
             frame = env.sim.renderer.render_offscreen(
                 width=self.video_w,
                 height=self.video_h,

@@ -13,10 +13,12 @@ class Config:
     es_sigma: float = 0.1
     elites: int = 6
 
-    es_batch: int = 4   
-    horizon_H: int = 5
-    cem_workers: int = 6
+
+    horizon_H:int = 5 
+    es_batch: int = 8
+    es_sigma: float = 0.05
     mppi_lambda: float = 1.0
+    cem_workers: int = 8
 
     # === Video Callback ===
     video_freq: int = 10_000

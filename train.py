@@ -16,6 +16,21 @@ os.environ.pop("DISPLAY", None)
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 
+def make_mpc2_policy(planner: MPPIPlanner, kp: float = 8.0, kd: float = 1.5):
+    state = {"step": 0, "z_star": None}
+
+    def policy(obs, env):
+        if state["z_star"] is None or state["step"] % 20 == 0:
+            q_now = env.unwrapped.sim.data.qpos.copy()
+            state["z_star"] = planner.plan(q_now)
+        state["step"] += 1
+
+        ctrl = MorphologyAwareController(env, kp=kp, kd=kd)
+        return ctrl.compute_action(state["z_star"])
+
+    return policy
+
+
 def run(cfg: Config):
 
     exp_dir = next_exp_dir()
@@ -32,24 +47,11 @@ def run(cfg: Config):
         pop=cfg.es_batch * 8,
         sigma=cfg.es_sigma,
         lam=getattr(cfg, "mppi_lambda", 1.0),
-        workers=cfg.cem_workers,
+        workers=getattr(cfg, "cem_workers", None),
         seed=cfg.seed,
     )
 
-    def mpc2_policy(obs, policy_env):
-        if not hasattr(mpc2_policy, "step"):
-            mpc2_policy.step = 0
-            sim = policy_env.unwrapped.sim
-            obs_dict = policy_env.unwrapped.get_obs_dict(sim)
-            mpc2_policy.z_star = planner.plan(obs_dict)
-
-        if mpc2_policy.step % 20 == 0:
-            sim = policy_env.unwrapped.sim
-            obs_dict = policy_env.unwrapped.get_obs_dict(sim)
-            mpc2_policy.z_star = planner.plan(obs_dict)
-
-        mpc2_policy.step += 1
-        return controller.compute_action(mpc2_policy.z_star)
+    mpc2_policy = make_mpc2_policy(planner, kp=8.0, kd=1.5)
 
     video_cb = VideoCallback(
         env_id=cfg.env_id,
@@ -69,26 +71,27 @@ def run(cfg: Config):
     )
     eval_cb.attach_predictor(mpc2_policy)
     eval_cb._init_callback()
+    eval_cb._on_training_start()
 
     total_steps = 0
     episode = 0
     total_reward = 0.0
     max_steps = cfg.total_timesteps
 
+    env.reset()
     logger.info("Starting training...")
     pbar = tqdm(total=max_steps)
 
-    env.reset()
+    z_star = env.unwrapped.sim.data.qpos.copy()
 
     while total_steps < max_steps:
-        sim = env.unwrapped.sim
-        obs_dict = env.unwrapped.get_obs_dict(sim)
 
         if total_steps % 20 == 0:
-            z_star = planner.plan(obs_dict)
+            q_now = env.unwrapped.sim.data.qpos.copy()
+            z_star = planner.plan(q_now)
 
         act = controller.compute_action(z_star)
-        obs, rew, terminated, truncated, info = env.step(act)
+        _, rew, terminated, truncated, info = env.step(act)
 
         total_steps += 1
         total_reward += rew
@@ -101,9 +104,8 @@ def run(cfg: Config):
             env.reset()
             total_reward = 0.0
             episode += 1
-            sim = env.unwrapped.sim
-            obs_dict = env.unwrapped.get_obs_dict(sim)
-            z_star = planner.plan(obs_dict)
+            q_now = env.unwrapped.sim.data.qpos.copy()
+            z_star = planner.plan(q_now)
 
         if total_steps % cfg.train_log_freq == 0:
             logger.info(f"Step={total_steps} | Total reward={total_reward:.2f}")
@@ -111,10 +113,9 @@ def run(cfg: Config):
     pbar.close()
     eval_cb._on_training_end()
     env.close()
-    planner.close()
 
     logger.info("Training complete.")
-    logger.info(f"Final reward: {total_reward:.2f}")
+    logger.info(f"Final total reward: {total_reward:.2f}")
 
 
 if __name__ == "__main__":
