@@ -68,27 +68,29 @@ def run(cfg: Config):
 
     while total_steps < max_steps:
 
-        q_now = env.unwrapped.sim.data.qpos.copy()
-        z_star = planner.plan(q_now)
+        if total_steps % 20 == 0:
+            q_now = env.unwrapped.sim.data.qpos.copy()
+            z_star = planner.plan(q_now)
 
-        for _ in range(3):
-            act = controller.compute_action(z_star)
-            _, rew, terminated, truncated, _ = env.step(act)
+        act = controller.compute_action(z_star)
+        _, rew, terminated, truncated, _ = env.step(act)
 
-            total_steps += 1
-            total_reward += rew
-            pbar.update(1)
+        total_steps += 1
+        total_reward += rew
+        pbar.update(1)
 
-            video_cb.step(total_steps)
-            eval_cb._on_step()
+        video_cb.step(total_steps)
+        eval_cb._on_step()
 
-            if terminated or truncated:
-                env.reset()
-                total_reward = 0
-                episode += 1
-                break
+        if terminated or truncated:
+            env.reset()
+            total_reward = 0
+            episode += 1
+            # new plan for next episode
+            q_now = env.unwrapped.sim.data.qpos.copy()
+            z_star = planner.plan(q_now)
 
-        if(total_steps % 10000 == 0):
+        if total_steps % 1000 == 0:
             logger.info(f"Total reward: {total_reward}")
 
     pbar.close()

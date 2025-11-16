@@ -9,12 +9,12 @@ class Config:
     total_timesteps: int = 1_000_000 
     logdir: str = "./logs"
 
-    horizon_H: int = 10
-    es_batch: int = 8
     es_sigma: float = 0.1
     elites: int = 6
-    
-    cem_workers: int = 28
+
+    es_batch: int = 4   
+    horizon_H: int = 5
+    cem_workers: int = 6
 
     # === Video Callback ===
     video_freq: int = 10_000
