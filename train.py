@@ -15,11 +15,7 @@ os.environ.pop("DISPLAY", None)
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 
-# ======================================================
-#  Low-Level Controller (PD → muscle excitation)
-# ======================================================
 class MorphologyAwareController:
-    """Simple PD → muscle excitation controller."""
     def __init__(self, env, kp=10.0, kd=1.5):
         self.env = env
         self.kp = kp
@@ -36,19 +32,14 @@ class MorphologyAwareController:
 
         e = q_target - q
         u_raw = self.kp * e - self.kd * qd
+        u = 1 / (1 + np.exp(-u_raw))
 
-        u = 1 / (1 + np.exp(-u_raw))   # sigmoid → [0,1]
-        return np.clip(u, 0.0, 1.0)
+        act = np.zeros(self.env.action_space.shape[0], dtype=np.float32)
+        act[:len(u)] = np.clip(u, 0.0, 1.0)
+        return act
 
 
-# ======================================================
-#  MP-SAFE TOP LEVEL ROLLOUT WORKER
-# ======================================================
 def rollout_worker(args):
-    """
-    Worker function for parallel CEM rollouts.
-    Must be OUTSIDE the class for multiprocessing to work.
-    """
     q_target, env_id, horizon = args
 
     import numpy as np
@@ -76,9 +67,6 @@ def rollout_worker(args):
     return total_cost
 
 
-# ======================================================
-#  Parallel CEM Planner
-# ======================================================
 class ParallelCEMPlanner:
     def __init__(self, env_id, horizon=10, pop=64, elites=6, sigma=0.15, seed=42):
         self.env_id = env_id
@@ -90,14 +78,9 @@ class ParallelCEMPlanner:
 
     def plan(self, base_qpos):
         n_dim = len(base_qpos)
-
-        # Sample around current posture
         samples = self.rng.normal(base_qpos, self.sigma, size=(self.pop, n_dim))
-
-        # Package args for multiprocessing
         args = [(samples[i], self.env_id, self.horizon) for i in range(self.pop)]
 
-        # Run rollouts in parallel
         with ProcessPoolExecutor(max_workers=os.cpu_count()) as pool:
             costs = list(pool.map(rollout_worker, args))
 
@@ -107,12 +90,9 @@ class ParallelCEMPlanner:
 
 
 def run(cfg: Config):
-
-    # Create experiment directory
     exp_dir = next_exp_dir()
     cfg.logdir = exp_dir
 
-    # Create main env
     env = gym.make(cfg.env_id)
     env.reset(seed=cfg.seed)
 
@@ -127,9 +107,6 @@ def run(cfg: Config):
         seed=cfg.seed,
     )
 
-    # ------------------------------
-    # Video callback
-    # ------------------------------
     video_cb = VideoCallback(
         env_id=cfg.env_id,
         seed=cfg.seed,
@@ -139,9 +116,6 @@ def run(cfg: Config):
         verbose=0,
     )
 
-    # ------------------------------
-    # Eval callback
-    # ------------------------------
     eval_cb = EvalCallback(
         env_id=cfg.env_id,
         seed=cfg.seed,
@@ -152,7 +126,6 @@ def run(cfg: Config):
     eval_cb._init_callback()
     eval_cb._on_training_start()
 
-    # Training state
     total_steps = 0
     episode = 0
     total_reward = 0
@@ -160,15 +133,12 @@ def run(cfg: Config):
 
     env.reset()
     logger.info("🚀 Starting training loop")
-    
+
     while total_steps < max_steps:
 
         q_now = env.unwrapped.sim.data.qpos.copy()
-
-        # High-level plan
         z_star = planner.plan(q_now)
 
-        # Execute 3 low-level steps toward posture
         for _ in range(3):
             u = controller.compute_action(z_star)
             _, rew, terminated, truncated, _ = env.step(u)
@@ -176,7 +146,6 @@ def run(cfg: Config):
             total_steps += 1
             total_reward += rew
 
-            # Callbacks
             video_cb.step(total_steps)
             eval_cb._on_step()
 
@@ -190,16 +159,12 @@ def run(cfg: Config):
         if total_steps % 1000 == 0:
             logger.info(f"[Step {total_steps}] Running reward = {total_reward:.2f}")
 
-    # End callbacks
     eval_cb._on_training_end()
 
     env.close()
     logger.info("🎉 Training complete.")
 
 
-# ======================================================
-#  Entry Point
-# ======================================================
 if __name__ == "__main__":
     mp.set_start_method("fork", force=True)
 
