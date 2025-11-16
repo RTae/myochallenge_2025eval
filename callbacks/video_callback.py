@@ -1,3 +1,4 @@
+# callbacks/video_callback.py
 import os
 import numpy as np
 import skvideo.io
@@ -36,32 +37,29 @@ class VideoCallback:
     def attach_predictor(self, fn):
         self._predict_fn = fn
 
-    def step(self, step_count):
+    def step(self, step_count: int):
         if (step_count - self._last_recorded) >= self.video_freq:
             path = os.path.join(self._video_dir, f"step_{step_count}.mp4")
             self._record(path)
             self._last_recorded = step_count
 
-    def _record(self, video_path):
-
+    def _record(self, video_path: str):
         os.environ["MUJOCO_GL"] = "egl"
         os.environ.pop("DISPLAY", None)
 
         env = gym.make(self.env_id)
         obs, _ = env.reset(seed=self.seed + 123)
 
-        frames = []
-        logger.info(f"🎥 Recording MyoSuite video → {video_path}")
-
-        # warmup renderer
         _ = env.sim.renderer.render_offscreen(
             width=self.video_w,
             height=self.video_h,
             camera_id=self.camera_id,
         )
 
-        for _ in range(self.video_frames):
+        frames = []
+        logger.info(f"🎥 Recording MyoSuite video → {video_path}")
 
+        for _ in range(self.video_frames):
             frame = env.sim.renderer.render_offscreen(
                 width=self.video_w,
                 height=self.video_h,

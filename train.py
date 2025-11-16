@@ -1,3 +1,4 @@
+# train.py
 import os
 from loguru import logger
 import multiprocessing as mp
@@ -70,7 +71,7 @@ def run(cfg: Config):
 
     total_steps = 0
     episode = 0
-    total_reward = 0
+    total_reward = 0.0
     max_steps = cfg.total_timesteps
 
     logger.info("Starting training...")
@@ -85,9 +86,7 @@ def run(cfg: Config):
             z_star = planner.plan(q_now)
 
         act = controller.compute_action(z_star)
-        _, rew, terminated, truncated, info = env.step(act)
-
-        print(info.keys())
+        obs, rew, terminated, truncated, info = env.step(act)
 
         total_steps += 1
         total_reward += rew
@@ -98,9 +97,8 @@ def run(cfg: Config):
 
         if terminated or truncated:
             env.reset()
-            total_reward = 0
+            total_reward = 0.0
             episode += 1
-
             q_now = env.unwrapped.sim.data.qpos.copy()
             z_star = planner.plan(q_now)
 

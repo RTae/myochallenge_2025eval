@@ -1,3 +1,4 @@
+# callbacks/eval_callback.py
 import os
 import numpy as np
 from loguru import logger
@@ -6,7 +7,6 @@ from myosuite.utils import gym
 
 
 class EvalCallback:
-
     def __init__(
         self,
         env_id,
@@ -37,25 +37,28 @@ class EvalCallback:
         self.eval_env.reset(seed=self.seed)
         logger.info("EvalCallback initialized.")
 
+    def _on_training_start(self, locals=None, globals=None):
+        logger.info(f"Evaluation every {self.eval_freq} steps")
+
     def _episode_success(self, obs, info):
-        for k in ["success", "is_success", "done_success", "task_success"]:
-            if k in info:
-                return bool(info[k])
+        obs_dict = self.eval_env.get_obs_dict(obs)
+        touching = obs_dict.get("touching_info", None)
+        if touching is not None and touching[0] > 0.5:
+            return True
+        if "rally_len" in info and info["rally_len"] >= 3:
+            return True
         return False
 
     def run_evaluation(self):
-
         rewards = []
         successes = []
 
         for _ in range(self.eval_episodes):
-
             obs, info = self.eval_env.reset(seed=self.seed)
-            ep_reward = 0
+            ep_reward = 0.0
             ep_success = False
 
             while True:
-
                 action = self.predict_fn(obs, self.eval_env)
 
                 obs, rew, terminated, truncated, info = self.eval_env.step(action)
@@ -70,17 +73,18 @@ class EvalCallback:
             rewards.append(ep_reward)
             successes.append(1 if ep_success else 0)
 
-        mean_r = float(np.mean(rewards))
-        std_r = float(np.std(rewards))
-        succ_r = float(np.mean(successes))
+        mean_reward = float(np.mean(rewards))
+        std_reward = float(np.std(rewards))
+        success_rate = float(np.mean(successes))
 
         logger.info(
-            f"[Eval] Step {self.total_steps} | Mean={mean_r:.3f} | Success={succ_r*100:.1f}%"
+            f"[Eval] Step {self.total_steps} | Mean={mean_reward:.3f} | "
+            f"Std={std_reward:.3f} | Success={success_rate*100:.1f}%"
         )
 
-        self.writer.add_scalar("eval/mean_reward", mean_r, self.total_steps)
-        self.writer.add_scalar("eval/std_reward",  std_r, self.total_steps)
-        self.writer.add_scalar("eval/success_rate", succ_r, self.total_steps)
+        self.writer.add_scalar("eval/mean_reward", mean_reward, self.total_steps)
+        self.writer.add_scalar("eval/std_reward", std_reward, self.total_steps)
+        self.writer.add_scalar("eval/success_rate", success_rate, self.total_steps)
         self.writer.flush()
 
     def _on_step(self):
