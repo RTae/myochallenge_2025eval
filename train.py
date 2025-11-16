@@ -36,9 +36,7 @@ def run(cfg: Config):
         seed=cfg.seed,
     )
 
-
     def mpc2_policy(obs, policy_env):
-        """General policy: uses the *evaluation or video env*."""
         if not hasattr(mpc2_policy, "step"):
             mpc2_policy.step = 0
             mpc2_policy.z_star = policy_env.unwrapped.sim.data.qpos.copy()
@@ -50,9 +48,6 @@ def run(cfg: Config):
         mpc2_policy.step += 1
         return controller.compute_action(mpc2_policy.z_star)
 
-    # -------------------------------
-    # CALLBACKS
-    # -------------------------------
     video_cb = VideoCallback(
         env_id=cfg.env_id,
         seed=cfg.seed,
@@ -73,9 +68,6 @@ def run(cfg: Config):
     eval_cb._init_callback()
     eval_cb._on_training_start()
 
-    # --------------------------------
-    # TRAIN LOOP
-    # --------------------------------
     total_steps = 0
     episode = 0
     total_reward = 0
@@ -93,7 +85,9 @@ def run(cfg: Config):
             z_star = planner.plan(q_now)
 
         act = controller.compute_action(z_star)
-        _, rew, terminated, truncated, _ = env.step(act)
+        _, rew, terminated, truncated, info = env.step(act)
+
+        print(info.keys())
 
         total_steps += 1
         total_reward += rew
