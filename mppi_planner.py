@@ -1,16 +1,24 @@
 import numpy as np
 from myosuite.utils import gym
 
+def quat_to_forward(q):
+    """Convert quaternion to forward direction (z-axis of paddle)."""
+    w, x, y, z = q
+
+    # Rotation matrix (MuJoCo convention)
+    R = np.array([
+        [1 - 2*(y*y + z*z),     2*(x*y - z*w),         2*(x*z + y*w)],
+        [2*(x*y + z*w),         1 - 2*(x*x + z*z),     2*(y*z - x*w)],
+        [2*(x*z - y*w),         2*(y*z + x*w),         1 - 2*(x*x + y*y)]
+    ])
+    return R[:, 2]   # The Z-axis of the paddle frame
 
 def compute_tt_cost(obs, info):
     ball_pos = obs["ball_pos"]
     ball_vel = obs["ball_vel"]
     paddle_pos = obs["paddle_pos"]
-    paddle_ori = obs["paddle_ori"]
-    reach_err = obs["reach_err"]
-    touching = obs["touching_info"]
 
-    # predict ball future 150ms
+    # predict ball future 150 ms
     t = 0.15
     ball_future = ball_pos + t * ball_vel
 
@@ -18,14 +26,18 @@ def compute_tt_cost(obs, info):
     target_paddle = ball_future + offset
 
     reach_loss = np.sum((paddle_pos - target_paddle)**2)
-    err_loss = np.sum(reach_err**2)
+    err_loss = np.sum(obs["reach_err"]**2)
 
-    # contact reward (touching_info[0] = paddle contact)
+    touching = obs["touching_info"]
     hit_reward = 1.0 if touching[0] > 0.5 else 0.0
     hit_loss = -hit_reward
 
-    desired_ori = np.array([0, 0, 1])
-    ori_loss = np.sum((paddle_ori - desired_ori)**2)
+    # Paddle orientation handling (quat)
+    paddle_quat = obs["paddle_ori"]        # shape (4,)
+    paddle_forward = quat_to_forward(paddle_quat)
+
+    desired_forward = np.array([0, 0, 1])  # pointing forward/upwards depending on env
+    ori_loss = np.sum((paddle_forward - desired_forward)**2)
 
     cost = (
         3.0 * reach_loss +
