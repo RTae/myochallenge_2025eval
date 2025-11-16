@@ -5,7 +5,8 @@ from concurrent.futures import ProcessPoolExecutor
 from myosuite.utils import gym
 
 from config import Config
-from callbacks.videoCallback import VideoCallback
+from callbacks.video_callback import VideoCallback
+from callbacks.eval_callback import EvalCallback
 from utils.helper import next_exp_dir
 
 os.environ["MUJOCO_GL"] = "egl"
@@ -33,9 +34,8 @@ class MorphologyAwareController:
         e = q_target - q
         u_raw = self.kp * e - self.kd * qd
 
-        # MyoSuite actions MUST be in [0,1]
-        u = 1 / (1 + np.exp(-u_raw))     # sigmoid
-
+        # MyoSuite requires [0,1]
+        u = 1 / (1 + np.exp(-u_raw))
         return np.clip(u, 0.0, 1.0)
 
 
@@ -63,8 +63,7 @@ class ParallelCEMPlanner:
             costs = list(pool.map(self.evaluate_rollout, samples))
 
         elite_idx = np.argsort(costs)[:self.elites]
-        z_star = samples[elite_idx].mean(axis=0)
-        return z_star
+        return samples[elite_idx].mean(axis=0)
 
     def evaluate_rollout(self, q_target):
         import numpy as np
@@ -100,7 +99,7 @@ def run(cfg: Config):
     exp_dir = next_exp_dir()
     cfg.logdir = exp_dir
 
-    # --- Make env ---
+    # --- Make environment ---
     env = gym.make(cfg.env_id)
     env.reset(seed=cfg.seed)
 
@@ -115,7 +114,7 @@ def run(cfg: Config):
         seed=cfg.seed
     )
 
-    # --- Video logger ---
+    # --- Video Callback ---
     video_cb = VideoCallback(
         env_id=cfg.env_id,
         seed=cfg.seed,
@@ -124,38 +123,48 @@ def run(cfg: Config):
         eval_episodes=cfg.eval_episodes,
         verbose=0,
     )
-
-    # initialize callback
     video_cb._init_callback(model=None)
     video_cb._on_training_start(locals(), globals())
 
-    done = False
+    # --- Eval Callback ---
+    eval_cb = EvalCallback(
+        env_id=cfg.env_id,
+        seed=cfg.seed,
+        eval_freq=cfg.eval_freq,
+        eval_episodes=3,
+        logdir=exp_dir
+    )
+    eval_cb._init_callback(model=None)
+    eval_cb._on_training_start(locals(), globals())
+
+    # --- Training Loop ---
     total_steps = 0
     episode = 0
     total_reward = 0
 
-    obs, info = env.reset()
-
+    env.reset()
     max_steps = cfg.total_timesteps
 
     while total_steps < max_steps:
 
         q_now = env.sim.data.qpos.copy()
-
-        # high-level posture target
         z_star = planner.plan(q_now)
 
-        # execute 3 low-level steps toward target posture
+        # low-level control actions
         for _ in range(3):
             u = controller.compute_action(z_star)
 
-            obs, rew, terminated, truncated, info = env.step(u)
+            _, rew, terminated, truncated, _ = env.step(u)
             total_steps += 1
             total_reward += rew
 
+            # callbacks
+            video_cb._on_step()
+            eval_cb._on_step()
+
             if terminated or truncated:
                 logger.info(f"Episode {episode} done | Reward={total_reward:.2f}")
-                obs, info = env.reset()
+                env.reset()
                 total_reward = 0
                 episode += 1
                 break
@@ -163,11 +172,12 @@ def run(cfg: Config):
         if total_steps % 1000 == 0:
             logger.info(f"Step {total_steps} | Reward so far={total_reward:.2f}")
 
-        video_cb._on_step()
-
+    # --- End callbacks ---
     video_cb._on_training_end()
+    eval_cb._on_training_end()
+
     env.close()
-    logger.info("🎉 Finished Parallel MPC-like run.")
+    logger.info("Finished training.")
 
 
 if __name__ == "__main__":
