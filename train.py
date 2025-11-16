@@ -112,6 +112,8 @@ def run(cfg: Config):
     pbar.close()
     eval_cb._on_training_end()
     env.close()
+    
+    planner.close()
 
     logger.info("Training complete.")
     logger.info(f"Total reward: {total_reward}")
