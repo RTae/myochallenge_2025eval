@@ -1,4 +1,5 @@
 import os
+from loguru import logger
 import multiprocessing as mp
 from tqdm import tqdm
 from myosuite.utils import gym
@@ -63,6 +64,7 @@ def run(cfg: Config):
 
     pbar = tqdm(total=max_steps)
 
+    logger.info("Starting training...")
     while total_steps < max_steps:
 
         q_now = env.unwrapped.sim.data.qpos.copy()
@@ -84,10 +86,16 @@ def run(cfg: Config):
                 total_reward = 0
                 episode += 1
                 break
+        
+        if(total_steps % 10000):
+            logger.info(f"Total reward: {total_reward}")
 
     pbar.close()
     eval_cb._on_training_end()
     env.close()
+
+    logger.info("Training complete.")
+    logger.info(f"Total reward: {total_reward}")
 
 
 if __name__ == "__main__":

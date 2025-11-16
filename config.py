@@ -13,6 +13,8 @@ class Config:
     es_batch: int = 8
     es_sigma: float = 0.1
     elites: int = 6
+    
+    cem_workers: int = 16
 
     # === Video Callback ===
     video_freq: int = 10_000
