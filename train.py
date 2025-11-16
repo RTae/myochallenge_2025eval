@@ -37,21 +37,20 @@ def run(cfg: Config):
     )
 
     def mpc2_policy(obs, policy_env):
-        # persistent target
         if not hasattr(mpc2_policy, "step"):
             mpc2_policy.step = 0
-            obs_dict = policy_env.unwrapped.get_obs_dict(policy_env.unwrapped.sim)
+            sim = policy_env.unwrapped.sim
+            obs_dict = policy_env.unwrapped.get_obs_dict(sim)
             mpc2_policy.z_star = planner.plan(obs_dict)
 
-        # recalc every N steps
         if mpc2_policy.step % 20 == 0:
-            obs_dict = policy_env.unwrapped.get_obs_dict(policy_env.unwrapped.sim)
+            sim = policy_env.unwrapped.sim
+            obs_dict = policy_env.unwrapped.get_obs_dict(sim)
             mpc2_policy.z_star = planner.plan(obs_dict)
 
         mpc2_policy.step += 1
         return controller.compute_action(mpc2_policy.z_star)
 
-    # CALLBACKS
     video_cb = VideoCallback(
         env_id=cfg.env_id,
         seed=cfg.seed,
@@ -71,10 +70,9 @@ def run(cfg: Config):
     eval_cb.attach_predictor(mpc2_policy)
     eval_cb._init_callback()
 
-    # TRAIN LOOP
     total_steps = 0
     episode = 0
-    total_reward = 0
+    total_reward = 0.0
     max_steps = cfg.total_timesteps
 
     logger.info("Starting training...")
@@ -83,8 +81,8 @@ def run(cfg: Config):
     env.reset()
 
     while total_steps < max_steps:
-
-        obs_dict = env.unwrapped.get_obs_dict(env.unwrapped.sim)
+        sim = env.unwrapped.sim
+        obs_dict = env.unwrapped.get_obs_dict(sim)
 
         if total_steps % 20 == 0:
             z_star = planner.plan(obs_dict)
@@ -101,26 +99,25 @@ def run(cfg: Config):
 
         if terminated or truncated:
             env.reset()
-            total_reward = 0
+            total_reward = 0.0
             episode += 1
-            obs_dict = env.unwrapped.get_obs_dict(env.unwrapped.sim)
+            sim = env.unwrapped.sim
+            obs_dict = env.unwrapped.get_obs_dict(sim)
             z_star = planner.plan(obs_dict)
 
         if total_steps % cfg.train_log_freq == 0:
-            logger.info(f"Total reward: {total_reward}")
+            logger.info(f"Step={total_steps} | Total reward={total_reward:.2f}")
 
     pbar.close()
     eval_cb._on_training_end()
     env.close()
-    
     planner.close()
 
     logger.info("Training complete.")
-    logger.info(f"Total reward: {total_reward}")
+    logger.info(f"Final reward: {total_reward:.2f}")
 
 
 if __name__ == "__main__":
     mp.set_start_method("spawn", force=True)
-
     cfg = Config()
     run(cfg)

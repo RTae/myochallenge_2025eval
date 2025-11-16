@@ -3,9 +3,9 @@ import numpy as np
 import multiprocessing as mp
 from myosuite.utils import gym
 
-# -----------------------------
-#  Quaternion → forward vector
-# -----------------------------
+# --------------------------------
+# Quaternion → forward direction
+# --------------------------------
 def quat_to_forward(q):
     """Convert quaternion [w, x, y, z] to forward (local z-axis) direction."""
     w, x, y, z = q
@@ -14,22 +14,20 @@ def quat_to_forward(q):
         [2*(x*y + z*w),         1 - 2*(x*x + z*z),     2*(y*z - x*w)],
         [2*(x*z - y*w),         2*(y*z + x*w),         1 - 2*(x*x + y*y)],
     ])
-    return R[:, 2]   # local z-axis
+    return R[:, 2]   # local z-axis (paddle face normal)
 
 
-# -----------------------------
-#  Task-specific TT cost
-# -----------------------------
+# --------------------------------
+# Task-specific Table Tennis cost
+# --------------------------------
 def compute_tt_cost(obs, info):
     ball_pos = obs["ball_pos"]
     ball_vel = obs["ball_vel"]
     paddle_pos = obs["paddle_pos"]
 
-    # simple constant-horizon ball prediction
     t = 0.15
     ball_future = ball_pos + t * ball_vel
 
-    # offset: slightly behind and above the predicted contact point
     offset = np.array([-0.03, 0.0, 0.02])
     target_paddle = ball_future + offset
 
@@ -40,8 +38,7 @@ def compute_tt_cost(obs, info):
     hit_reward = 1.0 if touching[0] > 0.5 else 0.0
     hit_loss = -hit_reward
 
-    # orientation: compare paddle forward axis to desired
-    paddle_quat = obs["paddle_ori"]        # shape (4,)
+    paddle_quat = obs["paddle_ori"]          # shape (4,)
     paddle_forward = quat_to_forward(paddle_quat)
     desired_forward = np.array([0.0, 0.0, 1.0])
     ori_loss = np.sum((paddle_forward - desired_forward) ** 2)
@@ -57,18 +54,16 @@ def compute_tt_cost(obs, info):
     return float(cost)
 
 
-# =============================
-#  Worker globals
-# =============================
+# =========================
+# Worker globals
+# =========================
 _WORKER_ENV = None
 _WORKER_CTRL = None
 _WORKER_H = None
 
 
 def _worker_init(env_id, horizon, base_seed):
-    """Initializer for each worker: create its own env + controller."""
     global _WORKER_ENV, _WORKER_CTRL, _WORKER_H
-
     from pd_controller import MorphologyAwareController
     from myosuite.utils import gym as myogym
 
@@ -85,7 +80,6 @@ def _worker_init(env_id, horizon, base_seed):
 
 
 def _worker_rollout(q_target):
-    """Rollout cost for one posture sample (runs inside worker)."""
     global _WORKER_ENV, _WORKER_CTRL, _WORKER_H
 
     env = _WORKER_ENV
@@ -93,8 +87,6 @@ def _worker_rollout(q_target):
     H = _WORKER_H
 
     total_cost = 0.0
-
-    # fresh episode per sample
     env.reset()
 
     for _ in range(H):
@@ -110,9 +102,9 @@ def _worker_rollout(q_target):
     return total_cost
 
 
-# =============================
-#  MPPI Planner with pool
-# =============================
+# =========================
+# MPPI Planner (MCP² high level)
+# =========================
 class MPPIPlanner:
     def __init__(self, env_id, horizon, pop, sigma, lam, workers, seed):
         self.env_id = env_id
@@ -125,7 +117,8 @@ class MPPIPlanner:
         self.rng = np.random.default_rng(seed)
 
         ctx = mp.get_context("spawn")
-        self.workers = min(workers, ctx.cpu_count())
+        cpu_cnt = ctx.cpu_count() or 1
+        self.workers = min(workers, cpu_cnt) if workers is not None else cpu_cnt
         if self.workers <= 0:
             self.workers = 1
 
@@ -137,15 +130,12 @@ class MPPIPlanner:
 
     def plan(self, obs_dict):
         base_qpos = obs_dict["body_qpos"]
-
         samples = self.rng.normal(
             base_qpos, self.sigma, size=(self.pop, len(base_qpos))
         )
 
-        # send all samples to persistent workers
         costs = np.array(self.pool.map(_worker_rollout, samples))
 
-        # MPPI weighting
         beta = np.min(costs)
         weights = np.exp(-(costs - beta) / self.lam)
         weights /= np.sum(weights)

@@ -8,9 +8,9 @@ class MorphologyAwareController:
         self.kd = kd
 
     def compute_action(self, q_target):
-
-        q = self.env.unwrapped.sim.data.qpos.copy()
-        qd = self.env.unwrapped.sim.data.qvel.copy()
+        sim = self.env.unwrapped.sim
+        q = sim.data.qpos.copy()
+        qd = sim.data.qvel.copy()
 
         n = min(len(q_target), len(q), len(qd))
         q_target = q_target[:n]
@@ -19,9 +19,8 @@ class MorphologyAwareController:
 
         e = q_target - q
         u_raw = self.kp * e - self.kd * qd
-        u = 1 / (1 + np.exp(-u_raw))
+        u = 1.0 / (1.0 + np.exp(-u_raw))
 
         act = np.zeros(self.env.action_space.shape[0], dtype=np.float32)
-        act[:len(u)] = np.clip(u, 0, 1)
-
+        act[:len(u)] = np.clip(u, 0.0, 1.0)
         return act
