@@ -36,6 +36,25 @@ def run(cfg: Config):
         seed=cfg.seed,
     )
 
+    # -------------------------------
+    # MPC² Policy usable for eval + video
+    # -------------------------------
+    def mpc2_policy(obs, policy_env):
+        """General policy: uses the *evaluation or video env*."""
+        if not hasattr(mpc2_policy, "step"):
+            mpc2_policy.step = 0
+            mpc2_policy.z_star = policy_env.unwrapped.sim.data.qpos.copy()
+
+        if mpc2_policy.step % 20 == 0:
+            q_now = policy_env.unwrapped.sim.data.qpos.copy()
+            mpc2_policy.z_star = planner.plan(q_now)
+
+        mpc2_policy.step += 1
+        return controller.compute_action(mpc2_policy.z_star)
+
+    # -------------------------------
+    # CALLBACKS
+    # -------------------------------
     video_cb = VideoCallback(
         env_id=cfg.env_id,
         seed=cfg.seed,
@@ -43,6 +62,7 @@ def run(cfg: Config):
         video_freq=cfg.video_freq,
         eval_episodes=cfg.eval_episodes,
     )
+    video_cb.attach_predictor(mpc2_policy)
 
     eval_cb = EvalCallback(
         env_id=cfg.env_id,
@@ -51,26 +71,22 @@ def run(cfg: Config):
         eval_episodes=3,
         logdir=exp_dir
     )
+    eval_cb.attach_predictor(mpc2_policy)
     eval_cb._init_callback()
     eval_cb._on_training_start()
 
-    def policy_fn(obs):
-        q_now = env.unwrapped.sim.data.qpos.copy()
-        z_star = planner.plan(q_now)
-        return controller.compute_action(z_star)
-
-    video_cb.attach_predictor(policy_fn)
-    eval_cb.attach_predictor(policy_fn)
-
+    # --------------------------------
+    # TRAIN LOOP
+    # --------------------------------
     total_steps = 0
     episode = 0
     total_reward = 0
     max_steps = cfg.total_timesteps
 
-    env.reset()
-
     logger.info("Starting training...")
     pbar = tqdm(total=max_steps)
+
+    env.reset()
 
     while total_steps < max_steps:
 
@@ -79,35 +95,4 @@ def run(cfg: Config):
             z_star = planner.plan(q_now)
 
         act = controller.compute_action(z_star)
-        _, rew, terminated, truncated, _ = env.step(act)
-
-        total_steps += 1
-        total_reward += rew
-        pbar.update(1)
-
-        video_cb.step(total_steps)
-        eval_cb._on_step()
-
-        if terminated or truncated:
-            env.reset()
-            total_reward = 0
-            episode += 1
-            q_now = env.unwrapped.sim.data.qpos.copy()
-            z_star = planner.plan(q_now)
-
-        if total_steps % cfg.train_log_freq == 0:
-            logger.info(f"Total reward: {total_reward}")
-
-    pbar.close()
-    eval_cb._on_training_end()
-    env.close()
-
-    logger.info("Training complete.")
-    logger.info(f"Total reward: {total_reward}")
-
-
-if __name__ == "__main__":
-    mp.set_start_method("spawn", force=True)
-
-    cfg = Config()
-    run(cfg)
+        _, rew, terminated, truncated, _ = env.s
