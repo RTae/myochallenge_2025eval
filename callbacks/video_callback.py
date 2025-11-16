@@ -47,14 +47,12 @@ class VideoCallback:
 
     def _record(self, video_path):
 
-        # IMPORTANT: create env AFTER setting MUJOCO_GL=egl
         os.environ["MUJOCO_GL"] = "egl"
         os.environ.pop("DISPLAY", None)
 
         env = gym.make(self.env_id)
         obs, _ = env.reset(seed=self.seed + 123)
 
-        # Force renderer creation (fixes GLFW vs EGL issues)
         _ = env.sim.renderer.render_offscreen(
             width=self.video_w,
             height=self.video_h,

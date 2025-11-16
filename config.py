@@ -19,7 +19,7 @@ class Config:
     mppi_lambda: float = 1.0
 
     # === Video Callback ===
-    video_freq: int = 1_000
+    video_freq: int = 10_000
     eval_episodes: int = 2
     video_w: int = 640
     video_h: int = 480
