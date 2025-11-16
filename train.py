@@ -1,6 +1,7 @@
 import os
 import numpy as np
 from loguru import logger
+import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor
 from myosuite.utils import gym
 
@@ -25,8 +26,13 @@ class MorphologyAwareController:
         self.kd = kd
 
     def compute_action(self, q_target):
-        q = self.env.sim.data.qpos.copy()
-        qd = self.env.sim.data.qvel.copy()
+        q = self.env.unwrapped.sim.data.qpos.copy()
+        qd = self.env.unwrapped.sim.data.qvel.copy()
+
+        n = min(len(q_target), len(q), len(qd))
+        q_target = q_target[:n]
+        q = q[:n]
+        qd = qd[:n]
 
         e = q_target - q
         u_raw = self.kp * e - self.kd * qd
@@ -58,8 +64,9 @@ def rollout_worker(args):
         u = ctrl.compute_action(q_target)
         obs, reward, terminated, truncated, info = env.step(u)
 
-        q = env.sim.data.qpos.copy()
-        e = q - q_target
+        q = env.unwrapped.sim.data.qpos.copy()
+        n = min(len(q_target), len(q))
+        e = q[:n] - q_target[:n]
         total_cost += float(np.dot(e, e))
 
         if terminated or truncated:
@@ -99,9 +106,6 @@ class ParallelCEMPlanner:
         return z_star
 
 
-# ======================================================
-#  Main RL Loop
-# ======================================================
 def run(cfg: Config):
 
     # Create experiment directory
@@ -156,13 +160,10 @@ def run(cfg: Config):
 
     env.reset()
     logger.info("🚀 Starting training loop")
-
-    # ==================================================
-    #  MAIN TRAINING LOOP
-    # ==================================================
+    
     while total_steps < max_steps:
 
-        q_now = env.sim.data.qpos.copy()
+        q_now = env.unwrapped.sim.data.qpos.copy()
 
         # High-level plan
         z_star = planner.plan(q_now)
@@ -200,7 +201,6 @@ def run(cfg: Config):
 #  Entry Point
 # ======================================================
 if __name__ == "__main__":
-    import multiprocessing as mp
     mp.set_start_method("fork", force=True)
 
     cfg = Config()
