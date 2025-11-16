@@ -18,10 +18,7 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 #  Low-Level Controller (PD → muscle excitation)
 # ======================================================
 class MorphologyAwareController:
-    """
-    Simple joint-space PD controller mapping posture error to muscle excitation.
-    Works for MyoSuite by constraining to [0,1].
-    """
+    """Simple PD → muscle excitation controller."""
     def __init__(self, env, kp=10.0, kd=1.5):
         self.env = env
         self.kp = kp
@@ -34,7 +31,6 @@ class MorphologyAwareController:
         e = q_target - q
         u_raw = self.kp * e - self.kd * qd
 
-        # MyoSuite requires [0,1]
         u = 1 / (1 + np.exp(-u_raw))
         return np.clip(u, 0.0, 1.0)
 
@@ -43,10 +39,6 @@ class MorphologyAwareController:
 #  Parallel CEM Planner
 # ======================================================
 class ParallelCEMPlanner:
-    """
-    Parallel CEM rollout planner.
-    Works for high-dim MyoSuite envs (muscle-based).
-    """
     def __init__(self, env_id, horizon=10, pop=64, elites=6, sigma=0.15, seed=42):
         self.env_id = env_id
         self.horizon = horizon
@@ -95,16 +87,15 @@ class ParallelCEMPlanner:
 # ======================================================
 def run(cfg: Config):
 
-    # --- Log directory ---
+    # Log directory
     exp_dir = next_exp_dir()
     cfg.logdir = exp_dir
 
-    # --- Make environment ---
+    # Make env
     env = gym.make(cfg.env_id)
     env.reset(seed=cfg.seed)
 
     controller = MorphologyAwareController(env, kp=8.0, kd=1.5)
-
     planner = ParallelCEMPlanner(
         env_id=cfg.env_id,
         horizon=cfg.horizon_H,
@@ -114,7 +105,6 @@ def run(cfg: Config):
         seed=cfg.seed
     )
 
-    # --- Video Callback ---
     video_cb = VideoCallback(
         env_id=cfg.env_id,
         seed=cfg.seed,
@@ -123,10 +113,7 @@ def run(cfg: Config):
         eval_episodes=cfg.eval_episodes,
         verbose=0,
     )
-    video_cb._init_callback(model=None)
-    video_cb._on_training_start(locals(), globals())
 
-    # --- Eval Callback ---
     eval_cb = EvalCallback(
         env_id=cfg.env_id,
         seed=cfg.seed,
@@ -137,7 +124,6 @@ def run(cfg: Config):
     eval_cb._init_callback(model=None)
     eval_cb._on_training_start(locals(), globals())
 
-    # --- Training Loop ---
     total_steps = 0
     episode = 0
     total_reward = 0
@@ -145,21 +131,21 @@ def run(cfg: Config):
     env.reset()
     max_steps = cfg.total_timesteps
 
+    logger.info(f"Starting training")
+
     while total_steps < max_steps:
 
         q_now = env.sim.data.qpos.copy()
         z_star = planner.plan(q_now)
 
-        # low-level control actions
         for _ in range(3):
             u = controller.compute_action(z_star)
-
             _, rew, terminated, truncated, _ = env.step(u)
+
             total_steps += 1
             total_reward += rew
 
-            # callbacks
-            video_cb._on_step()
+            video_cb.step(total_steps)
             eval_cb._on_step()
 
             if terminated or truncated:
@@ -172,11 +158,9 @@ def run(cfg: Config):
         if total_steps % 1000 == 0:
             logger.info(f"Step {total_steps} | Reward so far={total_reward:.2f}")
 
-    # --- End callbacks ---
-    video_cb._on_training_end()
     eval_cb._on_training_end()
-
     env.close()
+
     logger.info("Finished training.")
 
 
