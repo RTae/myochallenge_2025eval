@@ -81,17 +81,13 @@ class ParallelCEMPlanner:
         env.close()
         return cost
 
-
-# ======================================================
-#  Main RL Loop
-# ======================================================
 def run(cfg: Config):
 
-    # Log directory
+    # Create experiment directory
     exp_dir = next_exp_dir()
     cfg.logdir = exp_dir
 
-    # Make env
+    # Environment
     env = gym.make(cfg.env_id)
     env.reset(seed=cfg.seed)
 
@@ -105,6 +101,7 @@ def run(cfg: Config):
         seed=cfg.seed
     )
 
+    # === Video callback ===
     video_cb = VideoCallback(
         env_id=cfg.env_id,
         seed=cfg.seed,
@@ -114,6 +111,7 @@ def run(cfg: Config):
         verbose=0,
     )
 
+    # === Eval callback ===
     eval_cb = EvalCallback(
         env_id=cfg.env_id,
         seed=cfg.seed,
@@ -121,47 +119,52 @@ def run(cfg: Config):
         eval_episodes=3,
         logdir=exp_dir
     )
-    eval_cb._init_callback(model=None)
-    eval_cb._on_training_start(locals(), globals())
+    eval_cb._init_callback()
+    eval_cb._on_training_start()
 
+    # Training variables
     total_steps = 0
     episode = 0
     total_reward = 0
-
-    env.reset()
     max_steps = cfg.total_timesteps
 
-    logger.info(f"Starting training")
+    env.reset()
+    logger.info("Starting training")
 
+    # ==================================================
+    #  Training Loop
+    # ==================================================
     while total_steps < max_steps:
 
         q_now = env.sim.data.qpos.copy()
         z_star = planner.plan(q_now)
 
         for _ in range(3):
-            u = controller.compute_action(z_star)
-            _, rew, terminated, truncated, _ = env.step(u)
+            action = controller.compute_action(z_star)
+            _, rew, terminated, truncated, _ = env.step(action)
 
             total_steps += 1
             total_reward += rew
 
+            # Callbacks
             video_cb.step(total_steps)
             eval_cb._on_step()
 
             if terminated or truncated:
-                logger.info(f"Episode {episode} done | Reward={total_reward:.2f}")
+                logger.info(f"Episode {episode} finished | Reward={total_reward:.2f}")
                 env.reset()
                 total_reward = 0
                 episode += 1
                 break
 
         if total_steps % 1000 == 0:
-            logger.info(f"Step {total_steps} | Reward so far={total_reward:.2f}")
+            logger.info(f"Step={total_steps} | Reward={total_reward:.2f}")
 
+    # End callbacks
     eval_cb._on_training_end()
     env.close()
 
-    logger.info("Finished training.")
+    logger.info("Training complete.")
 
 
 if __name__ == "__main__":
