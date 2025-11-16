@@ -86,8 +86,8 @@ def run(cfg: Config):
                 total_reward = 0
                 episode += 1
                 break
-        
-        if(total_steps % 10000):
+
+        if(total_steps % 10000 == 0):
             logger.info(f"Total reward: {total_reward}")
 
     pbar.close()
