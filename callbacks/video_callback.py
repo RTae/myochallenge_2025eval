@@ -1,4 +1,3 @@
-# callbacks/video_callback.py
 import os
 import numpy as np
 import skvideo.io
@@ -7,18 +6,10 @@ from myosuite.utils import gym
 
 
 class VideoCallback:
-    def __init__(
-        self,
-        env_id: str,
-        seed: int,
-        logdir: str,
-        video_freq: int = 50000,
-        eval_episodes: int = 1,
-        video_frames: int = 400,
-        camera_id: int = 1,
-        video_w: int = 640,
-        video_h: int = 420,
-    ):
+    def __init__(self, env_id, seed, logdir, video_freq=50000,
+                 eval_episodes=1, video_frames=400, camera_id=1,
+                 video_w=640, video_h=420):
+
         self.env_id = env_id
         self.seed = seed
         self.logdir = logdir
@@ -28,60 +19,52 @@ class VideoCallback:
         self.video_w = video_w
         self.video_h = video_h
 
-        self._video_dir = os.path.join(logdir, "videos")
-        os.makedirs(self._video_dir, exist_ok=True)
+        self.predict_fn = None
+        self.last_record = 0
 
-        self._predict_fn = None
-        self._last_recorded = 0
+        self.video_dir = os.path.join(logdir, "videos")
+        os.makedirs(self.video_dir, exist_ok=True)
 
     def attach_predictor(self, fn):
-        self._predict_fn = fn
+        self.predict_fn = fn
 
-    def step(self, step_count: int):
-        if (step_count - self._last_recorded) >= self.video_freq:
-            path = os.path.join(self._video_dir, f"step_{step_count}.mp4")
+    def step(self, step):
+        if step - self.last_record >= self.video_freq:
+            self.last_record = step
+            path = os.path.join(self.video_dir, f"step_{step}.mp4")
             self._record(path)
-            self._last_recorded = step_count
 
-    def _record(self, video_path: str):
+    def _record(self, filename):
+
         os.environ["MUJOCO_GL"] = "egl"
         os.environ.pop("DISPLAY", None)
 
         env = gym.make(self.env_id)
         obs, _ = env.reset(seed=self.seed + 123)
 
-        _ = env.sim.renderer.render_offscreen(
-            width=self.video_w,
-            height=self.video_h,
-            camera_id=self.camera_id,
-        )
-
         frames = []
-        logger.info(f"🎥 Recording MyoSuite video → {video_path}")
+        logger.info(f"🎥 Recording → {filename}")
+
+        _ = env.sim.renderer.render_offscreen(
+            width=self.video_w, height=self.video_h, camera_id=self.camera_id
+        )
 
         for _ in range(self.video_frames):
             frame = env.sim.renderer.render_offscreen(
-                width=self.video_w,
-                height=self.video_h,
-                camera_id=self.camera_id,
+                width=self.video_w, height=self.video_h, camera_id=self.camera_id
             )
             frames.append(frame)
 
-            if self._predict_fn is not None:
-                act = self._predict_fn(obs, env)
+            if self.predict_fn is not None:
+                act = self.predict_fn(obs, env)
             else:
-                act = np.zeros(env.action_space.shape[0], dtype=np.float32)
+                act = np.zeros(env.action_space.shape[0])
 
             obs, _, term, trunc, _ = env.step(act)
             if term or trunc:
                 obs, _ = env.reset(seed=self.seed + 123)
 
         env.close()
-
-        skvideo.io.vwrite(
-            video_path,
-            np.asarray(frames),
-            outputdict={"-pix_fmt": "yuv420p"},
-        )
-
-        logger.info(f"✅ Saved video: {video_path}")
+        skvideo.io.vwrite(filename, np.asarray(frames),
+                          outputdict={"-pix_fmt": "yuv420p"})
+        logger.info(f"Saved video {filename}")

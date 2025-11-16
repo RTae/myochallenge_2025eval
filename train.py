@@ -1,4 +1,3 @@
-# train.py
 import os
 from loguru import logger
 import multiprocessing as mp
@@ -38,17 +37,21 @@ def run(cfg: Config):
     )
 
     def mpc2_policy(obs, policy_env):
+        # persistent target
         if not hasattr(mpc2_policy, "step"):
             mpc2_policy.step = 0
-            mpc2_policy.z_star = policy_env.unwrapped.sim.data.qpos.copy()
+            obs_dict = policy_env.unwrapped.get_obs_dict(policy_env.unwrapped.sim)
+            mpc2_policy.z_star = planner.plan(obs_dict)
 
+        # recalc every N steps
         if mpc2_policy.step % 20 == 0:
-            q_now = policy_env.unwrapped.sim.data.qpos.copy()
-            mpc2_policy.z_star = planner.plan(q_now)
+            obs_dict = policy_env.unwrapped.get_obs_dict(policy_env.unwrapped.sim)
+            mpc2_policy.z_star = planner.plan(obs_dict)
 
         mpc2_policy.step += 1
         return controller.compute_action(mpc2_policy.z_star)
 
+    # CALLBACKS
     video_cb = VideoCallback(
         env_id=cfg.env_id,
         seed=cfg.seed,
@@ -67,11 +70,11 @@ def run(cfg: Config):
     )
     eval_cb.attach_predictor(mpc2_policy)
     eval_cb._init_callback()
-    eval_cb._on_training_start()
 
+    # TRAIN LOOP
     total_steps = 0
     episode = 0
-    total_reward = 0.0
+    total_reward = 0
     max_steps = cfg.total_timesteps
 
     logger.info("Starting training...")
@@ -81,9 +84,10 @@ def run(cfg: Config):
 
     while total_steps < max_steps:
 
+        obs_dict = env.unwrapped.get_obs_dict(env.unwrapped.sim)
+
         if total_steps % 20 == 0:
-            q_now = env.unwrapped.sim.data.qpos.copy()
-            z_star = planner.plan(q_now)
+            z_star = planner.plan(obs_dict)
 
         act = controller.compute_action(z_star)
         obs, rew, terminated, truncated, info = env.step(act)
@@ -97,10 +101,10 @@ def run(cfg: Config):
 
         if terminated or truncated:
             env.reset()
-            total_reward = 0.0
+            total_reward = 0
             episode += 1
-            q_now = env.unwrapped.sim.data.qpos.copy()
-            z_star = planner.plan(q_now)
+            obs_dict = env.unwrapped.get_obs_dict(env.unwrapped.sim)
+            z_star = planner.plan(obs_dict)
 
         if total_steps % cfg.train_log_freq == 0:
             logger.info(f"Total reward: {total_reward}")

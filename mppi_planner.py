@@ -1,46 +1,45 @@
-# mppi_planner.py
 import numpy as np
-from myosuite.utils import gym as myogym
-from pd_controller import MorphologyAwareController
+from myosuite.utils import gym
 
 
-def compute_tt_cost(obs_dict, info):
-    ball_pos = obs_dict["ball_pos"]
-    ball_vel = obs_dict["ball_vel"]
-    paddle_pos = obs_dict["paddle_pos"]
-    paddle_ori = obs_dict["paddle_ori"]
-    reach_err = obs_dict["reach_err"]
-    touching = obs_dict["touching_info"]  # [paddle, own, opp, ground, net, env]
+def compute_tt_cost(obs, info):
+    ball_pos = obs["ball_pos"]
+    ball_vel = obs["ball_vel"]
+    paddle_pos = obs["paddle_pos"]
+    paddle_ori = obs["paddle_ori"]
+    reach_err = obs["reach_err"]
+    touching = obs["touching_info"]
 
-    t_prediction = 0.15
-    ball_future = ball_pos + t_prediction * ball_vel
+    # predict ball future 150ms
+    t = 0.15
+    ball_future = ball_pos + t * ball_vel
 
     offset = np.array([-0.03, 0.0, 0.02])
     target_paddle = ball_future + offset
 
-    reach_loss = np.sum((paddle_pos - target_paddle) ** 2)
-    err_loss = np.sum(reach_err ** 2)
+    reach_loss = np.sum((paddle_pos - target_paddle)**2)
+    err_loss = np.sum(reach_err**2)
 
+    # contact reward (touching_info[0] = paddle contact)
     hit_reward = 1.0 if touching[0] > 0.5 else 0.0
     hit_loss = -hit_reward
 
-    desired_ori = np.array([0.0, 0.0, 1.0])
-    ori_loss = np.sum((paddle_ori - desired_ori) ** 2)
-
-    control_loss = 0.001
+    desired_ori = np.array([0, 0, 1])
+    ori_loss = np.sum((paddle_ori - desired_ori)**2)
 
     cost = (
         3.0 * reach_loss +
         1.0 * err_loss +
         5.0 * hit_loss +
         0.5 * ori_loss +
-        control_loss
+        0.001
     )
+
     return float(cost)
 
 
 class MPPIPlanner:
-    def __init__(self, env_id, horizon=10, pop=64, sigma=0.15, lam=1.0, workers=1, seed=42):
+    def __init__(self, env_id, horizon, pop, sigma, lam, workers, seed):
         self.env_id = env_id
         self.horizon = horizon
         self.pop = pop
@@ -49,10 +48,34 @@ class MPPIPlanner:
         self.workers = workers
         self.rng = np.random.default_rng(seed)
 
+    def plan(self, obs_dict):
+
+        base_qpos = obs_dict["body_qpos"]
+
+        samples = self.rng.normal(
+            base_qpos, self.sigma, size=(self.pop, len(base_qpos))
+        )
+
+        costs = np.zeros(self.pop)
+
+        for i in range(self.pop):
+            costs[i] = self._rollout_cost(samples[i])
+
+        # MPPI weights
+        beta = np.min(costs)
+        weights = np.exp(-(costs - beta) / self.lam)
+        weights /= np.sum(weights)
+
+        z_star = np.sum(weights[:, None] * samples, axis=0)
+        return z_star
+
     def _rollout_cost(self, q_target):
-        env = myogym.make(self.env_id)
-        obs, _ = env.reset()
-        ctrl = MorphologyAwareController(env, kp=8.0, kd=1.5)
+
+        env = gym.make(self.env_id)
+        env.reset()
+
+        from pd_controller import MorphologyAwareController
+        ctrl = MorphologyAwareController(env)
 
         total_cost = 0.0
 
@@ -60,7 +83,7 @@ class MPPIPlanner:
             act = ctrl.compute_action(q_target)
             obs, _, terminated, truncated, info = env.step(act)
 
-            obs_dict = env.get_obs_dict(obs)
+            obs_dict = env.unwrapped.get_obs_dict(env.unwrapped.sim)
             total_cost += compute_tt_cost(obs_dict, info)
 
             if terminated or truncated:
@@ -68,20 +91,3 @@ class MPPIPlanner:
 
         env.close()
         return total_cost
-
-    def plan(self, base_qpos):
-        n_dim = len(base_qpos)
-        noise = self.rng.normal(size=(self.pop, n_dim))
-        samples = base_qpos[None, :] + self.sigma * noise
-
-        costs = np.zeros(self.pop, dtype=np.float32)
-        for i in range(self.pop):
-            costs[i] = self._rollout_cost(samples[i])
-
-        c_min = np.min(costs)
-        exp_arg = -(costs - c_min) / max(self.lam, 1e-6)
-        weights = np.exp(exp_arg)
-        weights_sum = np.sum(weights) + 1e-8
-        z_star = (weights[:, None] * samples).sum(axis=0) / weights_sum
-
-        return z_star
