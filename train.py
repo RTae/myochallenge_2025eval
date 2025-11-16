@@ -36,9 +36,7 @@ def run(cfg: Config):
         seed=cfg.seed,
     )
 
-    # -------------------------------
-    # MPC² Policy usable for eval + video
-    # -------------------------------
+
     def mpc2_policy(obs, policy_env):
         """General policy: uses the *evaluation or video env*."""
         if not hasattr(mpc2_policy, "step"):
@@ -95,4 +93,36 @@ def run(cfg: Config):
             z_star = planner.plan(q_now)
 
         act = controller.compute_action(z_star)
-        _, rew, terminated, truncated, _ = env.s
+        _, rew, terminated, truncated, _ = env.step(act)
+
+        total_steps += 1
+        total_reward += rew
+        pbar.update(1)
+
+        video_cb.step(total_steps)
+        eval_cb._on_step()
+
+        if terminated or truncated:
+            env.reset()
+            total_reward = 0
+            episode += 1
+
+            q_now = env.unwrapped.sim.data.qpos.copy()
+            z_star = planner.plan(q_now)
+
+        if total_steps % cfg.train_log_freq == 0:
+            logger.info(f"Total reward: {total_reward}")
+
+    pbar.close()
+    eval_cb._on_training_end()
+    env.close()
+
+    logger.info("Training complete.")
+    logger.info(f"Total reward: {total_reward}")
+
+
+if __name__ == "__main__":
+    mp.set_start_method("spawn", force=True)
+
+    cfg = Config()
+    run(cfg)
