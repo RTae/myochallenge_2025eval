@@ -3,6 +3,7 @@ import numpy as np
 import skvideo.io
 from loguru import logger
 from myosuite.utils import gym
+from mujoco import Renderer
 
 
 class VideoCallback:
@@ -71,43 +72,40 @@ class VideoCallback:
 
     # ------------------------------------------------------------
     def _record_myo_video(self, video_path: str):
-        """Render a MyoSuite offscreen video (headless safe)."""
+
         env = gym.make(self.env_id)
         obs, _ = env.reset(seed=self.seed + 999)
+
+        model = env.unwrapped.sim.model
+        data = env.unwrapped.sim.data
+
+        renderer = Renderer(model, width=self.video_w, height=self.video_h)
+
         frames = []
 
         logger.info(f"🎥 Recording MyoSuite video → {video_path}")
 
         for _ in range(self.video_frames):
-            # Offscreen render
-            frame = env.sim.renderer.render_offscreen(
-                width=self.video_w, height=self.video_h, camera_id=self.camera_id
-            )
+            renderer.update_scene(data, camera=self.camera_id)
+            frame = renderer.render()
             frames.append(frame)
 
-            # --- Get action ---
             if self._predict_fn is not None:
                 act = self._predict_fn(obs)
             else:
-                act = np.zeros(env.action_space.shape)
+                act = np.zeros(env.action_space.shape, dtype=np.float32)
 
-            # Step environment
-            step_out = env.step(act)
-            if len(step_out) == 5:
-                obs, _, term, trunc, _ = step_out
-                done = term or trunc
-            else:
-                obs, _, done, _ = step_out
-
-            if done:
+            obs, _, term, trunc, _ = env.step(act)
+            if term or trunc:
                 obs, _ = env.reset(seed=self.seed + 999)
 
-        # Save video
         skvideo.io.vwrite(
             video_path,
             np.asarray(frames),
             outputdict={"-pix_fmt": "yuv420p"},
         )
+
         env.close()
+        renderer.close()
 
         logger.info(f"✅ Saved video: {video_path}")

@@ -6,7 +6,7 @@ from myosuite.utils import gym
 
 from config import Config
 from pd_controller import MorphologyAwareController
-from cem_planner import ParallelCEMPlanner
+from mppi_planner import MPPIPlanner
 from callbacks.video_callback import VideoCallback
 from callbacks.eval_callback import EvalCallback
 from utils.helper import next_exp_dir
@@ -26,14 +26,14 @@ def run(cfg: Config):
 
     controller = MorphologyAwareController(env, kp=8.0, kd=1.5)
 
-    planner = ParallelCEMPlanner(
+    planner = MPPIPlanner(
         env_id=cfg.env_id,
         horizon=cfg.horizon_H,
         pop=cfg.es_batch * 8,
-        elites=cfg.elites,
         sigma=cfg.es_sigma,
+        lam=getattr(cfg, "mppi_lambda", 1.0),
         workers=cfg.cem_workers,
-        seed=cfg.seed
+        seed=cfg.seed,
     )
 
     video_cb = VideoCallback(
@@ -90,7 +90,7 @@ def run(cfg: Config):
             q_now = env.unwrapped.sim.data.qpos.copy()
             z_star = planner.plan(q_now)
 
-        if total_steps % 1000 == 0:
+        if total_steps % cfg.train_log_freq == 0:
             logger.info(f"Total reward: {total_reward}")
 
     pbar.close()
