@@ -62,9 +62,10 @@ def run(cfg: Config):
 
     env.reset()
 
+    logger.info("Starting training...")
+    
     pbar = tqdm(total=max_steps)
 
-    logger.info("Starting training...")
     while total_steps < max_steps:
 
         q_now = env.unwrapped.sim.data.qpos.copy()

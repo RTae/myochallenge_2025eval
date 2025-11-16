@@ -14,7 +14,7 @@ class Config:
     es_sigma: float = 0.1
     elites: int = 6
     
-    cem_workers: int = 16
+    cem_workers: int = 28
 
     # === Video Callback ===
     video_freq: int = 10_000
