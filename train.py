@@ -42,7 +42,6 @@ def run(cfg: Config):
         logdir=exp_dir,
         video_freq=cfg.video_freq,
         eval_episodes=cfg.eval_episodes,
-        verbose=0,
     )
 
     eval_cb = EvalCallback(
@@ -55,6 +54,14 @@ def run(cfg: Config):
     eval_cb._init_callback()
     eval_cb._on_training_start()
 
+    def policy_fn(obs):
+        q_now = env.unwrapped.sim.data.qpos.copy()
+        z_star = planner.plan(q_now)
+        return controller.compute_action(z_star)
+
+    video_cb.attach_predictor(policy_fn)
+    eval_cb.attach_predictor(policy_fn)
+
     total_steps = 0
     episode = 0
     total_reward = 0
@@ -63,7 +70,6 @@ def run(cfg: Config):
     env.reset()
 
     logger.info("Starting training...")
-    
     pbar = tqdm(total=max_steps)
 
     while total_steps < max_steps:
@@ -86,7 +92,6 @@ def run(cfg: Config):
             env.reset()
             total_reward = 0
             episode += 1
-            # new plan for next episode
             q_now = env.unwrapped.sim.data.qpos.copy()
             z_star = planner.plan(q_now)
 
