@@ -36,12 +36,21 @@ def run(cfg: Config):
         seed=cfg.seed,
     )
 
-    PLAN_INTERVAL = 20
-
     z_star = env.unwrapped.sim.data.qpos.copy()
 
-    def policy_fn(obs):
-        return controller.compute_action(z_star)
+    def policy_fn(obs, policy_env):
+        if not hasattr(policy_fn, "step"):
+            policy_fn.step = 0
+            policy_fn.z_star = policy_env.unwrapped.sim.data.qpos.copy()
+
+        # replan every 20 steps
+        if policy_fn.step % cfg.plan_internal == 0:
+            q_now = policy_env.unwrapped.sim.data.qpos.copy()
+            policy_fn.z_star = planner.plan(q_now)
+
+        policy_fn.step += 1
+        return controller.compute_action(policy_fn.z_star)
+
 
     video_cb = VideoCallback(
         env_id=cfg.env_id,
@@ -73,7 +82,7 @@ def run(cfg: Config):
 
     while total_steps < max_steps:
 
-        if total_steps % PLAN_INTERVAL == 0:
+        if total_steps % cfg.plan_internal == 0:
             q_now = env.unwrapped.sim.data.qpos.copy()
             z_star = planner.plan(q_now)
 

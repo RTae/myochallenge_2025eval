@@ -17,7 +17,7 @@ class Config:
     mppi_lambda: float = 5.0       # smoother weighting, much more stable
     cem_workers: int = 8           # parallel workers
     es_batch:int = 8               # number of samples per batch
-
+    plan_internal:int = 20
     # (CEM elites removed – unused in MPPI)
 
     # === Video Callback ===
