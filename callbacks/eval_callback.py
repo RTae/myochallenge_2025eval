@@ -36,9 +36,6 @@ class EvalCallback:
         self.eval_env.reset(seed=self.seed)
         logger.info("EvalCallback initialized.")
 
-    def _on_training_start(self, locals=None, globals=None):
-        logger.info(f"Evaluation every {self.eval_freq} steps")
-
     def _episode_success(self, obs, info):
         for k in ["success", "is_success", "done_success", "task_success"]:
             if k in info:

@@ -61,7 +61,6 @@ def run(cfg: Config):
     )
     eval_cb.attach_predictor(policy_fn)
     eval_cb._init_callback()
-    eval_cb._on_training_start()
 
     total_steps = 0
     episode = 0
