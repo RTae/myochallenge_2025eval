@@ -6,19 +6,19 @@ class Config:
     env_id: str = "myoChallengeTableTennisP2-v0"
     seed: int = 42
 
-    total_timesteps: int = 1_000_000 
+    total_timesteps: int = 1_000_000
     logdir: str = "./logs"
     train_log_freq: int = 1000
 
-    es_sigma: float = 0.1
-    elites: int = 6
+    # === MPPI Parameters ===
+    horizon_H: int = 8            # bigger horizon = better TT control
+    pop_size: int = 48            # total MPPI samples per iteration
+    es_sigma: float = 0.08         # exploration noise
+    mppi_lambda: float = 5.0       # smoother weighting, much more stable
+    cem_workers: int = 8           # parallel workers
+    es_batch:int = 8               # number of samples per batch
 
-
-    horizon_H:int = 5 
-    es_batch: int = 8
-    es_sigma: float = 0.05
-    mppi_lambda: float = 1.0
-    cem_workers: int = 8
+    # (CEM elites removed – unused in MPPI)
 
     # === Video Callback ===
     video_freq: int = 10_000

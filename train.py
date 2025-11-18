@@ -16,21 +16,6 @@ os.environ.pop("DISPLAY", None)
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 
-def make_mpc2_policy(planner: MPPIPlanner, kp: float = 8.0, kd: float = 1.5):
-    state = {"step": 0, "z_star": None}
-
-    def policy(obs, env):
-        if state["z_star"] is None or state["step"] % 20 == 0:
-            q_now = env.unwrapped.sim.data.qpos.copy()
-            state["z_star"] = planner.plan(q_now)
-        state["step"] += 1
-
-        ctrl = MorphologyAwareController(env, kp=kp, kd=kd)
-        return ctrl.compute_action(state["z_star"])
-
-    return policy
-
-
 def run(cfg: Config):
 
     exp_dir = next_exp_dir()
@@ -51,7 +36,12 @@ def run(cfg: Config):
         seed=cfg.seed,
     )
 
-    mpc2_policy = make_mpc2_policy(planner, kp=8.0, kd=1.5)
+    PLAN_INTERVAL = 20
+
+    z_star = env.unwrapped.sim.data.qpos.copy()
+
+    def policy_fn(obs):
+        return controller.compute_action(z_star)
 
     video_cb = VideoCallback(
         env_id=cfg.env_id,
@@ -60,7 +50,7 @@ def run(cfg: Config):
         video_freq=cfg.video_freq,
         eval_episodes=cfg.eval_episodes,
     )
-    video_cb.attach_predictor(mpc2_policy)
+    video_cb.attach_predictor(policy_fn)
 
     eval_cb = EvalCallback(
         env_id=cfg.env_id,
@@ -69,7 +59,7 @@ def run(cfg: Config):
         eval_episodes=3,
         logdir=exp_dir
     )
-    eval_cb.attach_predictor(mpc2_policy)
+    eval_cb.attach_predictor(policy_fn)
     eval_cb._init_callback()
     eval_cb._on_training_start()
 
@@ -82,11 +72,9 @@ def run(cfg: Config):
     logger.info("Starting training...")
     pbar = tqdm(total=max_steps)
 
-    z_star = env.unwrapped.sim.data.qpos.copy()
-
     while total_steps < max_steps:
 
-        if total_steps % 20 == 0:
+        if total_steps % PLAN_INTERVAL == 0:
             q_now = env.unwrapped.sim.data.qpos.copy()
             z_star = planner.plan(q_now)
 
@@ -104,6 +92,7 @@ def run(cfg: Config):
             env.reset()
             total_reward = 0.0
             episode += 1
+
             q_now = env.unwrapped.sim.data.qpos.copy()
             z_star = planner.plan(q_now)
 
@@ -112,6 +101,7 @@ def run(cfg: Config):
 
     pbar.close()
     eval_cb._on_training_end()
+    planner.close()
     env.close()
 
     logger.info("Training complete.")
