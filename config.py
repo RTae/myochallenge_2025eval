@@ -11,8 +11,8 @@ class Config:
     train_log_freq: int = 1000
 
     # === MPPI Parameters ===
-    horizon_H: int = 8            # bigger horizon = better TT control
-    pop_size: int = 48            # total MPPI samples per iteration
+    horizon_H: int = 4             # bigger horizon = better TT control
+    pop_size: int = 24             # total MPPI samples per iteration
     es_sigma: float = 0.08         # exploration noise
     mppi_lambda: float = 5.0       # smoother weighting, much more stable
     cem_workers: int = 8           # parallel workers

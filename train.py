@@ -29,10 +29,10 @@ def run(cfg: Config):
     planner = MPPIPlanner(
         env_id=cfg.env_id,
         horizon=cfg.horizon_H,
-        pop=cfg.es_batch * 8,
+        pop=cfg.pop_size,
         sigma=cfg.es_sigma,
-        lam=getattr(cfg, "mppi_lambda", 1.0),
-        workers=getattr(cfg, "cem_workers", None),
+        lam=cfg.mppi_lambda,
+        workers=cfg.cem_workers,
         seed=cfg.seed,
     )
 
