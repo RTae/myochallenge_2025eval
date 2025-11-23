@@ -16,6 +16,42 @@ os.environ.pop("DISPLAY", None)
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 
+def make_policy_fn(planner, cfg):
+    """
+    The official MCP²-style MPC policy.
+    Each environment (train/eval/video) gets its own controller.
+    """
+
+    state = {"step": 0, "z_star": None}
+
+    def policy_fn(obs, policy_env):
+        # Each callback env gets its own controller
+        if not hasattr(policy_fn, "controller_dict"):
+            policy_fn.controller_dict = {}
+
+        if policy_env not in policy_fn.controller_dict:
+            policy_fn.controller_dict[policy_env] = MorphologyAwareController(
+                policy_env, kp=8.0, kd=1.5
+            )
+
+        ctrl = policy_fn.controller_dict[policy_env]
+
+        # Replan every plan_internal steps
+        if state["z_star"] is None or state["step"] % cfg.plan_internal == 0:
+            # Use full observation (task-specific planning)
+            obs_vec = obs if isinstance(obs, np.ndarray) else obs.get("obs", None)
+            if obs_vec is None:
+                obs_vec = policy_env.unwrapped.sim.data.qpos.copy()
+
+            state["z_star"] = planner.plan(obs_vec)
+
+        state["step"] += 1
+        return ctrl.compute_action(state["z_star"])
+
+    return policy_fn
+
+
+
 def run(cfg: Config):
 
     exp_dir = next_exp_dir()
@@ -24,8 +60,10 @@ def run(cfg: Config):
     env = gym.make(cfg.env_id)
     env.reset(seed=cfg.seed)
 
+    # Main controller only for stepping env
     controller = MorphologyAwareController(env, kp=8.0, kd=1.5)
 
+    # MPPI planner
     planner = MPPIPlanner(
         env_id=cfg.env_id,
         horizon=cfg.horizon_H,
@@ -36,22 +74,10 @@ def run(cfg: Config):
         seed=cfg.seed,
     )
 
-    z_star = env.unwrapped.sim.data.qpos.copy()
+    # MPC² global policy
+    policy_fn = make_policy_fn(planner, cfg)
 
-    def policy_fn(obs, policy_env):
-        if not hasattr(policy_fn, "step"):
-            policy_fn.step = 0
-            policy_fn.z_star = policy_env.unwrapped.sim.data.qpos.copy()
-
-        # replan every 20 steps
-        if policy_fn.step % cfg.plan_internal == 0:
-            q_now = policy_env.unwrapped.sim.data.qpos.copy()
-            policy_fn.z_star = planner.plan(q_now)
-
-        policy_fn.step += 1
-        return controller.compute_action(policy_fn.z_star)
-
-
+    # ---- Video callback ----
     video_cb = VideoCallback(
         env_id=cfg.env_id,
         seed=cfg.seed,
@@ -61,36 +87,42 @@ def run(cfg: Config):
     )
     video_cb.attach_predictor(policy_fn)
 
+    # ---- Eval callback ----
     eval_cb = EvalCallback(
         env_id=cfg.env_id,
         seed=cfg.seed,
         eval_freq=cfg.eval_freq,
         eval_episodes=3,
-        logdir=exp_dir
+        logdir=exp_dir,
     )
     eval_cb.attach_predictor(policy_fn)
     eval_cb._init_callback()
 
+    # ---- Train loop ----
     total_steps = 0
     episode = 0
     total_reward = 0.0
-    max_steps = cfg.total_timesteps
 
     env.reset()
+    pbar = tqdm(total=cfg.total_timesteps)
     logger.info("Starting training...")
-    pbar = tqdm(total=max_steps)
 
-    while total_steps < max_steps:
+    z_star = env.unwrapped.sim.data.qpos.copy()
 
+    while total_steps < cfg.total_timesteps:
+
+        # MPPI replanning
         if total_steps % cfg.plan_internal == 0:
-            q_now = env.unwrapped.sim.data.qpos.copy()
-            z_star = planner.plan(q_now)
+            obs_vec = env.get_obs_dict(env._get_obs()).get("obs",
+                      env.unwrapped.sim.data.qpos.copy())
+            z_star = planner.plan(obs_vec)
 
+        # Low-level PD action
         act = controller.compute_action(z_star)
-        _, rew, terminated, truncated, info = env.step(act)
+        obs, rew, terminated, truncated, info = env.step(act)
 
-        total_steps += 1
         total_reward += rew
+        total_steps += 1
         pbar.update(1)
 
         video_cb.step(total_steps)
@@ -101,19 +133,15 @@ def run(cfg: Config):
             total_reward = 0.0
             episode += 1
 
-            q_now = env.unwrapped.sim.data.qpos.copy()
-            z_star = planner.plan(q_now)
-
         if total_steps % cfg.train_log_freq == 0:
-            logger.info(f"Step={total_steps} | Total reward={total_reward:.2f}")
+            logger.info(f"Step {total_steps} | Reward={total_reward:.2f}")
 
     pbar.close()
     eval_cb._on_training_end()
     planner.close()
     env.close()
 
-    logger.info("Training complete.")
-    logger.info(f"Final total reward: {total_reward:.2f}")
+    logger.info(f"Training complete. Final reward={total_reward:.2f}")
 
 
 if __name__ == "__main__":
