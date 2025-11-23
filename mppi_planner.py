@@ -4,6 +4,28 @@ from myosuite.utils import gym
 from pd_controller import MorphologyAwareController
 
 
+# ==========================================================
+#  OBS EXTRACTION (FIX: handles dict or array)
+# ==========================================================
+def _extract_obs_vector(obs):
+    """Extract the true flat observation vector from MyoSuite."""
+    if isinstance(obs, dict):
+        if "obs" in obs:
+            return np.asarray(obs["obs"], dtype=np.float32)
+
+        # fallback – flatten all numeric entries
+        vals = []
+        for v in obs.values():
+            if isinstance(v, (list, tuple, np.ndarray)):
+                vals.extend(np.asarray(v).ravel())
+        return np.asarray(vals, dtype=np.float32)
+
+    return np.asarray(obs, dtype=np.float32)
+
+
+# ==========================================================
+#  PARSER (unchanged)
+# ==========================================================
 def parse_tt_obs(obs: np.ndarray):
     obs = np.asarray(obs).ravel()
     idx = 0
@@ -35,32 +57,56 @@ def parse_tt_obs(obs: np.ndarray):
     }
 
 
-def compute_tt_cost_from_obs(obs: np.ndarray):
-    d = parse_tt_obs(obs)
-    ball_pos = d["ball_pos"]
-    paddle_pos = d["paddle_pos"]
-    reach_err = d["reach_err"]
-    touching = d["touching"]
+# ==========================================================
+#  LONG-HORIZON TT COST
+# ==========================================================
+def compute_tt_cost_from_obs(obs):
+    obs_vec = _extract_obs_vector(obs)
+    d = parse_tt_obs(obs_vec)
 
-    dist = float(np.linalg.norm(ball_pos - paddle_pos))
-    reach_norm = float(np.linalg.norm(reach_err))
-    height_penalty = max(0.0, 0.3 - float(ball_pos[2]))
+    ball_pos   = d["ball_pos"]
+    ball_vel   = d["ball_vel"]
+    paddle_pos = d["paddle_pos"]
+    paddle_vel = d["paddle_vel"]
+    paddle_ori = d["paddle_ori"]
+    reach_err  = d["reach_err"]
+    touching   = d["touching"]
+
+    # ------- Basic tracking -------
+    dist = np.linalg.norm(ball_pos - paddle_pos)
+    reach_norm = np.linalg.norm(reach_err)
+
+    # ------- Ball height -------
+    height_penalty = max(0.0, 0.3 - ball_pos[2])
+
+    # ------- Velocity alignment -------
+    v_align = np.linalg.norm(ball_vel - paddle_vel)
+
+    # ------- Orientation penalty -------
+    ori_penalty = np.linalg.norm(paddle_ori - np.array([0, 0, 1]))
+
+    # ------- Contacts -------
     ground = touching[3]
     net = touching[4]
     env_contact = touching[5]
-    contact_penalty = 5.0 * float(ground + net) + 1.0 * float(env_contact)
+    contact_penalty = 5.0 * (ground + net) + 1.0 * env_contact
 
+    # FINAL COST (long horizon)
     cost = (
         1.0 * dist +
+        0.3 * v_align +
+        0.2 * ori_penalty +
         0.5 * reach_norm +
         2.0 * height_penalty +
         contact_penalty
     )
-    return cost
+
+    return float(cost)
 
 
-# ---------- persistent worker globals ----------
-
+# ==========================================================
+#  PERSISTENT WORKER GLOBALS
+# ==========================================================
 _worker_env = None
 _worker_ctrl = None
 _worker_horizon = None
@@ -88,15 +134,15 @@ def _worker_rollout(q_target: np.ndarray) -> float:
     w_task = _worker_w_task
 
     total_cost = 0.0
+    env.reset()
 
-    env.reset()  # fresh rollout each time
     for _ in range(horizon):
         act = ctrl.compute_action(q_target)
-        obs, rew, terminated, truncated, info = env.step(act)
+        obs, _, terminated, truncated, _ = env.step(act)
 
         q = env.unwrapped.sim.data.qpos.copy()
         n = min(len(q_target), len(q))
-        track_cost = float(np.sum((q[:n] - q_target[:n]) ** 2))
+        track_cost = np.sum((q[:n] - q_target[:n]) ** 2)
 
         tt_cost = compute_tt_cost_from_obs(obs)
 
@@ -105,9 +151,12 @@ def _worker_rollout(q_target: np.ndarray) -> float:
         if terminated or truncated:
             break
 
-    return total_cost
+    return float(total_cost)
 
 
+# ==========================================================
+#  MPPI PLANNER
+# ==========================================================
 class MPPIPlanner:
     def __init__(
         self,
@@ -152,14 +201,11 @@ class MPPIPlanner:
         n_dim = len(base_qpos)
         samples = self.rng.normal(base_qpos, self.sigma, size=(self.pop, n_dim))
 
-        # parallel cost eval
-        costs = np.array(self._pool.map(_worker_rollout, [s for s in samples]),
+        costs = np.array(self._pool.map(_worker_rollout, samples),
                          dtype=np.float64)
 
         beta = float(np.min(costs))
         weights = np.exp(-(costs - beta) / self.lam)
-        weights_sum = float(np.sum(weights)) + 1e-8
-        weights /= weights_sum
+        weights /= np.sum(weights) + 1e-8
 
-        z_star = np.sum(samples * weights[:, None], axis=0)
-        return z_star
+        return np.sum(samples * weights[:, None], axis=0)
