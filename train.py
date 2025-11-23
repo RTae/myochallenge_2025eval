@@ -2,6 +2,7 @@ import os
 from loguru import logger
 import multiprocessing as mp
 from tqdm import tqdm
+import numpy as np
 from myosuite.utils import gym
 
 from config import Config
