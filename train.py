@@ -104,7 +104,7 @@ def run(cfg: Config):
     episode = 0
     total_reward = 0.0
 
-    env.reset()
+    obs, _ = env.reset(seed=cfg.seed)
     pbar = tqdm(total=cfg.total_timesteps)
     logger.info("Starting training...")
 
@@ -114,9 +114,7 @@ def run(cfg: Config):
 
         # MPPI replanning
         if total_steps % cfg.plan_internal == 0:
-            obs_vec = env.get_obs_dict(env._get_obs()).get("obs",
-                      env.unwrapped.sim.data.qpos.copy())
-            z_star = planner.plan(obs_vec)
+            z_star = planner.plan(obs)
 
         # Low-level PD action
         act = controller.compute_action(z_star)
@@ -130,7 +128,7 @@ def run(cfg: Config):
         eval_cb._on_step()
 
         if terminated or truncated:
-            env.reset()
+            obs, _ = env.reset(seed=cfg.seed)
             total_reward = 0.0
             episode += 1
 
