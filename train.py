@@ -73,6 +73,8 @@ def run(cfg: Config):
         lam=cfg.mppi_lambda,
         workers=cfg.cem_workers,
         seed=cfg.seed,
+        w_task=cfg.w_task,
+        w_track=cfg.w_track
     )
 
     # MPC² global policy

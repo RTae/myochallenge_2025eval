@@ -60,45 +60,72 @@ def parse_tt_obs(obs: np.ndarray):
 # ==========================================================
 #  LONG-HORIZON TT COST
 # ==========================================================
-def compute_tt_cost_from_obs(obs):
-    obs_vec = _extract_obs_vector(obs)
-    d = parse_tt_obs(obs_vec)
+def compute_tt_cost(obs: np.ndarray):
+    """
+    Improved MCP²-style Table Tennis rally cost.
+    Uses ball_future prediction, paddle orientation alignment,
+    velocity matching, side-of-table logic.
+    """
+    d = parse_tt_obs(obs)
 
-    ball_pos   = d["ball_pos"]
-    ball_vel   = d["ball_vel"]
+    ball_pos = d["ball_pos"]
+    ball_vel = d["ball_vel"]
     paddle_pos = d["paddle_pos"]
     paddle_vel = d["paddle_vel"]
     paddle_ori = d["paddle_ori"]
-    reach_err  = d["reach_err"]
-    touching   = d["touching"]
+    reach_err = d["reach_err"]
+    touching = d["touching"]
 
-    # ------- Basic tracking -------
-    dist = np.linalg.norm(ball_pos - paddle_pos)
-    reach_norm = np.linalg.norm(reach_err)
+    # -----------------------------------------------
+    # 1) Predict future ball position (simple physics)
+    # -----------------------------------------------
+    dt = 0.05    # ~50ms into the future
+    ball_future = ball_pos + ball_vel * dt
 
-    # ------- Ball height -------
-    height_penalty = max(0.0, 0.3 - ball_pos[2])
+    # encourage reaching future ball position
+    future_dist = np.linalg.norm(paddle_pos - ball_future)
 
-    # ------- Velocity alignment -------
-    v_align = np.linalg.norm(ball_vel - paddle_vel)
+    # -----------------------------------------------
+    # 2) Paddle orientation alignment
+    # -----------------------------------------------
+    desired_ori = ball_pos - paddle_pos
+    desired_ori_norm = desired_ori / (np.linalg.norm(desired_ori) + 1e-6)
+    ori_error = np.linalg.norm(paddle_ori - desired_ori_norm)
 
-    # ------- Orientation penalty -------
-    ori_penalty = np.linalg.norm(paddle_ori - np.array([0, 0, 1]))
+    # -----------------------------------------------
+    # 3) Paddle velocity alignment (for stable hit)
+    # -----------------------------------------------
+    vel_align = np.linalg.norm(paddle_vel - ball_vel)
 
-    # ------- Contacts -------
+    # -----------------------------------------------
+    # 4) Keep ball off the ground
+    # -----------------------------------------------
+    height_penalty = max(0.0, 0.25 - ball_pos[2])
+
+    # -----------------------------------------------
+    # 5) Contact penalties (avoid net/ground)
+    # -----------------------------------------------
     ground = touching[3]
     net = touching[4]
     env_contact = touching[5]
-    contact_penalty = 5.0 * (ground + net) + 1.0 * env_contact
+    contact_penalty = 10.0 * float(ground + net) + 2.0 * float(env_contact)
 
-    # FINAL COST (long horizon)
+    # -----------------------------------------------
+    # 6) Bonus if ball is moving toward opponent (positive X)
+    # -----------------------------------------------
+    toward_opponent = max(0.0, ball_vel[0])
+
+    # -----------------------------------------------
+    # Combine weighted cost
+    # -----------------------------------------------
     cost = (
-        1.0 * dist +
-        0.3 * v_align +
-        0.2 * ori_penalty +
-        0.5 * reach_norm +
+        2.0 * future_dist +
+        1.0 * np.linalg.norm(reach_err) +
+        1.0 * ori_error +
+        0.5 * vel_align +
         2.0 * height_penalty +
-        contact_penalty
+        contact_penalty -
+        3.0 * toward_opponent     # reward ball flying forward
     )
 
     return float(cost)
@@ -144,7 +171,7 @@ def _worker_rollout(q_target: np.ndarray) -> float:
         n = min(len(q_target), len(q))
         track_cost = np.sum((q[:n] - q_target[:n]) ** 2)
 
-        tt_cost = compute_tt_cost_from_obs(obs)
+        tt_cost = compute_tt_cost(obs)
 
         total_cost += w_track * track_cost + w_task * tt_cost
 
