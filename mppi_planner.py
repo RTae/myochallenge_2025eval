@@ -60,72 +60,107 @@ def parse_tt_obs(obs: np.ndarray):
 # ==========================================================
 #  LONG-HORIZON TT COST
 # ==========================================================
-def compute_tt_cost(obs: np.ndarray):
-    """
-    Improved MCP²-style Table Tennis rally cost.
-    Uses ball_future prediction, paddle orientation alignment,
-    velocity matching, side-of-table logic.
-    """
+def compute_tt_cost(obs: np.ndarray) -> float:
     d = parse_tt_obs(obs)
 
-    ball_pos = d["ball_pos"]
-    ball_vel = d["ball_vel"]
-    paddle_pos = d["paddle_pos"]
-    paddle_vel = d["paddle_vel"]
-    paddle_ori = d["paddle_ori"]
-    reach_err = d["reach_err"]
-    touching = d["touching"]
+    ball_pos    = d["ball_pos"]
+    ball_vel    = d["ball_vel"]
+    paddle_pos  = d["paddle_pos"]
+    paddle_vel  = d["paddle_vel"]
+    reach_err   = d["reach_err"]
+    touching    = d["touching"]
 
-    # -----------------------------------------------
-    # 1) Predict future ball position (simple physics)
-    # -----------------------------------------------
-    dt = 0.05    # ~50ms into the future
-    ball_future = ball_pos + ball_vel * dt
+    # --------------------------------------------------
+    # 1) Basic shaping terms (smooth tracking)
+    # --------------------------------------------------
+    dist_ball_paddle = float(np.linalg.norm(ball_pos - paddle_pos))
+    reach_norm       = float(np.linalg.norm(reach_err))
 
-    # encourage reaching future ball position
-    future_dist = np.linalg.norm(paddle_pos - ball_future)
+    # keep ball above a "floor" height (e.g. 0.2 m)
+    floor_height   = 0.2
+    height_floor_pen = max(0.0, floor_height - float(ball_pos[2]))
 
-    # -----------------------------------------------
-    # 2) Paddle orientation alignment
-    # -----------------------------------------------
-    desired_ori = ball_pos - paddle_pos
-    desired_ori_norm = desired_ori / (np.linalg.norm(desired_ori) + 1e-6)
-    ori_error = np.linalg.norm(paddle_ori - desired_ori_norm)
+    # --------------------------------------------------
+    # 2) Contact flags
+    # touching: [paddle, own, opponent, ground, net, env]
+    # --------------------------------------------------
+    contact_paddle  = bool(touching[0])
+    contact_ground  = bool(touching[3])
+    contact_net     = bool(touching[4])
+    contact_env     = bool(touching[5])
 
-    # -----------------------------------------------
-    # 3) Paddle velocity alignment (for stable hit)
-    # -----------------------------------------------
-    vel_align = np.linalg.norm(paddle_vel - ball_vel)
+    # Strong penalties for bad contacts
+    contact_penalty = (
+        10.0 * float(contact_ground) +   # ball on ground
+        8.0  * float(contact_net)    +   # ball hits net
+        2.0  * float(contact_env)        # other environment collisions
+    )
 
-    # -----------------------------------------------
-    # 4) Keep ball off the ground
-    # -----------------------------------------------
-    height_penalty = max(0.0, 0.25 - ball_pos[2])
+    # --------------------------------------------------
+    # 3) Impact-aware return objective
+    # --------------------------------------------------
+    if contact_paddle:
+        # ---- At impact: we want the ball to go toward opponent and up ----
+        # Assume player on negative-x, opponent on positive-x → push ball +x
+        desired_dir = np.array([1.0, 0.0, 0.5], dtype=np.float32)
 
-    # -----------------------------------------------
-    # 5) Contact penalties (avoid net/ground)
-    # -----------------------------------------------
-    ground = touching[3]
-    net = touching[4]
-    env_contact = touching[5]
-    contact_penalty = 10.0 * float(ground + net) + 2.0 * float(env_contact)
+        v = np.asarray(ball_vel, dtype=np.float32)
+        speed = float(np.linalg.norm(v)) + 1e-8
+        desired_dir_norm = float(np.linalg.norm(desired_dir)) + 1e-8
 
-    # -----------------------------------------------
-    # 6) Bonus if ball is moving toward opponent (positive X)
-    # -----------------------------------------------
-    toward_opponent = max(0.0, ball_vel[0])
+        # cosine similarity between actual and desired ball velocity
+        cos_sim = float(np.dot(v, desired_dir) / (speed * desired_dir_norm))
+        cos_sim = np.clip(cos_sim, -1.0, 1.0)
 
-    # -----------------------------------------------
-    # Combine weighted cost
-    # -----------------------------------------------
+        # good if cos_sim ≈ 1
+        impact_dir_cost = 1.0 - cos_sim   # in [0, 2]
+
+        # encourage non-trivial outgoing speed
+        target_speed = 3.0
+        speed_err = max(0.0, target_speed - speed)
+
+        # make sure ball is not too low at impact
+        net_clear_height = 0.7
+        impact_height_pen = max(0.0, net_clear_height - float(ball_pos[2]))
+
+        impact_cost = (
+            4.0 * impact_dir_cost +
+            0.5 * speed_err +
+            3.0 * impact_height_pen
+        )
+
+    else:
+        # ---- Pre-impact: shape paddle to meet future ball ----
+        # Predict short-horizon ball position (e.g. 0.12 s into future)
+        dt_predict = 0.12
+        ball_future = ball_pos + ball_vel * dt_predict
+
+        # distance between paddle and predicted ball position
+        pred_dist = float(np.linalg.norm(ball_future - paddle_pos))
+
+        # relative velocity: we want paddle to "move with" the ball near impact
+        rel_vel = float(np.linalg.norm(ball_vel - paddle_vel))
+
+        # encourage ball moving toward opponent side before impact
+        # (slightly reward v_x > 0)
+        vx = float(ball_vel[0])
+        toward_opponent_cost = -0.2 * max(0.0, vx)  # negative = small reward
+
+        impact_cost = (
+            0.8 * pred_dist +
+            0.1 * rel_vel +
+            toward_opponent_cost
+        )
+
+    # --------------------------------------------------
+    # 4) Total cost
+    # --------------------------------------------------
     cost = (
-        2.0 * future_dist +
-        1.0 * np.linalg.norm(reach_err) +
-        1.0 * ori_error +
-        0.5 * vel_align +
-        2.0 * height_penalty +
-        contact_penalty -
-        3.0 * toward_opponent     # reward ball flying forward
+        1.0 * dist_ball_paddle +   # keep paddle near ball
+        0.3 * reach_norm       +   # keep paddle near task MPL
+        1.0 * height_floor_pen +   # keep ball above floor
+        contact_penalty        +   # avoid ground/net/env
+        impact_cost                # long-horizon impact shaping
     )
 
     return float(cost)
