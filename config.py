@@ -12,16 +12,15 @@ class Config:
 
 
     # === MPPI Parameters ===
-    horizon_H: int = 8             # bigger horizon = better TT control
-    pop_size: int = 48             # total MPPI samples per iteration
+    horizon_H: int = 14             # bigger horizon = better TT control
+    pop_size: int = 64             # total MPPI samples per iteration
     es_sigma: float = 0.06         # exploration noise
     mppi_lambda: float = 4.0       # smoother weighting, much more stable
     cem_workers: int = 8           # parallel workers
     es_batch:int = 8               # number of samples per batch
     w_track = 0.02
     w_task = 1.0
-    plan_internal:int = 20
-    # (CEM elites removed – unused in MPPI)
+    plan_internal:int = 5
 
     # === Video Callback ===
     video_freq: int = 10_000
