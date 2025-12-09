@@ -3,6 +3,7 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 from stable_baselines3 import PPO
+import os
 
 from config import Config
 from hrl_utils import flatten_myo_obs_manager, build_worker_obs
@@ -21,6 +22,7 @@ class ManagerEnv(gym.Env):
         # Base MyoSuite environment
         # ------------------------------
         self.base_env = myo_gym.make(config.env_id)
+        worker_model_path = os.path.abspath(worker_model_path)
 
         # ------------------------------
         # Load trained worker

@@ -20,7 +20,6 @@ def flatten_myo_obs_worker(obs_dict):
         obs_dict["paddle_pos"],
         obs_dict["paddle_vel"],
         obs_dict["paddle_ori"],
-        obs_dict["padde_ori_err"],
         obs_dict["reach_err"],
         obs_dict["palm_pos"],
         obs_dict["palm_err"],

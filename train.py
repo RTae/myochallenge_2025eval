@@ -10,6 +10,7 @@ from loguru import logger
 
 from callbacks.video_callback import VideoCallback
 from hrl_utils import flatten_myo_obs_worker, make_hierarchical_predictor
+from stable_baselines3.common.callbacks import CallbackList
 
 import numpy as np
 
@@ -110,12 +111,12 @@ def train_worker(cfg: Config):
     # -------- TRAIN --------
     model.learn(
         total_timesteps=cfg.total_timesteps,
-        callback=[eval_callback, video_cb],
+        callback=CallbackList([eval_callback, video_cb]),
     )
 
     # -------- SAVE --------
-    model.save(os.path.join(cfg.logdir, "worker.zip"))
-    env.save(os.path.join(cfg.logdir, "worker_norm.pkl"))
+    model.save(os.path.join(worker_logdir, "worker.zip"))
+    env.save(os.path.join(worker_logdir, "worker_norm.pkl"))
 
     logger.info("Worker saved → worker.zip + worker_norm.pkl")
 
@@ -166,7 +167,9 @@ def train_manager(cfg: Config):
 
     # -------- HRL Predictor --------
     from stable_baselines3 import PPO as PPO_LOAD
-    worker_model = PPO_LOAD.load(os.path.join(cfg.logdir, "worker.zip"))
+    worker_path = os.path.join(cfg.logdir, "worker", "worker")
+    worker_path = os.path.abspath(worker_path)
+    worker_model = PPO_LOAD.load(worker_path)
 
     hrl_predict = make_hierarchical_predictor(cfg, model, worker_model)
 
@@ -175,12 +178,12 @@ def train_manager(cfg: Config):
     # -------- TRAIN --------
     model.learn(
         total_timesteps=cfg.total_timesteps,
-        callback=[eval_callback, video_cb],
+        callback=CallbackList([eval_callback, video_cb]),
     )
 
     # -------- SAVE --------
-    model.save(os.path.join(cfg.logdir, "manager.zip"))
-    env.save(os.path.join(cfg.logdir, "manager_norm.pkl"))
+    model.save(os.path.join(manager_logdir, "manager.zip"))
+    env.save(os.path.join(manager_logdir, "manager_norm.pkl"))
 
     logger.info("Manager saved → manager.zip + manager_norm.pkl")
 
@@ -196,10 +199,11 @@ def train_manager(cfg: Config):
 if __name__ == "__main__":
     cfg = Config()
 
-    # create logs/expN folder automatically
-    prepare_experiment_directory(cfg)
+    # # create logs/expN folder automatically
+    # prepare_experiment_directory(cfg)
 
-    train_worker(cfg)
+    # train_worker(cfg)
+    cfg.logdir = "./logs/exp6"
     train_manager(cfg)
 
     logger.info("\n🎉 HRL Training Complete!")

@@ -19,7 +19,10 @@ def make_worker_env(cfg: Config):
 def make_manager_env(cfg: Config):
     """Creates one manager env instance for SubprocVecEnv."""
     def _init():
-        env = ManagerEnv(cfg, worker_model_path="worker.zip")
+        worker_path = os.path.join(cfg.logdir, "worker", "worker")
+        worker_path = os.path.abspath(worker_path)
+
+        env = ManagerEnv(cfg, worker_model_path=worker_path)
         return Monitor(env)
     return _init
 
