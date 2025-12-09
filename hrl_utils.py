@@ -33,34 +33,29 @@ def flatten_myo_obs_worker(obs_dict):
         if arr.ndim == 0:  # scalar → (1,)
             arr = arr.reshape(1)
         safe_parts.append(arr)
-
-    return np.concatenate(safe_parts, axis=-1)  # (428,)
+    return np.concatenate(safe_parts, axis=-1) # (424,) 
 
 
 # ================================================================
 #  FLATTEN MANAGER OBSERVATION (High-level controller)
 # ================================================================
 def flatten_myo_obs_manager(obs_dict):
-    """
-    Manager sees a compact, task-focused state.
-    """
     parts = [
-        obs_dict["ball_pos"],      # (3,)
-        obs_dict["ball_vel"],      # (3,)
-        obs_dict["paddle_pos"],    # (3,)
-        obs_dict["paddle_vel"],    # (3,)
-        obs_dict["reach_err"],     # (3,)
-        obs_dict["time"],          # (1,)
+        obs_dict["ball_pos"],     # (3,)
+        obs_dict["ball_vel"],     # (3,)
+        obs_dict["paddle_pos"],   # (3,)
+        obs_dict["paddle_vel"],   # (3,)
+        obs_dict["time"],         # (1,)
     ]
 
-    safe_parts = []
+    arrays = []
     for p in parts:
-        arr = np.array(p, dtype=np.float32)
+        arr = np.asarray(p, dtype=np.float32)
         if arr.ndim == 0:
             arr = arr.reshape(1)
-        safe_parts.append(arr)
+        arrays.append(arr)
 
-    return np.concatenate(safe_parts, axis=-1).astype(np.float32)  # (16,)
+    return np.concatenate(arrays, axis=-1)  # (13,)
 
 
 # ================================================================
@@ -69,13 +64,13 @@ def flatten_myo_obs_manager(obs_dict):
 def build_worker_obs(obs_dict, goal, t_in_macro, cfg):
     """
     Worker observation during HRL:
-        [ flatten_myo_obs_worker (428),
+        [ flatten_myo_obs_worker (424),
           goal (goal_dim = 3),
           phase (1) ]
 
-    Total dims: 428 + goal_dim(3) + 1 = 432
+    Total dims: 424 + 3 + 1 = 428
     """
-    base = flatten_myo_obs_worker(obs_dict)                  # (428,)
+    base = flatten_myo_obs_worker(obs_dict)                  # (424,)
     goal = np.asarray(goal, dtype=np.float32).reshape(-1)    # (3,)
 
     denom = max(1, cfg.high_level_period - 1)
