@@ -11,6 +11,8 @@ from loguru import logger
 from callbacks.video_callback import VideoCallback
 from hrl_utils import flatten_myo_obs_worker, make_hierarchical_predictor
 
+import numpy as np
+
 
 
 # ============================================================
@@ -91,12 +93,16 @@ def train_worker(cfg: Config):
     )
 
     # -------- VideoCallback for Worker --------
-    def worker_predict(obs, env_instance):
-        # Use the env_instance to extract MyoSuite dict
-        obs_dict = env_instance.obs_dict
+    def worker_predict(_ignored_sb3_obs, env_instance):
+        # Use the underlying MyoSuite env dict
+        obs_dict = env_instance.unwrapped.obs_dict
 
         obs_vec = flatten_myo_obs_worker(obs_dict).reshape(1, -1)
         action, _ = model.predict(obs_vec, deterministic=True)
+
+        # Flatten (1, act_dim) → (act_dim,)
+        action = np.asarray(action, dtype=np.float32).reshape(-1)
+
         return action
 
     video_cb = VideoCallback(cfg, mode="worker", predict_fn=worker_predict)

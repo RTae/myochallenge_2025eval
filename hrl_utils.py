@@ -103,27 +103,25 @@ def make_hierarchical_predictor(cfg, manager_model, worker_model):
         VideoRecorder calls:
             predict_fn(sb3_obs, video_env)
 
-        BUT:
-            sb3_obs is a flattened vector → NOT USEFUL
-            video_env.obs_dict contains the REAL MyoSuite dictionary
+        We IGNORE sb3_obs and always use env.unwrapped.obs_dict,
+        because that's the real MyoSuite dict.
 
-        So:
-            We IGNORE sb3_obs entirely
-            And always use env.obs_dict
+        - Manager gets 16D manager obs → goal(3)
+        - Worker gets full obs + goal + phase(0)
     """
 
     def predict_fn(_ignored_sb3_obs, env_instance):
         # -----------------------------------------------------
         # Extract the real MyoSuite observation dictionary
         # -----------------------------------------------------
-        obs_dict = env_instance.obs_dict
+        obs_dict = env_instance.unwrapped.obs_dict
 
         # -----------------------------------------------------
         # 1) MANAGER predicts high-level goal (3D)
         # -----------------------------------------------------
         m_obs = flatten_myo_obs_manager(obs_dict).reshape(1, -1)
         goal, _ = manager_model.predict(m_obs, deterministic=True)
-        goal = goal.astype(np.float32).flatten()
+        goal = goal.astype(np.float32).flatten()  # (3,)
 
         # -----------------------------------------------------
         # 2) WORKER predicts muscle activations for 1 step
@@ -131,11 +129,15 @@ def make_hierarchical_predictor(cfg, manager_model, worker_model):
         w_obs = build_worker_obs(
             obs_dict=obs_dict,
             goal=goal,
-            t=0,              # always first step for video rollout
+            t=0,       # first step in macro
             cfg=cfg,
         ).reshape(1, -1)
 
         action, _ = worker_model.predict(w_obs, deterministic=True)
+
+        # IMPORTANT: flatten batched action (1, act_dim) → (act_dim,)
+        action = np.asarray(action, dtype=np.float32).reshape(-1)
+
         return action
 
     return predict_fn
