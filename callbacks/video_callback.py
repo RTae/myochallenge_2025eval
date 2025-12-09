@@ -4,81 +4,87 @@ import skvideo.io
 from loguru import logger
 from myosuite.utils import gym
 
+from stable_baselines3.common.callbacks import BaseCallback
 
-class VideoCallback:
-    def __init__(
-        self,
-        env_id: str,
-        seed: int,
-        logdir: str,
-        video_freq: int = 50000,
-        eval_episodes: int = 1,
-        video_frames: int = 400,
-        camera_id: int = 1,
-        video_w: int = 640,
-        video_h: int = 420,
-        verbose: int = 0,
-    ):
-        self.env_id = env_id
-        self.seed = seed
-        self.logdir = logdir
-        self.video_freq = video_freq
-        self.eval_episodes = eval_episodes
-        self.video_frames = video_frames
-        self.camera_id = camera_id
-        self.video_w = video_w
-        self.video_h = video_h
-        self.verbose = verbose
 
-        self._video_dir = os.path.join(logdir, "videos")
-        os.makedirs(self._video_dir, exist_ok=True)
+class VideoCallback(BaseCallback):
+    """
+    Unified SB3 video recording callback for MyoSuite HRL.
 
-        self._predict_fn = None
-        self._last_recorded = 0
+    - Uses Config for all settings
+    - Works for BOTH worker training and manager training
+    - Contains full video recorder logic (no extra class needed)
+    - Automatically triggers video recording every cfg.video_freq steps
+    """
 
-    def attach_predictor(self, fn):
-        self._predict_fn = fn
+    def __init__(self, cfg, mode="worker", predict_fn=None, verbose=0):
+        """
+        mode:       "worker" or "manager"
+        predict_fn: function(obs, env) → action   (HRL-aware)
+        """
+        super().__init__(verbose)
+        self.cfg = cfg
+        self.mode = mode
+        self.predict_fn = predict_fn
 
-    def step(self, step_count: int):
-        if (step_count - self._last_recorded) >= self.video_freq:
-            path = os.path.join(self._video_dir, f"step_{step_count}.mp4")
-            self._record(path)
-            self._last_recorded = step_count
+        # prepare directory
+        self.video_dir = os.path.join(cfg.logdir, mode, "videos")
+        os.makedirs(self.video_dir, exist_ok=True)
 
+    # -------------------------------------------------------
+    # SB3 hook — automatically called every env step
+    # -------------------------------------------------------
+    def _on_step(self):
+        if self.num_timesteps % self.cfg.video_freq == 0:
+            video_path = os.path.join(
+                self.video_dir, f"{self.mode}_step_{self.num_timesteps}.mp4"
+            )
+            logger.info(f"🎥 Triggering video capture at step {self.num_timesteps}")
+            self._record(video_path)
+        return True
+
+    # -------------------------------------------------------
+    # Actual video recording logic
+    # -------------------------------------------------------
     def _record(self, video_path):
 
         os.environ["MUJOCO_GL"] = "egl"
         os.environ.pop("DISPLAY", None)
 
-        env = gym.make(self.env_id)
-        obs, _ = env.reset(seed=self.seed + 123)
+        env = gym.make(self.cfg.env_id)
+        obs, _ = env.reset(seed=self.cfg.seed + 321)
 
+        # warm-up renderer
         _ = env.sim.renderer.render_offscreen(
-            width=self.video_w,
-            height=self.video_h,
-            camera_id=self.camera_id,
+            width=self.cfg.video_w,
+            height=self.cfg.video_h,
+            camera_id=self.cfg.camera_id,
         )
 
         frames = []
-        logger.info(f"🎥 Recording MyoSuite video → {video_path}")
+        logger.info(f"🎥 Recording video → {video_path}")
 
-        for _ in range(self.video_frames):
+        for _ in range(self.cfg.video_frames):
 
+            # Render
             frame = env.sim.renderer.render_offscreen(
-                width=self.video_w,
-                height=self.video_h,
-                camera_id=self.camera_id,
+                width=self.cfg.video_w,
+                height=self.cfg.video_h,
+                camera_id=self.cfg.camera_id,
             )
             frames.append(frame)
 
-            if self._predict_fn is not None:
-                act = self._predict_fn(obs, env)
+            # Predict action (HRL-aware or worker-only)
+            if self.predict_fn is not None:
+                action = self.predict_fn(obs, env)
             else:
-                act = np.zeros(env.action_space.shape[0], dtype=np.float32)
+                # default safe fallback
+                action = np.zeros(env.action_space.shape[0], dtype=np.float32)
 
-            obs, _, term, trunc, _ = env.step(act)
-            if term or trunc:
-                obs, _ = env.reset(seed=self.seed + 123)
+            # step environment
+            obs, _, terminated, truncated, _ = env.step(action)
+            if terminated or truncated:
+                obs, _ = env.reset(seed=self.cfg.seed + 321)
 
         env.close()
 

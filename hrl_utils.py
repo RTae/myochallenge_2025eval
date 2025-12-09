@@ -73,3 +73,31 @@ def intrinsic_reward(obs_dict, goal):
 
     pos_error = np.linalg.norm(ball_to_paddle - goal)
     return -float(pos_error)
+
+def make_hierarchical_predictor(cfg, manager_model, worker_model):
+    """
+    Returns a predict_fn used by VideoRecorder.
+    """
+
+    def predict_fn(obs, env):
+        # 1) Manager gives a goal
+        obs_vec = []  # flatten obs manually
+        for key in ["pelvis_pos", "ball_pos", "ball_vel", "paddle_pos", "paddle_vel", "paddle_ori", "reach_err"]:
+            obs_vec.append(obs[key])
+        obs_vec = np.concatenate(obs_vec).astype(np.float32).reshape(1, -1)
+
+        goal, _ = manager_model.predict(obs_vec, deterministic=True)
+        goal = goal.astype(np.float32).flatten()
+
+        # 2) Worker executes for 1 low-level step
+        worker_obs = build_worker_obs(
+            obs_dict=obs,
+            goal=goal,
+            t_in_macro=0,
+            config=cfg,
+        ).reshape(1, -1)
+
+        action, _ = worker_model.predict(worker_obs, deterministic=True)
+        return action
+
+    return predict_fn

@@ -6,19 +6,24 @@ from stable_baselines3.common.callbacks import EvalCallback
 from config import Config
 from env_factory import build_vec_env
 
+from loguru import logger
 
-# -----------------------------
-# Train Worker
-# -----------------------------
+from callbacks.video_callback import VideoCallback
+from hrl_utils import flatten_myo_obs_worker, make_hierarchical_predictor
+
+
+# ============================================================
+# TRAIN WORKER (LOW-LEVEL CONTROLLER)
+# ============================================================
 
 def train_worker(cfg: Config):
 
-    print("\n=== TRAINING WORKER (LOW-LEVEL PPO) ===\n")
+    logger.info("Training worker...")
 
     worker_logdir = os.path.join(cfg.logdir, "worker")
     os.makedirs(worker_logdir, exist_ok=True)
 
-    # Build parallel VecEnv
+    # -------- Parallel Envs --------
     env = build_vec_env(worker=True, cfg=cfg)
     eval_env = build_vec_env(worker=True, cfg=cfg, eval_env=True)
 
@@ -31,12 +36,13 @@ def train_worker(cfg: Config):
         n_eval_episodes=cfg.eval_episodes,
     )
 
+    # -------- PPO Model --------
     model = PPO(
         "MlpPolicy",
         env,
         verbose=1,
         tensorboard_log=worker_logdir,
-        n_steps=cfg.ppo_n_steps,       # applied per-env inside VecEnv
+        n_steps=cfg.ppo_n_steps,
         batch_size=cfg.ppo_batch_size,
         gamma=cfg.ppo_gamma,
         learning_rate=cfg.ppo_lr,
@@ -46,30 +52,48 @@ def train_worker(cfg: Config):
         seed=cfg.seed,
     )
 
-    # Train worker
-    model.learn(total_timesteps=cfg.total_timesteps, callback=eval_callback)
+    # -------- VideoCallback for Worker --------
+    def worker_predict(obs, env_instance):
+        # OBS: raw MyoSuite obs dict
+        obs_vec = flatten_myo_obs_worker(obs).reshape(1, -1)
+        action, _ = model.predict(obs_vec, deterministic=True)
+        return action
 
+    video_cb = VideoCallback(
+        cfg,
+        mode="worker",
+        predict_fn=worker_predict
+    )
+
+    # -------- TRAIN --------
+    model.learn(
+        total_timesteps=cfg.total_timesteps,
+        callback=[eval_callback, video_cb],
+    )
+
+    # -------- SAVE MODELS --------
     model.save("worker.zip")
-    env.save("worker_norm.pkl")      # IMPORTANT: save VecNormalize stats
+    env.save("worker_norm.pkl")
 
-    print("Worker saved to worker.zip + worker_norm.pkl")
+    logger.info("Worker saved → worker.zip + worker_norm.pkl")
 
     env.close()
     eval_env.close()
 
 
-# -----------------------------
-# Train Manager
-# -----------------------------
+
+# ============================================================
+# TRAIN MANAGER (HIGH-LEVEL CONTROLLER)
+# ============================================================
 
 def train_manager(cfg: Config):
 
-    print("\n=== TRAINING MANAGER (HIGH-LEVEL PPO) ===\n")
+    logger.info("Training manager...")
 
     manager_logdir = os.path.join(cfg.logdir, "manager")
     os.makedirs(manager_logdir, exist_ok=True)
 
-    # parallel vec env
+    # -------- Parallel Envs --------
     env = build_vec_env(worker=False, cfg=cfg)
     eval_env = build_vec_env(worker=False, cfg=cfg, eval_env=True)
 
@@ -82,6 +106,7 @@ def train_manager(cfg: Config):
         n_eval_episodes=cfg.eval_episodes,
     )
 
+    # -------- PPO Model --------
     model = PPO(
         "MlpPolicy",
         env,
@@ -97,16 +122,38 @@ def train_manager(cfg: Config):
         seed=cfg.seed,
     )
 
-    model.learn(total_timesteps=cfg.total_timesteps, callback=eval_callback)
+    # -------- Hierarchical Predictor (Manager + Worker) --------
+    from stable_baselines3 import PPO as PPO_LOAD
+    worker_model = PPO_LOAD.load("worker.zip")
 
+    hrl_predict = make_hierarchical_predictor(cfg, model, worker_model)
+
+    video_cb = VideoCallback(
+        cfg,
+        mode="manager",
+        predict_fn=hrl_predict
+    )
+
+    # -------- TRAIN --------
+    model.learn(
+        total_timesteps=cfg.total_timesteps,
+        callback=[eval_callback, video_cb],
+    )
+
+    # -------- SAVE MODELS --------
     model.save("manager.zip")
     env.save("manager_norm.pkl")
 
-    print("Manager saved to manager.zip + manager_norm.pkl")
+    logger.info("Manager saved → manager.zip + manager_norm.pkl")
 
     env.close()
     eval_env.close()
 
+
+
+# ============================================================
+# MAIN
+# ============================================================
 
 if __name__ == "__main__":
     cfg = Config()
@@ -114,4 +161,4 @@ if __name__ == "__main__":
     train_worker(cfg)
     train_manager(cfg)
 
-    print("\n🎉 HRL Training Complete with Parallel Env + VecNormalize!")
+    print("\n🎉 HRL Training Complete with Parallel Env + VecNormalize + Video Recording!")

@@ -6,7 +6,7 @@ class Config:
     # === Environment ===
     env_id: str = "myoChallengeTableTennisP2-v0"
     seed: int = 42
-    num_envs: int = 4
+    num_envs: int = 24
     norm_gamma: float = 0.99
 
     # === HRL ===
@@ -21,12 +21,12 @@ class Config:
     train_log_freq: int = 1000
 
     # === PPO Hyperparameters ===
-    ppo_n_steps: int = 2048
-    ppo_batch_size: int = 256
+    ppo_n_steps: int = 512
+    ppo_batch_size: int = 1024
     ppo_gamma: float = 0.99
     ppo_lambda: float = 0.95
     ppo_lr: float = 3e-4
-    ppo_epochs: int = 10
+    ppo_epochs: int = 5
     ppo_clip: float = 0.2
 
     # === Video Callback ===
