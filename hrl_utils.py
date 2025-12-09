@@ -8,7 +8,7 @@ import numpy as np
 def flatten_myo_obs_worker(obs_dict):
     """
     Build a 1D float32 vector for the worker.
-    Uses only stable keys from obs_dict.
+    Uses full proprioception + task info.
     """
     parts = [
         obs_dict["time"],          # (1,)
@@ -20,6 +20,7 @@ def flatten_myo_obs_worker(obs_dict):
         obs_dict["paddle_pos"],    # (3,)
         obs_dict["paddle_vel"],    # (3,)
         obs_dict["paddle_ori"],    # (4,)
+        obs_dict["paddle_ori_err"], # (4,)
         obs_dict["reach_err"],     # (3,)
         obs_dict["palm_pos"],      # (3,)
         obs_dict["palm_err"],      # (3,)
@@ -30,11 +31,11 @@ def flatten_myo_obs_worker(obs_dict):
     safe_parts = []
     for p in parts:
         arr = np.array(p, dtype=np.float32)
-        if arr.ndim == 0:
+        if arr.ndim == 0:  # scalar → (1,)
             arr = arr.reshape(1)
         safe_parts.append(arr)
 
-    return np.concatenate(safe_parts, axis=-1)
+    return np.concatenate(safe_parts, axis=-1)  # (428,)
 
 
 # ================================================================
@@ -42,15 +43,15 @@ def flatten_myo_obs_worker(obs_dict):
 # ================================================================
 def flatten_myo_obs_manager(obs_dict):
     """
-    Smaller observation for the manager.
+    Manager sees a compact, task-focused state.
     """
     parts = [
-        obs_dict["ball_pos"],    # (3,)
-        obs_dict["ball_vel"],    # (3,)
-        obs_dict["paddle_pos"],  # (3,)
-        obs_dict["paddle_vel"],  # (3,)
-        obs_dict["reach_err"],   # (3,)
-        obs_dict["time"],        # (1,)
+        obs_dict["ball_pos"],      # (3,)
+        obs_dict["ball_vel"],      # (3,)
+        obs_dict["paddle_pos"],    # (3,)
+        obs_dict["paddle_vel"],    # (3,)
+        obs_dict["reach_err"],     # (3,)
+        obs_dict["time"],          # (1,)
     ]
 
     safe_parts = []
@@ -60,7 +61,7 @@ def flatten_myo_obs_manager(obs_dict):
             arr = arr.reshape(1)
         safe_parts.append(arr)
 
-    return np.concatenate(safe_parts, axis=-1)
+    return np.concatenate(safe_parts, axis=-1).astype(np.float32)  # (16,)
 
 
 # ================================================================
@@ -68,33 +69,39 @@ def flatten_myo_obs_manager(obs_dict):
 # ================================================================
 def build_worker_obs(obs_dict, goal, t_in_macro, cfg):
     """
-    Worker observation:
-        [flattened_base_obs (424), goal (3), phase (1)]
-    Total dims: 428
+    Worker observation during HRL:
+        [ flatten_myo_obs_worker (428),
+          goal (goal_dim = 3),
+          phase (1) ]
 
-    NOTE:
-      - For now, phase is always 0, and worker was trained with goal=0, phase=0.
-      - Manager can later be upgraded to use real goals once worker is retrained.
+    Total dims: 428 + goal_dim(3) + 1 = 432
     """
-    base = flatten_myo_obs_worker(obs_dict)          # (424,)
-    goal = np.asarray(goal, dtype=np.float32)        # (goal_dim=3,)
-    phase = np.array([0.0], dtype=np.float32)        # keep constant for stability
+    base = flatten_myo_obs_worker(obs_dict)                  # (428,)
+    goal = np.asarray(goal, dtype=np.float32).reshape(-1)    # (3,)
+
+    denom = max(1, cfg.high_level_period - 1)
+    phase = np.array([t_in_macro / denom], dtype=np.float32) # (1,)
 
     return np.concatenate([base, goal, phase], axis=-1).astype(np.float32)
 
 
 # ================================================================
-#  INTRINSIC REWARD FOR WORKER (OPTIONAL, not used yet)
+#  INTRINSIC REWARD FOR WORKER
 # ================================================================
 def intrinsic_reward(obs_dict, goal):
     """
     Worker reward:
         r_int = - || (paddle_pos - ball_pos) - goal ||
+
+    goal is a desired (paddle - ball) offset.
     """
-    ball = obs_dict["ball_pos"]
-    paddle = obs_dict["paddle_pos"]
-    offset = paddle - ball
-    err = np.linalg.norm(offset - goal)
+    ball = np.array(obs_dict["ball_pos"], dtype=np.float32)
+    paddle = np.array(obs_dict["paddle_pos"], dtype=np.float32)
+
+    current_offset = paddle - ball
+    goal = np.asarray(goal, dtype=np.float32)
+
+    err = np.linalg.norm(current_offset - goal)
     return -float(err)
 
 
@@ -103,37 +110,32 @@ def intrinsic_reward(obs_dict, goal):
 # ================================================================
 def make_hierarchical_predictor(cfg, manager_model, worker_model):
     """
-    Function for VideoCallback.predict_fn.
+    predict_fn used by VideoCallback:
 
-    VideoCallback will call:
-        predict_fn(sb3_obs, env_instance)
+        predict_fn(sb3_obs, env_instance) -> action (act_dim,)
 
-    We IGNORE sb3_obs and always use env_instance.unwrapped.obs_dict.
-
-    For now:
-      - Manager is still running but worker ignores its goal.
-      - We pass zero-goal and phase=0 to the worker, same as in training.
+    We ignore sb3_obs and directly use env_instance.unwrapped.obs_dict
+    from the MyoSuite environment.
     """
 
     def predict_fn(_ignored_sb3_obs, env_instance):
-        # Real MyoSuite obs dict
+        # Real MyoSuite dict observation
         obs_dict = env_instance.unwrapped.obs_dict
 
-        # 1) Manager forward (just for completeness)
-        mgr_obs = flatten_myo_obs_manager(obs_dict).reshape(1, -1)
-        _goal, _ = manager_model.predict(mgr_obs, deterministic=True)
+        # 1) Manager predicts a 3D goal
+        m_obs = flatten_myo_obs_manager(obs_dict).reshape(1, -1)
+        goal, _ = manager_model.predict(m_obs, deterministic=True)
+        goal = np.asarray(goal, dtype=np.float32).reshape(-1)
 
-        # 2) Worker forward: must match training obs exactly
-        zero_goal = np.zeros(cfg.goal_dim, dtype=np.float32)
+        # 2) Worker executes 1 low-level step with phase = 0
         w_obs = build_worker_obs(
             obs_dict=obs_dict,
-            goal=zero_goal,
+            goal=goal,
             t_in_macro=0,
             cfg=cfg,
         ).reshape(1, -1)
 
         action, _ = worker_model.predict(w_obs, deterministic=True)
-        action = np.asarray(action, dtype=np.float32).reshape(-1)
-        return action
+        return np.asarray(action, dtype=np.float32).reshape(-1)
 
     return predict_fn

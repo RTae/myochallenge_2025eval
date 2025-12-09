@@ -16,14 +16,12 @@ from callbacks.video_callback import VideoCallback
 # ============================================================
 # Create experiment directory logs/expN/
 # ============================================================
-
 def prepare_experiment_directory(cfg: Config):
     base = cfg.logdir
     os.makedirs(base, exist_ok=True)
 
     existing = [d for d in os.listdir(base) if d.startswith("exp")]
     exp_nums = []
-
     for e in existing:
         try:
             exp_nums.append(int(e.replace("exp", "")))
@@ -31,7 +29,6 @@ def prepare_experiment_directory(cfg: Config):
             pass
 
     next_id = 1 if not exp_nums else max(exp_nums) + 1
-
     exp_dir = os.path.join(base, f"exp{next_id}")
     os.makedirs(exp_dir, exist_ok=True)
 
@@ -41,16 +38,14 @@ def prepare_experiment_directory(cfg: Config):
 
 
 # ============================================================
-# TRAIN WORKER (LOW-LEVEL CONTROLLER)
+# TRAIN WORKER (LOW-LEVEL)
 # ============================================================
-
 def train_worker(cfg: Config):
 
     logger.info("🚀 Training Worker (low-level controller)")
     worker_logdir = os.path.join(cfg.logdir, "worker")
     os.makedirs(worker_logdir, exist_ok=True)
 
-    # Parallel environments
     env = build_vec_env(worker=True, cfg=cfg)
     eval_env = build_vec_env(worker=True, cfg=cfg, eval_env=True)
 
@@ -63,7 +58,6 @@ def train_worker(cfg: Config):
         n_eval_episodes=cfg.eval_episodes,
     )
 
-    # PPO Model
     model = PPO(
         "MlpPolicy",
         env,
@@ -79,42 +73,37 @@ def train_worker(cfg: Config):
         seed=cfg.seed,
     )
 
-    # Video callback uses a simple predictor
     def worker_predict(_ignored_sb3_obs, env_instance):
+        # Use the underlying MyoSuite dict
         obs_dict = env_instance.unwrapped.obs_dict
         obs_vec = flatten_myo_obs_worker(obs_dict).reshape(1, -1)
         action, _ = model.predict(obs_vec, deterministic=True)
-        return action.reshape(-1)
+        return np.asarray(action, dtype=np.float32).reshape(-1)
 
     video_cb = VideoCallback(cfg, mode="worker", predict_fn=worker_predict)
 
-    # Train
     model.learn(
         total_timesteps=cfg.total_timesteps,
         callback=CallbackList([eval_callback, video_cb]),
     )
 
-    # Save
     model.save(os.path.join(worker_logdir, "worker.zip"))
     env.save(os.path.join(worker_logdir, "worker_norm.pkl"))
 
     logger.info("💾 Worker saved → worker.zip + worker_norm.pkl")
-
     env.close()
     eval_env.close()
 
 
 # ============================================================
-# TRAIN MANAGER (HIGH-LEVEL CONTROLLER)
+# TRAIN MANAGER (HIGH-LEVEL)
 # ============================================================
-
 def train_manager(cfg: Config):
 
     logger.info("🚀 Training Manager (high-level controller)")
     manager_logdir = os.path.join(cfg.logdir, "manager")
     os.makedirs(manager_logdir, exist_ok=True)
 
-    # Parallel environments
     env = build_vec_env(worker=False, cfg=cfg)
     eval_env = build_vec_env(worker=False, cfg=cfg, eval_env=True)
 
@@ -127,7 +116,6 @@ def train_manager(cfg: Config):
         n_eval_episodes=cfg.eval_episodes,
     )
 
-    # PPO Model
     model = PPO(
         "MlpPolicy",
         env,
@@ -148,23 +136,18 @@ def train_manager(cfg: Config):
     worker_path = os.path.join(cfg.logdir, "worker", "worker.zip")
     worker_model = PPO_LOAD.load(worker_path)
 
-    # Build HRL predictor for video recording
     hrl_predict = make_hierarchical_predictor(cfg, model, worker_model)
-
     video_cb = VideoCallback(cfg, mode="manager", predict_fn=hrl_predict)
 
-    # Train
     model.learn(
         total_timesteps=cfg.total_timesteps,
         callback=CallbackList([eval_callback, video_cb]),
     )
 
-    # Save
     model.save(os.path.join(manager_logdir, "manager.zip"))
     env.save(os.path.join(manager_logdir, "manager_norm.pkl"))
 
     logger.info("💾 Manager saved → manager.zip + manager_norm.pkl")
-
     env.close()
     eval_env.close()
 
@@ -172,30 +155,24 @@ def train_manager(cfg: Config):
 # ============================================================
 # MAIN
 # ============================================================
-
 if __name__ == "__main__":
-
     base_cfg = Config()
     prepare_experiment_directory(base_cfg)
 
-    # ------------------------------
-    # WORKER CONFIG
-    # ------------------------------
+    # -------- Worker config --------
     worker_cfg = copy.deepcopy(base_cfg)
-    worker_cfg.high_level_period = 1
+    # keep high_level_period from config (e.g. 15)
     worker_cfg.total_timesteps = 100_000
     worker_cfg.ppo_lr = 1e-4
 
     train_worker(worker_cfg)
 
-    # ------------------------------
-    # MANAGER CONFIG
-    # ------------------------------
+    # -------- Manager config --------
     manager_cfg = copy.deepcopy(base_cfg)
-    manager_cfg.high_level_period = 15
+    # same high_level_period so phases match worker training
     manager_cfg.total_timesteps = 100_000
     manager_cfg.ppo_lr = 3e-4
 
     train_manager(manager_cfg)
 
-    logger.success("🎉 HRL Training Complete!")
+    logger.success("🎉 Full HRL Training Complete!")

@@ -10,6 +10,12 @@ from hrl_utils import flatten_myo_obs_manager, build_worker_obs
 
 
 class ManagerEnv(gym.Env):
+    """
+    High-level manager environment.
+    - Action: 3D goal vector (goal_dim)
+    - Observation: compact task state (16D)
+    - Reward: environment reward from MyoSuite
+    """
     metadata = {"render_modes": []}
 
     def __init__(self, config: Config, worker_model_path: str):
@@ -24,7 +30,7 @@ class ManagerEnv(gym.Env):
         self.base_env = myo_gym.make(config.env_id)
 
         # --------------------------------------------------------
-        # Load trained worker
+        # Load trained goal-conditioned worker
         # --------------------------------------------------------
         worker_model_path = os.path.abspath(worker_model_path)
         if not os.path.exists(worker_model_path):
@@ -71,9 +77,9 @@ class ManagerEnv(gym.Env):
     # STEP
     # ============================================================
     def step(self, goal):
-        # For now: worker was not trained to be goal-conditioned,
-        # so we ignore the manager's goal to avoid distribution shift.
-        zero_goal = np.zeros(self.cfg.goal_dim, dtype=np.float32)
+        # Manager proposes a goal in [-goal_bound, +goal_bound]
+        goal = np.asarray(goal, dtype=np.float32).reshape(-1)
+        goal = np.clip(goal, -self.cfg.goal_bound, self.cfg.goal_bound)
 
         total_reward = 0.0
         terminated = False
@@ -89,11 +95,12 @@ class ManagerEnv(gym.Env):
 
             worker_obs = build_worker_obs(
                 obs_dict=obs_dict,
-                goal=zero_goal, 
-                t_in_macro=0,
+                goal=goal,
+                t_in_macro=t,
                 cfg=self.cfg,
             ).reshape(1, -1)
 
+            # Worker predicts batched action (1, act_dim)
             action_low, _ = self.worker.predict(worker_obs, deterministic=True)
             action_low = np.asarray(action_low, dtype=np.float32).reshape(-1)
 
@@ -102,7 +109,7 @@ class ManagerEnv(gym.Env):
             total_reward += r_env
 
         self.last_obs = obs_dict
-        mgr_flat = flatten_myo_obs_manager(obs_dict)
         done = terminated or truncated
 
+        mgr_flat = flatten_myo_obs_manager(obs_dict)
         return mgr_flat, total_reward, done, False, info
