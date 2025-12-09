@@ -31,7 +31,7 @@ class Config:
     goal_bound: float = getenv("GOAL_BOUND", 0.25, float)
 
     # === Training ===
-    total_timesteps: int = getenv("TOTAL_TIMESTEPS", 1_000_000, int)
+    total_timesteps: int = getenv("TOTAL_TIMESTEPS", 10_000_000, int)
     logdir: str = getenv("LOGDIR", "./logs", str)
     train_log_freq: int = getenv("TRAIN_LOG_FREQ", 2000, int)
 
@@ -45,7 +45,7 @@ class Config:
     ppo_clip: float = getenv("PPO_CLIP", 0.2, float)
 
     # === Video ===
-    video_freq: int = getenv("VIDEO_FREQ", 200_000, int)
+    video_freq: int = getenv("VIDEO_FREQ", 1_00_000, int)
     eval_episodes: int = getenv("EVAL_EPISODES", 3, int)
     video_w: int = getenv("VIDEO_W", 640, int)
     video_h: int = getenv("VIDEO_H", 480, int)
@@ -53,4 +53,4 @@ class Config:
     video_frames: int = getenv("VIDEO_FRAMES", 300, int)
 
     # === Eval ===
-    eval_freq: int = getenv("EVAL_FREQ", 50_000, int)
+    eval_freq: int = getenv("EVAL_FREQ", 100_000, int)
