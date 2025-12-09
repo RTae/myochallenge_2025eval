@@ -1,41 +1,56 @@
-# config.py
+import os
 from dataclasses import dataclass
+
+def getenv(name, default, cast_fn=str):
+    """
+    Utility: read environment variable with optional type casting.
+    Example:
+        getenv("NUM_ENVS", 24, int)
+    """
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return cast_fn(value)
+    except Exception:
+        return default
+
 
 @dataclass
 class Config:
     # === Environment ===
-    env_id: str = "myoChallengeTableTennisP2-v0"
-    seed: int = 42
-    num_envs: int = 24
-    norm_gamma: float = 0.99
+    env_id: str = getenv("ENV_ID", "myoChallengeTableTennisP2-v0", str)
+    seed: int = getenv("SEED", 42, int)
+    num_envs: int = getenv("NUM_ENVS", 24, int)
+    norm_gamma: float = getenv("NORM_GAMMA", 0.995, float)
 
     # === HRL ===
-    high_level_period: int = 10       # steps per manager decision
-    goal_dim: int = 3                 # dx,dy,dz offset
-    goal_std: float = 0.15            # worker goal sampling
-    goal_bound: float = 0.30          # manager goal action bound
+    high_level_period: int = getenv("HL_PERIOD", 15, int)
+    goal_dim: int = getenv("GOAL_DIM", 3, int)
+    goal_std: float = getenv("GOAL_STD", 0.10, float)
+    goal_bound: float = getenv("GOAL_BOUND", 0.25, float)
 
     # === Training ===
-    total_timesteps: int = 100_000
-    logdir: str = "./logs"
-    train_log_freq: int = 1000
+    total_timesteps: int = getenv("TOTAL_TIMESTEPS", 15_000_000, int)
+    logdir: str = getenv("LOGDIR", "./logs", str)
+    train_log_freq: int = getenv("TRAIN_LOG_FREQ", 2000, int)
 
-    # === PPO Hyperparameters ===
-    ppo_n_steps: int = 512
-    ppo_batch_size: int = 1024
-    ppo_gamma: float = 0.99
-    ppo_lambda: float = 0.95
-    ppo_lr: float = 3e-4
-    ppo_epochs: int = 5
-    ppo_clip: float = 0.2
+    # === PPO ===
+    ppo_n_steps: int = getenv("PPO_N_STEPS", 2048, int)
+    ppo_batch_size: int = getenv("PPO_BATCH_SIZE", 4096, int)
+    ppo_gamma: float = getenv("PPO_GAMMA", 0.99, float)
+    ppo_lambda: float = getenv("PPO_LAMBDA", 0.95, float)
+    ppo_lr: float = getenv("PPO_LR", 1e-4, float)
+    ppo_epochs: int = getenv("PPO_EPOCHS", 5, int)
+    ppo_clip: float = getenv("PPO_CLIP", 0.2, float)
 
-    # === Video Callback ===
-    video_freq: int = 100_000
-    eval_episodes: int = 2
-    video_w: int = 640
-    video_h: int = 480
-    camera_id: int = 1
-    video_frames: int = 300
+    # === Video ===
+    video_freq: int = getenv("VIDEO_FREQ", 200_000, int)
+    eval_episodes: int = getenv("EVAL_EPISODES", 3, int)
+    video_w: int = getenv("VIDEO_W", 640, int)
+    video_h: int = getenv("VIDEO_H", 480, int)
+    camera_id: int = getenv("CAMERA_ID", 1, int)
+    video_frames: int = getenv("VIDEO_FRAMES", 300, int)
 
-    # === Eval Callback ===
-    eval_freq: int = 50_000
+    # === Eval ===
+    eval_freq: int = getenv("EVAL_FREQ", 50_000, int)

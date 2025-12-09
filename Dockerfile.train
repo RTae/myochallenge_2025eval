@@ -6,6 +6,13 @@ FROM ghcr.io/rtae/myochallenge/myochallenge-base:latest
 WORKDIR /app
 
 COPY train.py ./
-COPY ./utils ./utils
+COPY env_factory.py ./
+COPY config.py ./
+COPY hrl_utils.py ./
+COPY manager_env.py ./
+COPY worker_env.py ./
+
+COPY callbacks ./callbacks
+
 
 CMD ["python", "train.py"]
