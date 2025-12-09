@@ -199,11 +199,8 @@ def train_manager(cfg: Config):
 if __name__ == "__main__":
     cfg = Config()
 
-    # # create logs/expN folder automatically
-    # prepare_experiment_directory(cfg)
-
-    # train_worker(cfg)
-    cfg.logdir = "./logs/exp6"
+    prepare_experiment_directory(cfg)
+    train_worker(cfg)
     train_manager(cfg)
 
     logger.info("\n🎉 HRL Training Complete!")

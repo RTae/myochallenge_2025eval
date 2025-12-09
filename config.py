@@ -16,7 +16,7 @@ class Config:
     goal_bound: float = 0.30          # manager goal action bound
 
     # === Training ===
-    total_timesteps: int = 1_000_000
+    total_timesteps: int = 100_000
     logdir: str = "./logs"
     train_log_freq: int = 1000
 
