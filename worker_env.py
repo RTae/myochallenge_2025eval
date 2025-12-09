@@ -38,7 +38,12 @@ class WorkerEnv(gym.Env):
         self.goal = self._sample_goal()
         self.t_in_macro = 0
 
-        worker_obs = self._build_obs(obs_dict)
+        worker_obs = build_worker_obs(
+            obs_dict=obs_dict,
+            goal=self.goal,
+            t_in_macro=self.t_in_macro,
+            cfg=self.cfg,
+        )
         logger.info(f"[WorkerEnv] worker_obs_dim = {worker_obs.shape[0]} (expected 428)")
 
         # Observation space (428,)
@@ -94,7 +99,12 @@ class WorkerEnv(gym.Env):
             self.goal = self._sample_goal()
             self.t_in_macro = 0
 
-        worker_obs = self._build_obs(obs_dict)
+        worker_obs = build_worker_obs(
+            obs_dict=obs_dict,
+            goal=self.goal,
+            t_in_macro=self.t_in_macro,
+            cfg=self.cfg,
+        )
 
         info = info or {}
         info["env_reward"] = env_reward
