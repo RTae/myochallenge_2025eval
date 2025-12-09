@@ -7,49 +7,43 @@ import numpy as np
 # ================================================================
 def flatten_myo_obs_worker(obs_dict):
     """
-    Build a 1D float32 vector for the worker (low-level policy).
-
-    Total size = 429 dims:
-        1 + 3 + 58 + 58 + 3 + 3 + 3 + 3 + 4 + 4 + 3 + 3 + 3 + 6 + 273
+    Build a 1D float32 vector for the worker.
+    This version auto-expands scalars into 1D arrays.
     """
     parts = [
-        obs_dict["time"],            # (1,)
-        obs_dict["pelvis_pos"],      # (3,)
-        obs_dict["body_qpos"],       # (58,)
-        obs_dict["body_qvel"],       # (58,)
-        obs_dict["ball_pos"],        # (3,)
-        obs_dict["ball_vel"],        # (3,)
-        obs_dict["paddle_pos"],      # (3,)
-        obs_dict["paddle_vel"],      # (3,)
-        obs_dict["paddle_ori"],      # (4,)
-        obs_dict["padde_ori_err"],   # (4,)
-        obs_dict["reach_err"],       # (3,)
-        obs_dict["palm_pos"],        # (3,)
-        obs_dict["palm_err"],        # (3,)
-        obs_dict["touching_info"],   # (6,)
-        obs_dict["act"],             # (273,)
+        obs_dict["time"],
+        obs_dict["pelvis_pos"],
+        obs_dict["body_qpos"],
+        obs_dict["body_qvel"],
+        obs_dict["ball_pos"],
+        obs_dict["ball_vel"],
+        obs_dict["paddle_pos"],
+        obs_dict["paddle_vel"],
+        obs_dict["paddle_ori"],
+        obs_dict["padde_ori_err"],
+        obs_dict["reach_err"],
+        obs_dict["palm_pos"],
+        obs_dict["palm_err"],
+        obs_dict["touching_info"],
+        obs_dict["act"],
     ]
 
-    return np.concatenate(parts, axis=-1).astype(np.float32)
+    safe_parts = []
+    for p in parts:
+        arr = np.array(p, dtype=np.float32)
 
+        # convert scalar to (1,) array
+        if arr.ndim == 0:
+            arr = arr.reshape(1)
+
+        safe_parts.append(arr)
+
+    return np.concatenate(safe_parts, axis=-1)
 
 # ================================================================
 #  FLATTEN MANAGER OBSERVATION (High-level controller)
 # ================================================================
 def flatten_myo_obs_manager(obs_dict):
-    """
-    Minimal observation for manager PPO.
-    Recommended features (16 dims total):
-
-        ball_pos (3)
-        ball_vel (3)
-        paddle_pos (3)
-        paddle_vel (3)
-        reach_err (3)
-        time (1)
-
-    Total = 16 dims
-    """
     parts = [
         obs_dict["ball_pos"],
         obs_dict["ball_vel"],
@@ -59,7 +53,14 @@ def flatten_myo_obs_manager(obs_dict):
         obs_dict["time"],
     ]
 
-    return np.concatenate(parts, axis=-1).astype(np.float32)
+    safe_parts = []
+    for p in parts:
+        arr = np.array(p, dtype=np.float32)
+        if arr.ndim == 0:
+            arr = arr.reshape(1)
+        safe_parts.append(arr)
+
+    return np.concatenate(safe_parts, axis=-1)
 
 
 # ================================================================
