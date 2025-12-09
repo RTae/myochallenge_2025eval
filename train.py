@@ -92,7 +92,10 @@ def train_worker(cfg: Config):
 
     # -------- VideoCallback for Worker --------
     def worker_predict(obs, env_instance):
-        obs_vec = flatten_myo_obs_worker(obs).reshape(1, -1)
+        # Use the env_instance to extract MyoSuite dict
+        obs_dict = env_instance.obs_dict
+
+        obs_vec = flatten_myo_obs_worker(obs_dict).reshape(1, -1)
         action, _ = model.predict(obs_vec, deterministic=True)
         return action
 
