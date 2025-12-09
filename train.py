@@ -200,7 +200,28 @@ if __name__ == "__main__":
     cfg = Config()
 
     prepare_experiment_directory(cfg)
-    train_worker(cfg)
-    train_manager(cfg)
+if __name__ == "__main__":
+    
+    prepare_experiment_directory(Config())  # creates exp folder
+
+    # ---- Worker Config ----
+    worker_cfg = Config()
+    worker_cfg.high_level_period = 1
+    worker_cfg.total_timesteps = 20_000_000
+    worker_cfg.ppo_lr = 1e-4
+    worker_cfg.num_envs = 24
+
+    train_worker(worker_cfg)
+
+    # ---- Manager Config ----
+    manager_cfg = Config()
+    manager_cfg.high_level_period = 15
+    manager_cfg.total_timesteps = 3_000_000
+    manager_cfg.ppo_lr = 3e-4
+    manager_cfg.num_envs = 24
+
+    train_manager(manager_cfg)
+
+    print("🎉 HRL Training Complete!")
 
     logger.info("\n🎉 HRL Training Complete!")
