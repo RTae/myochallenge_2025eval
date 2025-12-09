@@ -4,9 +4,9 @@ from dataclasses import dataclass
 
 def getenv(name, default, cast_fn=str):
     """
-    Utility: read environment variable with optional type casting.
+    Helper to read environment variables with type casting.
     Example:
-        getenv("NUM_ENVS", 24, int)
+        NUM_ENVS=16 python train_all.py
     """
     val = os.getenv(name)
     if val is None:
@@ -23,16 +23,15 @@ class Config:
     env_id: str = getenv("ENV_ID", "myoChallengeTableTennisP2-v0", str)
     seed: int = getenv("SEED", 42, int)
     num_envs: int = getenv("NUM_ENVS", 24, int)
-    norm_gamma: float = getenv("NORM_GAMMA", 0.995, float)
 
-    # === HRL (used only by manager) ===
+    # === HRL ===
     high_level_period: int = getenv("HL_PERIOD", 15, int)
     goal_dim: int = getenv("GOAL_DIM", 3, int)
     goal_std: float = getenv("GOAL_STD", 0.10, float)
     goal_bound: float = getenv("GOAL_BOUND", 0.25, float)
 
     # === Training ===
-    total_timesteps: int = getenv("TOTAL_TIMESTEPS", 15_000_000, int)
+    total_timesteps: int = getenv("TOTAL_TIMESTEPS", 1_000_000, int)
     logdir: str = getenv("LOGDIR", "./logs", str)
     train_log_freq: int = getenv("TRAIN_LOG_FREQ", 2000, int)
 
