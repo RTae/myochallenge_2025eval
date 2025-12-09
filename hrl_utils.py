@@ -1,3 +1,4 @@
+# hrl_utils.py
 import numpy as np
 
 
@@ -6,9 +7,9 @@ import numpy as np
 # ================================================================
 def flatten_myo_obs_worker(obs_dict):
     """
-    Build a 1D float32 vector for the worker.
+    Build a 1D float32 vector for the worker (base obs only).
 
-    Fields used:
+    Uses the following fields:
 
         time           (1,)
         pelvis_pos     (3,)
@@ -27,7 +28,8 @@ def flatten_myo_obs_worker(obs_dict):
 
     Total = 424 dims.
 
-    NOTE: padde_ori_err (4,) is intentionally excluded.
+    NOTE: padde_ori_err (4,) is intentionally excluded to keep
+    the obs compact and stable.
     """
     parts = [
         obs_dict["time"],          # (1,)
@@ -39,7 +41,7 @@ def flatten_myo_obs_worker(obs_dict):
         obs_dict["paddle_pos"],    # (3,)
         obs_dict["paddle_vel"],    # (3,)
         obs_dict["paddle_ori"],    # (4,)
-        # obs_dict["padde_ori_err"],  # (4,)  <-- EXCLUDED
+        # obs_dict["padde_ori_err"],  # (4,)  <-- intentionally excluded
         obs_dict["reach_err"],     # (3,)
         obs_dict["palm_pos"],      # (3,)
         obs_dict["palm_err"],      # (3,)
@@ -62,7 +64,7 @@ def flatten_myo_obs_worker(obs_dict):
 # ================================================================
 def flatten_myo_obs_manager(obs_dict):
     """
-    Compact manager observation (16 dims):
+    Compact manager observation:
 
         ball_pos   (3,)
         ball_vel   (3,)
@@ -70,6 +72,8 @@ def flatten_myo_obs_manager(obs_dict):
         paddle_vel (3,)
         reach_err  (3,)
         time       (1,)
+
+    Total = 16 dims.
     """
     parts = [
         obs_dict["ball_pos"],
@@ -91,22 +95,26 @@ def flatten_myo_obs_manager(obs_dict):
 
 
 # ================================================================
-#  WORKER INPUT DURING HRL EXECUTION
+#  WORKER INPUT DURING HRL EXECUTION / TRAINING
 # ================================================================
-def build_worker_obs(obs_dict, goal, t, cfg):
+def build_worker_obs(obs_dict, goal, t_in_macro, cfg):
     """
-    Worker observation DURING HRL or worker training:
+    Build the *goal-conditioned* worker observation:
 
-        worker_obs = [base_obs (424), goal (goal_dim=3), phase (1)]
+        worker_obs = [ base_obs (424), goal (goal_dim=3), phase (1) ]
 
-    Total dims: 424 + 3 + 1 = 428
+    - base_obs: flattened low-level state
+    - goal:     manager's 3D goal vector
+    - phase:    scalar in [0,1], position within the macro step
+
+    Total dims = 424 + cfg.goal_dim + 1  (with goal_dim=3 → 428).
     """
     base = flatten_myo_obs_worker(obs_dict)          # (424,)
-    goal = np.asarray(goal, dtype=np.float32)        # (3,)
+    goal = np.asarray(goal, dtype=np.float32)        # (goal_dim,)
     phase = np.array(
-        [t / max(1, cfg.high_level_period - 1)],
+        [t_in_macro / max(1, cfg.high_level_period - 1)],
         dtype=np.float32
-    )  # (1,)
+    )                                                # (1,)
 
     return np.concatenate([base, goal, phase], axis=-1).astype(np.float32)
 
@@ -117,7 +125,11 @@ def build_worker_obs(obs_dict, goal, t, cfg):
 def intrinsic_reward(obs_dict, goal):
     """
     Intrinsic reward for worker:
+
         r_int = - || (paddle_pos - ball_pos) - goal ||
+
+    You can mix this with env reward if you want:
+        r_total = r_env + alpha * r_int
     """
     ball = obs_dict["ball_pos"]
     paddle = obs_dict["paddle_pos"]
@@ -131,32 +143,34 @@ def intrinsic_reward(obs_dict, goal):
 # ================================================================
 def make_hierarchical_predictor(cfg, manager_model, worker_model):
     """
-    Function for VideoRecorder.predict_fn:
+    Returns a predict_fn for VideoRecorder:
 
-      VideoRecorder calls:
-          predict_fn(sb3_obs, video_env)
+        VideoRecorder will call:
+            predict_fn(sb3_obs, env)
 
-      We IGNORE sb3_obs and always use env.unwrapped.obs_dict,
-      because that's the real MyoSuite dict.
+        We IGNORE sb3_obs and always read `env.unwrapped.obs_dict`
+        from MyoSuite, then:
 
-      - Manager gets 16D manager obs → goal(3)
-      - Worker gets full obs + goal + phase(0)  (428 dims)
+            - Manager gets 16D manager obs → goal (3D)
+            - Worker gets 428D goal-conditioned obs (base + goal + phase)
+
+        Phase is set to 0 in videos (start of macro-step).
     """
 
     def predict_fn(_ignored_sb3_obs, env_instance):
-        # 1) Real MyoSuite dict
+        # 1) Get real MyoSuite dict obs
         obs_dict = env_instance.unwrapped.obs_dict
 
-        # 2) Manager → high-level goal
+        # 2) Manager proposes a high-level goal
         m_obs = flatten_myo_obs_manager(obs_dict).reshape(1, -1)
         goal, _ = manager_model.predict(m_obs, deterministic=True)
-        goal = goal.astype(np.float32).flatten()  # (3,)
+        goal = goal.astype(np.float32).flatten()  # (goal_dim,)
 
-        # 3) Worker gets goal-conditioned obs (phase = 0 for video)
+        # 3) Worker predicts low-level action using goal-conditioned obs
         w_obs = build_worker_obs(
             obs_dict=obs_dict,
             goal=goal,
-            t=0,
+            t_in_macro=0,  # phase=0 at beginning of macro for video
             cfg=cfg,
         ).reshape(1, -1)
 

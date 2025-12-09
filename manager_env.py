@@ -16,24 +16,26 @@ class ManagerEnv(gym.Env):
         super().__init__()
         from myosuite.utils import gym as myo_gym
 
-        self.config = config
+        self.cfg = config
+
+        # --------------------------------------------------------
+        # Base MyoSuite environment
+        # --------------------------------------------------------
         self.base_env = myo_gym.make(config.env_id)
 
-        # ------------------------------
-        # Load trained worker (goal-conditioned, obs_dim=428)
-        # ------------------------------
+        # --------------------------------------------------------
+        # Load trained goal-conditioned worker
+        # --------------------------------------------------------
         worker_model_path = os.path.abspath(worker_model_path)
-        if not worker_model_path.endswith(".zip"):
-            worker_model_path += ".zip"
         if not os.path.exists(worker_model_path):
             raise FileNotFoundError(f"Worker model not found at: {worker_model_path}")
 
         self.worker = PPO.load(worker_model_path)
 
-        # ------------------------------
-        # Init manager obs shape
-        # ------------------------------
-        obs_vec, info = self.base_env.reset()
+        # --------------------------------------------------------
+        # Initialize to infer manager obs dim
+        # --------------------------------------------------------
+        self.base_env.reset()
         obs_dict = self.base_env.obs_dict
         self.last_obs = obs_dict
 
@@ -46,6 +48,7 @@ class ManagerEnv(gym.Env):
             dtype=np.float32,
         )
 
+        # Manager's action = high-level goal (goal_dim)
         self.action_space = spaces.Box(
             low=-config.goal_bound,
             high=config.goal_bound,
@@ -68,6 +71,15 @@ class ManagerEnv(gym.Env):
     # STEP
     # ============================================================
     def step(self, goal):
+        """
+        Manager takes one macro-step:
+
+            - goal: high-level action in R^{goal_dim}
+            - internally runs `high_level_period` worker steps
+              using this fixed goal.
+
+        Returns macro-observation, macro-reward, done, truncated, info.
+        """
         goal = np.asarray(goal, dtype=np.float32)
 
         total_reward = 0.0
@@ -77,16 +89,16 @@ class ManagerEnv(gym.Env):
 
         obs_dict = self.last_obs
 
-        # Manager goal is fixed for high_level_period worker steps
-        for t in range(self.config.high_level_period):
+        # Manager goal is held fixed for K low-level steps
+        for t in range(self.cfg.high_level_period):
             if terminated or truncated:
                 break
 
             worker_obs = build_worker_obs(
                 obs_dict=obs_dict,
                 goal=goal,
-                t=t,
-                cfg=self.config,
+                t_in_macro=t,
+                cfg=self.cfg,
             ).reshape(1, -1)
 
             action_low, _ = self.worker.predict(worker_obs, deterministic=True)
@@ -96,6 +108,7 @@ class ManagerEnv(gym.Env):
 
             total_reward += r_env
 
+        # Save last obs for next macro-step
         self.last_obs = obs_dict
         done = terminated or truncated
 
