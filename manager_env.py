@@ -71,15 +71,6 @@ class ManagerEnv(gym.Env):
     # STEP
     # ============================================================
     def step(self, goal):
-        """
-        Manager takes one macro-step:
-
-            - goal: high-level action in R^{goal_dim}
-            - internally runs `high_level_period` worker steps
-              using this fixed goal.
-
-        Returns macro-observation, macro-reward, done, truncated, info.
-        """
         goal = np.asarray(goal, dtype=np.float32)
 
         total_reward = 0.0
@@ -101,14 +92,16 @@ class ManagerEnv(gym.Env):
                 cfg=self.cfg,
             ).reshape(1, -1)
 
+            # Worker predicts batched action (1, act_dim)
             action_low, _ = self.worker.predict(worker_obs, deterministic=True)
+
+            # ✅ Flatten to (act_dim,) for MyoSuite
+            action_low = np.asarray(action_low, dtype=np.float32).reshape(-1)
 
             obs_vec, r_env, terminated, truncated, info = self.base_env.step(action_low)
             obs_dict = self.base_env.obs_dict
-
             total_reward += r_env
 
-        # Save last obs for next macro-step
         self.last_obs = obs_dict
         done = terminated or truncated
 
