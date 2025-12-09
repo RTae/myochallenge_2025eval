@@ -204,7 +204,7 @@ if __name__ == "__main__":
     # ---- Worker Config ----
     worker_cfg = cfg
     worker_cfg.high_level_period = 1
-    worker_cfg.total_timesteps = 20_000_000
+    worker_cfg.total_timesteps = 100_000
     worker_cfg.ppo_lr = 1e-4
 
     train_worker(worker_cfg)
@@ -212,7 +212,7 @@ if __name__ == "__main__":
     # ---- Manager Config ----
     manager_cfg = cfg
     manager_cfg.high_level_period = 15
-    manager_cfg.total_timesteps = 3_000_000
+    manager_cfg.total_timesteps = 100_000
     manager_cfg.ppo_lr = 3e-4
 
     train_manager(manager_cfg)

@@ -14,61 +14,50 @@ class WorkerEnv(gym.Env):
         super().__init__()
         from myosuite.utils import gym as myo_gym
 
-        self.cfg = config
+        self.config = config
 
-        # --------------------------------------------------------
-        # Load underlying MyoSuite environment
-        # --------------------------------------------------------
+        # ------------------------------------------
+        # Base MyoSuite env
+        # ------------------------------------------
         self.base_env = myo_gym.make(config.env_id)
 
-        # Reset once to inspect shapes
-        self.base_env.reset()
+        # Reset once and capture obs_dict
+        _, _ = self.base_env.reset()
         obs_dict = self.base_env.obs_dict
 
-        # --------------------------------------------------------
-        # Base flatten size
-        # --------------------------------------------------------
-        base = flatten_myo_obs_worker(obs_dict)
-        self.base_dim = base.shape[0]
+        # ------------------------------------------
+        # Build observation + action spaces
+        # ------------------------------------------
+        base = flatten_myo_obs_worker(obs_dict)       # (429,)
+        goal_dummy = np.zeros(config.goal_dim, dtype=np.float32)   # (3,)
+        phase_dummy = np.array([0.0], dtype=np.float32)            # (1,)
 
-        # Final worker obs = [base, goal(3), phase(1)]
-        self.obs_dim = self.base_dim + config.goal_dim + 1
+        example_obs = np.concatenate([base, goal_dummy, phase_dummy], axis=-1)
 
-        # --------------------------------------------------------
-        # Gym spaces
-        # --------------------------------------------------------
-        low = -np.inf * np.ones(self.obs_dim, dtype=np.float32)
-        high = np.inf * np.ones(self.obs_dim, dtype=np.float32)
+        self.observation_space = spaces.Box(
+            low=-np.inf, high=np.inf,
+            shape=example_obs.shape, dtype=np.float32
+        )
 
-        self.observation_space = spaces.Box(low, high, dtype=np.float32)
         self.action_space = self.base_env.action_space
 
-        # Goal + phase tracking
-        self.goal = None
-        self.t_in_macro = 0
-
     # ============================================================
-    # Helper: sample a random high-level goal
-    # ============================================================
-    def _sample_goal(self):
-        return np.random.normal(
-            loc=0.0,
-            scale=self.cfg.goal_std,
-            size=self.cfg.goal_dim
-        ).astype(np.float32)
-
-    # ============================================================
-    # Construct worker observation explicitly
+    # INTERNAL: Construct worker observation
     # ============================================================
     def _build_obs(self, obs_dict):
-        base = flatten_myo_obs_worker(obs_dict)              # (base_dim,)
-        goal = self.goal                                     # (goal_dim,)
-        phase = np.array([self.t_in_macro /
-                          (self.cfg.high_level_period - 1)],
-                          dtype=np.float32)                  # (1,)
+        """
+        Worker training is *not HRL*. So worker should NOT receive:
+            - goal
+            - phase
+        But we add zero placeholders so ManagerEnv can reuse worker policy later.
 
-        return np.concatenate([base, goal, phase],
-                              axis=-1).astype(np.float32)
+        Worker observation = [base_obs, goal=0, phase=0]
+        """
+        base = flatten_myo_obs_worker(obs_dict)         # (429,)
+        goal = np.zeros(self.config.goal_dim, dtype=np.float32)  # (3,)
+        phase = np.array([0.0], dtype=np.float32)       # (1,)
+
+        return np.concatenate([base, goal, phase], axis=-1).astype(np.float32)
 
     # ============================================================
     # RESET
@@ -77,10 +66,6 @@ class WorkerEnv(gym.Env):
         obs_vec, info = self.base_env.reset(seed=seed)
         obs_dict = self.base_env.obs_dict
 
-        # New goal each episode
-        self.goal = self._sample_goal()
-        self.t_in_macro = 0
-
         worker_obs = self._build_obs(obs_dict)
         return worker_obs, info
 
@@ -88,18 +73,9 @@ class WorkerEnv(gym.Env):
     # STEP
     # ============================================================
     def step(self, action):
-
-        obs_vec, reward_env, terminated, truncated, info = self.base_env.step(action)
+        obs_vec, reward, terminated, truncated, info = self.base_env.step(action)
         obs_dict = self.base_env.obs_dict
-
-        # Update macro-step time
-        self.t_in_macro += 1
-
-        # If new macro-step → resample goal
-        if self.t_in_macro >= self.cfg.high_level_period:
-            self.goal = self._sample_goal()
-            self.t_in_macro = 0
 
         worker_obs = self._build_obs(obs_dict)
 
-        return worker_obs, reward_env, terminated, truncated, info
+        return worker_obs, reward, terminated, truncated, info

@@ -1,17 +1,18 @@
 import os
 from dataclasses import dataclass
 
+
 def getenv(name, default, cast_fn=str):
     """
     Utility: read environment variable with optional type casting.
     Example:
         getenv("NUM_ENVS", 24, int)
     """
-    value = os.getenv(name)
-    if value is None:
+    val = os.getenv(name)
+    if val is None:
         return default
     try:
-        return cast_fn(value)
+        return cast_fn(val)
     except Exception:
         return default
 
@@ -24,7 +25,7 @@ class Config:
     num_envs: int = getenv("NUM_ENVS", 24, int)
     norm_gamma: float = getenv("NORM_GAMMA", 0.995, float)
 
-    # === HRL ===
+    # === HRL (used only by manager) ===
     high_level_period: int = getenv("HL_PERIOD", 15, int)
     goal_dim: int = getenv("GOAL_DIM", 3, int)
     goal_std: float = getenv("GOAL_STD", 0.10, float)
