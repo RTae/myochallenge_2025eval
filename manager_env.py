@@ -16,7 +16,7 @@ class ManagerEnv(gym.Env):
         from myosuite.utils import gym as myo_gym
 
         self.config = config
-        self.base_env = myo_gym.make(config.env_id)
+        self.base_env = myo_gym.make(config.env_id, obs_keys="dict")
         self.worker = PPO.load(worker_model_path)
 
         obs_dict, _ = self.base_env.reset()

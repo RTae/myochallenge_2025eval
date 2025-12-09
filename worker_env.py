@@ -15,7 +15,7 @@ class WorkerEnv(gym.Env):
         from myosuite.utils import gym as myo_gym
 
         self.config = config
-        self.base_env = myo_gym.make(config.env_id)
+        self.base_env = myo_gym.make(config.env_id, obs_keys="dict")
 
         obs_dict, _ = self.base_env.reset()
         base_vec = flatten_myo_obs_worker(obs_dict)

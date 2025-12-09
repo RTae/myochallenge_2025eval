@@ -48,6 +48,7 @@ class VideoCallback(BaseCallback):
     # -------------------------------------------------------
     def _record(self, video_path):
 
+        # export MUJOCO_GL="egl"
         os.environ["MUJOCO_GL"] = "egl"
         os.environ.pop("DISPLAY", None)
 
