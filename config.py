@@ -34,7 +34,7 @@ class Config:
     eval_episodes: int = 2
     video_w: int = 640
     video_h: int = 480
-    camera_id: int = 0
+    camera_id: int = 1
     video_frames: int = 300
 
     # === Eval Callback ===
