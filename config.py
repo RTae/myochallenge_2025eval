@@ -30,7 +30,7 @@ class Config:
     ppo_clip: float = 0.2
 
     # === Video Callback ===
-    video_freq: int = 10000
+    video_freq: int = 100_000
     eval_episodes: int = 2
     video_w: int = 640
     video_h: int = 480
@@ -38,4 +38,4 @@ class Config:
     video_frames: int = 300
 
     # === Eval Callback ===
-    eval_freq: int = 5000
+    eval_freq: int = 50_000
