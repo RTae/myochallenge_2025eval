@@ -6,6 +6,8 @@ class Config:
     # === Environment ===
     env_id: str = "myoChallengeTableTennisP2-v0"
     seed: int = 42
+    num_envs: int = 4
+    norm_gamma: float = 0.99
 
     # === HRL ===
     high_level_period: int = 10       # steps per manager decision
