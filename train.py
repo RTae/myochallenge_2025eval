@@ -1,19 +1,16 @@
 # train_all.py
 import os
+import copy
+import numpy as np
+from loguru import logger
+
 from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import EvalCallback
+from stable_baselines3.common.callbacks import CallbackList, EvalCallback
 
 from config import Config
 from env_factory import build_vec_env
-
-from loguru import logger
-
-from callbacks.video_callback import VideoCallback
 from hrl_utils import flatten_myo_obs_worker, make_hierarchical_predictor
-from stable_baselines3.common.callbacks import CallbackList
-
-import numpy as np
-
+from callbacks.video_callback import VideoCallback
 
 
 # ============================================================
@@ -21,36 +18,26 @@ import numpy as np
 # ============================================================
 
 def prepare_experiment_directory(cfg: Config):
-    """
-    Creates logs/exp1, exp2,... automatically.
-    Updates cfg.logdir to point to the new experiment folder.
-    """
-
-    base = cfg.logdir  # default = "./logs"
+    base = cfg.logdir
     os.makedirs(base, exist_ok=True)
 
-    # find existing exp folders
     existing = [d for d in os.listdir(base) if d.startswith("exp")]
     exp_nums = []
 
     for e in existing:
         try:
-            num = int(e.replace("exp", ""))
-            exp_nums.append(num)
-        except:
+            exp_nums.append(int(e.replace("exp", "")))
+        except Exception:
             pass
 
-    next_id = 1 if len(exp_nums) == 0 else max(exp_nums) + 1
+    next_id = 1 if not exp_nums else max(exp_nums) + 1
 
     exp_dir = os.path.join(base, f"exp{next_id}")
     os.makedirs(exp_dir, exist_ok=True)
 
-    # update config logdir
     cfg.logdir = exp_dir
     logger.info(f"📁 Created new experiment folder: {exp_dir}")
-
     return exp_dir
-
 
 
 # ============================================================
@@ -59,12 +46,11 @@ def prepare_experiment_directory(cfg: Config):
 
 def train_worker(cfg: Config):
 
-    logger.info("Training worker...")
-
+    logger.info("🚀 Training Worker (low-level controller)")
     worker_logdir = os.path.join(cfg.logdir, "worker")
     os.makedirs(worker_logdir, exist_ok=True)
 
-    # -------- Parallel Envs --------
+    # Parallel environments
     env = build_vec_env(worker=True, cfg=cfg)
     eval_env = build_vec_env(worker=True, cfg=cfg, eval_env=True)
 
@@ -77,7 +63,7 @@ def train_worker(cfg: Config):
         n_eval_episodes=cfg.eval_episodes,
     )
 
-    # -------- PPO Model --------
+    # PPO Model
     model = PPO(
         "MlpPolicy",
         env,
@@ -93,36 +79,29 @@ def train_worker(cfg: Config):
         seed=cfg.seed,
     )
 
-    # -------- VideoCallback for Worker --------
+    # Video callback uses a simple predictor
     def worker_predict(_ignored_sb3_obs, env_instance):
-        # Use the underlying MyoSuite env dict
         obs_dict = env_instance.unwrapped.obs_dict
-
         obs_vec = flatten_myo_obs_worker(obs_dict).reshape(1, -1)
         action, _ = model.predict(obs_vec, deterministic=True)
-
-        # Flatten (1, act_dim) → (act_dim,)
-        action = np.asarray(action, dtype=np.float32).reshape(-1)
-
-        return action
+        return action.reshape(-1)
 
     video_cb = VideoCallback(cfg, mode="worker", predict_fn=worker_predict)
 
-    # -------- TRAIN --------
+    # Train
     model.learn(
         total_timesteps=cfg.total_timesteps,
         callback=CallbackList([eval_callback, video_cb]),
     )
 
-    # -------- SAVE --------
+    # Save
     model.save(os.path.join(worker_logdir, "worker.zip"))
     env.save(os.path.join(worker_logdir, "worker_norm.pkl"))
 
-    logger.info("Worker saved → worker.zip + worker_norm.pkl")
+    logger.info("💾 Worker saved → worker.zip + worker_norm.pkl")
 
     env.close()
     eval_env.close()
-
 
 
 # ============================================================
@@ -131,12 +110,11 @@ def train_worker(cfg: Config):
 
 def train_manager(cfg: Config):
 
-    logger.info("Training manager...")
-
+    logger.info("🚀 Training Manager (high-level controller)")
     manager_logdir = os.path.join(cfg.logdir, "manager")
     os.makedirs(manager_logdir, exist_ok=True)
 
-    # -------- Parallel Envs --------
+    # Parallel environments
     env = build_vec_env(worker=False, cfg=cfg)
     eval_env = build_vec_env(worker=False, cfg=cfg, eval_env=True)
 
@@ -149,7 +127,7 @@ def train_manager(cfg: Config):
         n_eval_episodes=cfg.eval_episodes,
     )
 
-    # -------- PPO Model --------
+    # PPO Model
     model = PPO(
         "MlpPolicy",
         env,
@@ -165,31 +143,30 @@ def train_manager(cfg: Config):
         seed=cfg.seed,
     )
 
-    # -------- HRL Predictor --------
+    # Load trained worker
     from stable_baselines3 import PPO as PPO_LOAD
-    worker_path = os.path.join(cfg.logdir, "worker", "worker")
-    worker_path = os.path.abspath(worker_path)
+    worker_path = os.path.join(cfg.logdir, "worker", "worker.zip")
     worker_model = PPO_LOAD.load(worker_path)
 
+    # Build HRL predictor for video recording
     hrl_predict = make_hierarchical_predictor(cfg, model, worker_model)
 
     video_cb = VideoCallback(cfg, mode="manager", predict_fn=hrl_predict)
 
-    # -------- TRAIN --------
+    # Train
     model.learn(
         total_timesteps=cfg.total_timesteps,
         callback=CallbackList([eval_callback, video_cb]),
     )
 
-    # -------- SAVE --------
+    # Save
     model.save(os.path.join(manager_logdir, "manager.zip"))
     env.save(os.path.join(manager_logdir, "manager_norm.pkl"))
 
-    logger.info("Manager saved → manager.zip + manager_norm.pkl")
+    logger.info("💾 Manager saved → manager.zip + manager_norm.pkl")
 
     env.close()
     eval_env.close()
-
 
 
 # ============================================================
@@ -197,24 +174,28 @@ def train_manager(cfg: Config):
 # ============================================================
 
 if __name__ == "__main__":
-    cfg = Config()
-    
-    prepare_experiment_directory(cfg)
 
-    # ---- Worker Config ----
-    worker_cfg = cfg
+    base_cfg = Config()
+    prepare_experiment_directory(base_cfg)
+
+    # ------------------------------
+    # WORKER CONFIG
+    # ------------------------------
+    worker_cfg = copy.deepcopy(base_cfg)
     worker_cfg.high_level_period = 1
     worker_cfg.total_timesteps = 100_000
     worker_cfg.ppo_lr = 1e-4
 
     train_worker(worker_cfg)
 
-    # ---- Manager Config ----
-    manager_cfg = cfg
+    # ------------------------------
+    # MANAGER CONFIG
+    # ------------------------------
+    manager_cfg = copy.deepcopy(base_cfg)
     manager_cfg.high_level_period = 15
     manager_cfg.total_timesteps = 100_000
     manager_cfg.ppo_lr = 3e-4
 
     train_manager(manager_cfg)
 
-    logger.info("\n🎉 HRL Training Complete!")
+    logger.success("🎉 HRL Training Complete!")
