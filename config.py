@@ -35,6 +35,7 @@ class Config:
     video_w: int = 640
     video_h: int = 480
     camera_id: int = 0
+    video_frames: int = 300
 
     # === Eval Callback ===
     eval_freq: int = 5000
