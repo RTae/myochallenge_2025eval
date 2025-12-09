@@ -7,29 +7,8 @@ import numpy as np
 # ================================================================
 def flatten_myo_obs_worker(obs_dict):
     """
-    Build a 1D float32 vector for the worker (base obs only).
-
-    Uses the following fields:
-
-        time           (1,)
-        pelvis_pos     (3,)
-        body_qpos      (58,)
-        body_qvel      (58,)
-        ball_pos       (3,)
-        ball_vel       (3,)
-        paddle_pos     (3,)
-        paddle_vel     (3,)
-        paddle_ori     (4,)
-        reach_err      (3,)
-        palm_pos       (3,)
-        palm_err       (3,)
-        touching_info  (6,)
-        act            (273,)
-
-    Total = 424 dims.
-
-    NOTE: padde_ori_err (4,) is intentionally excluded to keep
-    the obs compact and stable.
+    Build a 1D float32 vector for the worker.
+    Uses only stable keys from obs_dict.
     """
     parts = [
         obs_dict["time"],          # (1,)
@@ -41,7 +20,6 @@ def flatten_myo_obs_worker(obs_dict):
         obs_dict["paddle_pos"],    # (3,)
         obs_dict["paddle_vel"],    # (3,)
         obs_dict["paddle_ori"],    # (4,)
-        # obs_dict["padde_ori_err"],  # (4,)  <-- intentionally excluded
         obs_dict["reach_err"],     # (3,)
         obs_dict["palm_pos"],      # (3,)
         obs_dict["palm_err"],      # (3,)
@@ -64,24 +42,15 @@ def flatten_myo_obs_worker(obs_dict):
 # ================================================================
 def flatten_myo_obs_manager(obs_dict):
     """
-    Compact manager observation:
-
-        ball_pos   (3,)
-        ball_vel   (3,)
-        paddle_pos (3,)
-        paddle_vel (3,)
-        reach_err  (3,)
-        time       (1,)
-
-    Total = 16 dims.
+    Smaller observation for the manager.
     """
     parts = [
-        obs_dict["ball_pos"],
-        obs_dict["ball_vel"],
-        obs_dict["paddle_pos"],
-        obs_dict["paddle_vel"],
-        obs_dict["reach_err"],
-        obs_dict["time"],
+        obs_dict["ball_pos"],    # (3,)
+        obs_dict["ball_vel"],    # (3,)
+        obs_dict["paddle_pos"],  # (3,)
+        obs_dict["paddle_vel"],  # (3,)
+        obs_dict["reach_err"],   # (3,)
+        obs_dict["time"],        # (1,)
     ]
 
     safe_parts = []
@@ -95,41 +64,32 @@ def flatten_myo_obs_manager(obs_dict):
 
 
 # ================================================================
-#  WORKER INPUT DURING HRL EXECUTION / TRAINING
+#  WORKER INPUT DURING HRL EXECUTION
 # ================================================================
 def build_worker_obs(obs_dict, goal, t_in_macro, cfg):
     """
-    Build the *goal-conditioned* worker observation:
+    Worker observation:
+        [flattened_base_obs (424), goal (3), phase (1)]
+    Total dims: 428
 
-        worker_obs = [ base_obs (424), goal (goal_dim=3), phase (1) ]
-
-    - base_obs: flattened low-level state
-    - goal:     manager's 3D goal vector
-    - phase:    scalar in [0,1], position within the macro step
-
-    Total dims = 424 + cfg.goal_dim + 1  (with goal_dim=3 → 428).
+    NOTE:
+      - For now, phase is always 0, and worker was trained with goal=0, phase=0.
+      - Manager can later be upgraded to use real goals once worker is retrained.
     """
     base = flatten_myo_obs_worker(obs_dict)          # (424,)
-    goal = np.asarray(goal, dtype=np.float32)        # (goal_dim,)
-    phase = np.array(
-        [t_in_macro / max(1, cfg.high_level_period - 1)],
-        dtype=np.float32
-    )                                                # (1,)
+    goal = np.asarray(goal, dtype=np.float32)        # (goal_dim=3,)
+    phase = np.array([0.0], dtype=np.float32)        # keep constant for stability
 
     return np.concatenate([base, goal, phase], axis=-1).astype(np.float32)
 
 
 # ================================================================
-#  INTRINSIC REWARD FOR WORKER (optional helper)
+#  INTRINSIC REWARD FOR WORKER (OPTIONAL, not used yet)
 # ================================================================
 def intrinsic_reward(obs_dict, goal):
     """
-    Intrinsic reward for worker:
-
+    Worker reward:
         r_int = - || (paddle_pos - ball_pos) - goal ||
-
-    You can mix this with env reward if you want:
-        r_total = r_env + alpha * r_int
     """
     ball = obs_dict["ball_pos"]
     paddle = obs_dict["paddle_pos"]
@@ -143,38 +103,37 @@ def intrinsic_reward(obs_dict, goal):
 # ================================================================
 def make_hierarchical_predictor(cfg, manager_model, worker_model):
     """
-    Returns a predict_fn for VideoRecorder:
+    Function for VideoCallback.predict_fn.
 
-        VideoRecorder will call:
-            predict_fn(sb3_obs, env)
+    VideoCallback will call:
+        predict_fn(sb3_obs, env_instance)
 
-        We IGNORE sb3_obs and always read `env.unwrapped.obs_dict`
-        from MyoSuite, then:
+    We IGNORE sb3_obs and always use env_instance.unwrapped.obs_dict.
 
-            - Manager gets 16D manager obs → goal (3D)
-            - Worker gets 428D goal-conditioned obs (base + goal + phase)
-
-        Phase is set to 0 in videos (start of macro-step).
+    For now:
+      - Manager is still running but worker ignores its goal.
+      - We pass zero-goal and phase=0 to the worker, same as in training.
     """
 
     def predict_fn(_ignored_sb3_obs, env_instance):
-        # 1) Get real MyoSuite dict obs
+        # Real MyoSuite obs dict
         obs_dict = env_instance.unwrapped.obs_dict
 
-        # 2) Manager proposes a high-level goal
-        m_obs = flatten_myo_obs_manager(obs_dict).reshape(1, -1)
-        goal, _ = manager_model.predict(m_obs, deterministic=True)
-        goal = goal.astype(np.float32).flatten()  # (goal_dim,)
+        # 1) Manager forward (just for completeness)
+        mgr_obs = flatten_myo_obs_manager(obs_dict).reshape(1, -1)
+        _goal, _ = manager_model.predict(mgr_obs, deterministic=True)
 
-        # 3) Worker predicts low-level action using goal-conditioned obs
+        # 2) Worker forward: must match training obs exactly
+        zero_goal = np.zeros(cfg.goal_dim, dtype=np.float32)
         w_obs = build_worker_obs(
             obs_dict=obs_dict,
-            goal=goal,
-            t_in_macro=0,  # phase=0 at beginning of macro for video
+            goal=zero_goal,
+            t_in_macro=0,
             cfg=cfg,
         ).reshape(1, -1)
 
         action, _ = worker_model.predict(w_obs, deterministic=True)
-        return np.asarray(action, dtype=np.float32).reshape(-1)
+        action = np.asarray(action, dtype=np.float32).reshape(-1)
+        return action
 
     return predict_fn
