@@ -8,13 +8,15 @@ from stable_baselines3 import PPO
 from config import Config
 from hrl_utils import flatten_myo_obs_manager, build_worker_obs
 
+from loguru import logger
+
 
 class ManagerEnv(gym.Env):
     """
     High-level HRL manager.
-    Action = 3D goal vector
-    Obs = compact manager state (~16D)
-    Reward = true MyoSuite environment reward
+    Action = 3D goal vector (goal_dim)
+    Obs    = compact manager state (16D)
+    Reward = real MyoSuite environment reward
     """
 
     metadata = {"render_modes": []}
@@ -30,7 +32,7 @@ class ManagerEnv(gym.Env):
         if not os.path.exists(worker_model_path):
             raise FileNotFoundError(f"Cannot load worker model: {worker_model_path}")
 
-        print(f"[ManagerEnv] Loading worker model: {worker_model_path}")
+        logger.info(f"[ManagerEnv] Loading worker model: {worker_model_path}")
         self.worker = PPO.load(worker_model_path)
 
         # Infer obs shape
@@ -39,7 +41,7 @@ class ManagerEnv(gym.Env):
         self.last_obs = obs_dict
 
         mgr_flat = flatten_myo_obs_manager(obs_dict)
-        print(f"[ManagerEnv] manager_obs_dim = {mgr_flat.shape[0]}")
+        logger.info(f"[ManagerEnv] manager_obs_dim = {mgr_flat.shape[0]} (expected 16)")
 
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf,
@@ -65,9 +67,9 @@ class ManagerEnv(gym.Env):
         return flatten_myo_obs_manager(obs_dict), {}
 
     def step(self, goal):
-        # Clip manager goal
+        # Manager goal in [-goal_bound, +goal_bound]
         goal = np.clip(
-            np.asarray(goal, dtype=np.float32),
+            np.asarray(goal, dtype=np.float32).reshape(-1),
             -self.cfg.goal_bound,
             self.cfg.goal_bound,
         )
@@ -80,6 +82,8 @@ class ManagerEnv(gym.Env):
 
         # Manager goal is executed for K low-level steps
         for t in range(self.cfg.high_level_period):
+            if terminated or truncated:
+                break
 
             worker_obs = build_worker_obs(
                 obs_dict=obs_dict,
@@ -89,14 +93,11 @@ class ManagerEnv(gym.Env):
             ).reshape(1, -1)
 
             action_low, _ = self.worker.predict(worker_obs, deterministic=True)
-            action_low = action_low.reshape(-1)
+            action_low = np.asarray(action_low, dtype=np.float32).reshape(-1)
 
             _, r_env, terminated, truncated, info = self.base_env.step(action_low)
             obs_dict = self.base_env.obs_dict
             total_reward += r_env
-
-            if terminated or truncated:
-                break
 
         self.last_obs = obs_dict
         mgr_obs = flatten_myo_obs_manager(obs_dict)

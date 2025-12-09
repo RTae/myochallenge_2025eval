@@ -6,6 +6,8 @@ from gymnasium import spaces
 from config import Config
 from hrl_utils import build_worker_obs, intrinsic_reward
 
+from loguru import logger
+
 
 class WorkerEnv(gym.Env):
     """
@@ -37,7 +39,7 @@ class WorkerEnv(gym.Env):
         self.t_in_macro = 0
 
         worker_obs = self._build_obs(obs_dict)
-        print(f"[WorkerEnv] worker_obs_dim = {worker_obs.shape[0]} (expected 428)")
+        logger.info(f"[WorkerEnv] worker_obs_dim = {worker_obs.shape[0]} (expected 428)")
 
         # Observation space (428,)
         self.observation_space = spaces.Box(
@@ -46,7 +48,6 @@ class WorkerEnv(gym.Env):
             dtype=np.float32,
         )
 
-        # Action space = MyoSuite actuators (273 muscles)
         self.action_space = self.base_env.action_space
 
     # ------------------------------------------------------------
@@ -57,7 +58,7 @@ class WorkerEnv(gym.Env):
         return np.random.normal(
             loc=0.0,
             scale=self.cfg.goal_std,
-            size=(self.cfg.goal_dim,)
+            size=(self.cfg.goal_dim,),
         ).astype(np.float32)
 
     # ------------------------------------------------------------
@@ -76,11 +77,9 @@ class WorkerEnv(gym.Env):
             t_in_macro=self.t_in_macro,
             cfg=self.cfg,
         )
-        
         return worker_obs, {}
 
     def step(self, action):
-
         obs_vec, env_reward, terminated, truncated, info = self.base_env.step(action)
         obs_dict = self.base_env.obs_dict
 

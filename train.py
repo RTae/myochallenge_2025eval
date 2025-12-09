@@ -2,21 +2,26 @@
 import os
 import copy
 import numpy as np
-from loguru import logger
 
+from loguru import logger
 from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import CallbackList, EvalCallback
+from stable_baselines3.common.callbacks import EvalCallback, CallbackList
 
 from config import Config
 from env_factory import build_vec_env
-from hrl_utils import flatten_myo_obs_worker, make_hierarchical_predictor
 from callbacks.video_callback import VideoCallback
+from hrl_utils import build_worker_obs, flatten_myo_obs_worker, make_hierarchical_predictor
+from stable_baselines3 import PPO as PPO_LOAD
 
 
 # ============================================================
 # Create experiment directory logs/expN/
 # ============================================================
 def prepare_experiment_directory(cfg: Config):
+    """
+    Creates logs/exp1, exp2, ... automatically.
+    Updates cfg.logdir to the new experiment folder.
+    """
     base = cfg.logdir
     os.makedirs(base, exist_ok=True)
 
@@ -38,16 +43,16 @@ def prepare_experiment_directory(cfg: Config):
 
 
 # ============================================================
-# TRAIN WORKER (LOW-LEVEL)
+# TRAIN WORKER
 # ============================================================
 def train_worker(cfg: Config):
+    logger.info("🦵 Training worker (goal-conditioned low-level)...")
 
-    logger.info("🚀 Training Worker (low-level controller)")
     worker_logdir = os.path.join(cfg.logdir, "worker")
     os.makedirs(worker_logdir, exist_ok=True)
 
     env = build_vec_env(worker=True, cfg=cfg)
-    eval_env = build_vec_env(worker=True, cfg=cfg, eval_env=True)
+    eval_env = build_vec_env(worker=True, cfg=cfg)
 
     eval_callback = EvalCallback(
         eval_env,
@@ -73,11 +78,20 @@ def train_worker(cfg: Config):
         seed=cfg.seed,
     )
 
+    # --- Video callback (worker only) ---
     def worker_predict(_ignored_sb3_obs, env_instance):
-        # Use the underlying MyoSuite dict
         obs_dict = env_instance.unwrapped.obs_dict
-        obs_vec = flatten_myo_obs_worker(obs_dict).reshape(1, -1)
-        action, _ = model.predict(obs_vec, deterministic=True)
+
+        # Use zero goal + phase=0 just to visualize
+        zero_goal = np.zeros(cfg.goal_dim, dtype=np.float32)
+        worker_obs = build_worker_obs(
+            obs_dict=obs_dict,
+            goal=zero_goal,
+            t_in_macro=0,
+            cfg=cfg,
+        ).reshape(1, -1)
+
+        action, _ = model.predict(worker_obs, deterministic=True)
         return np.asarray(action, dtype=np.float32).reshape(-1)
 
     video_cb = VideoCallback(cfg, mode="worker", predict_fn=worker_predict)
@@ -87,25 +101,31 @@ def train_worker(cfg: Config):
         callback=CallbackList([eval_callback, video_cb]),
     )
 
-    model.save(os.path.join(worker_logdir, "worker.zip"))
-    env.save(os.path.join(worker_logdir, "worker_norm.pkl"))
+    worker_path = os.path.join(worker_logdir, "worker.zip")
+    model.save(worker_path)
+    logger.info(f"💾 Saved worker model → {worker_path}")
 
-    logger.info("💾 Worker saved → worker.zip + worker_norm.pkl")
     env.close()
     eval_env.close()
 
 
 # ============================================================
-# TRAIN MANAGER (HIGH-LEVEL)
+# TRAIN MANAGER
 # ============================================================
 def train_manager(cfg: Config):
+    logger.info("🧠 Training manager (high-level HRL)...")
 
-    logger.info("🚀 Training Manager (high-level controller)")
     manager_logdir = os.path.join(cfg.logdir, "manager")
     os.makedirs(manager_logdir, exist_ok=True)
 
-    env = build_vec_env(worker=False, cfg=cfg)
-    eval_env = build_vec_env(worker=False, cfg=cfg, eval_env=True)
+    worker_model_path = os.path.join(cfg.logdir, "worker", "worker.zip")
+    worker_model_path = os.path.abspath(worker_model_path)
+
+    if not os.path.exists(worker_model_path):
+        raise FileNotFoundError(f"Expected worker model at: {worker_model_path}")
+
+    env = build_vec_env(worker=False, cfg=cfg, worker_model_path=worker_model_path)
+    eval_env = build_vec_env(worker=False, cfg=cfg, worker_model_path=worker_model_path)
 
     eval_callback = EvalCallback(
         eval_env,
@@ -131,12 +151,10 @@ def train_manager(cfg: Config):
         seed=cfg.seed,
     )
 
-    # Load trained worker
-    from stable_baselines3 import PPO as PPO_LOAD
-    worker_path = os.path.join(cfg.logdir, "worker", "worker.zip")
-    worker_model = PPO_LOAD.load(worker_path)
-
+    # HRL predictor for visualization (manager + worker on raw env)
+    worker_model = PPO_LOAD.load(worker_model_path)
     hrl_predict = make_hierarchical_predictor(cfg, model, worker_model)
+
     video_cb = VideoCallback(cfg, mode="manager", predict_fn=hrl_predict)
 
     model.learn(
@@ -144,10 +162,10 @@ def train_manager(cfg: Config):
         callback=CallbackList([eval_callback, video_cb]),
     )
 
-    model.save(os.path.join(manager_logdir, "manager.zip"))
-    env.save(os.path.join(manager_logdir, "manager_norm.pkl"))
+    manager_path = os.path.join(manager_logdir, "manager.zip")
+    model.save(manager_path)
+    logger.info(f"💾 Saved manager model → {manager_path}")
 
-    logger.info("💾 Manager saved → manager.zip + manager_norm.pkl")
     env.close()
     eval_env.close()
 
@@ -159,20 +177,18 @@ if __name__ == "__main__":
     base_cfg = Config()
     prepare_experiment_directory(base_cfg)
 
-    # -------- Worker config --------
+    # You can override these per-stage if you want different budgets
     worker_cfg = copy.deepcopy(base_cfg)
-    # keep high_level_period from config (e.g. 15)
+    manager_cfg = copy.deepcopy(base_cfg)
+
+    # Example: different timesteps / lrs
     worker_cfg.total_timesteps = 100_000
     worker_cfg.ppo_lr = 1e-4
-
-    train_worker(worker_cfg)
-
-    # -------- Manager config --------
-    manager_cfg = copy.deepcopy(base_cfg)
-    # same high_level_period so phases match worker training
+    
     manager_cfg.total_timesteps = 100_000
     manager_cfg.ppo_lr = 3e-4
 
+    train_worker(worker_cfg)
     train_manager(manager_cfg)
 
-    logger.success("🎉 Full HRL Training Complete!")
+    logger.info("🎉 HRL Training Complete!")

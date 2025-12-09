@@ -5,49 +5,46 @@ import skvideo.io
 from loguru import logger
 from stable_baselines3.common.callbacks import BaseCallback
 
+from config import Config
 from myosuite.utils import gym as myo_gym
 
 
 class VideoCallback(BaseCallback):
     """
-    HRL-aware video callback.
-
-    - Recreates a fresh MyoSuite env for recording.
-    - Uses a predict_fn(obs, env_instance) provided externally.
-    - Uses Config-only parameters.
+    Generic video callback for SB3.
+    Uses a raw MyoSuite env (not WorkerEnv/ManagerEnv) and a user-provided
+    predict_fn(obs, env) to generate actions.
     """
 
-    def __init__(self, cfg, mode="worker", predict_fn=None, verbose=0):
+    def __init__(self, cfg: Config, mode: str, predict_fn, verbose: int = 0):
         super().__init__(verbose)
         self.cfg = cfg
-        self.mode = mode  # "worker" or "manager"
+        self.mode = mode
         self.predict_fn = predict_fn
 
         self.video_dir = os.path.join(cfg.logdir, mode, "videos")
         os.makedirs(self.video_dir, exist_ok=True)
 
-        self.last_recorded = 0
+        self._last_recorded = 0
 
     def _on_step(self) -> bool:
-        step_count = self.num_timesteps
-        if (step_count - self.last_recorded) >= self.cfg.video_freq:
-            video_path = os.path.join(
-                self.video_dir,
-                f"{self.mode}_step_{step_count}.mp4",
-            )
-            logger.info(f"🎥 Triggering video capture at step {step_count}")
-            self._record(video_path)
-            self.last_recorded = step_count
+        step = self.num_timesteps
+        if step - self._last_recorded >= self.cfg.video_freq:
+            path = os.path.join(self.video_dir, f"{self.mode}_step_{step}.mp4")
+            logger.info(f"🎥 Triggering video capture at step {step}")
+            self._record(path)
+            self._last_recorded = step
         return True
 
     def _record(self, video_path: str):
+        # Headless Mujoco
         os.environ["MUJOCO_GL"] = "egl"
         os.environ.pop("DISPLAY", None)
 
         env = myo_gym.make(self.cfg.env_id)
         obs, _ = env.reset(seed=self.cfg.seed + 123)
 
-        # Warm-up
+        # warmup renderer
         _ = env.sim.renderer.render_offscreen(
             width=self.cfg.video_w,
             height=self.cfg.video_h,
@@ -66,8 +63,7 @@ class VideoCallback(BaseCallback):
             frames.append(frame)
 
             if self.predict_fn is not None:
-                # We ignore obs here and always use env.unwrapped.obs_dict inside predict_fn
-                action = self.predict_fn(None, env)
+                action = self.predict_fn(obs, env)
             else:
                 action = np.zeros(env.action_space.shape[0], dtype=np.float32)
 
