@@ -20,14 +20,13 @@ def flatten_myo_obs_worker(obs_dict):
         obs_dict["paddle_pos"],    # (3,)
         obs_dict["paddle_vel"],    # (3,)
         obs_dict["paddle_ori"],    # (4,)
-        obs_dict["paddle_ori_err"], # (4,)
         obs_dict["reach_err"],     # (3,)
         obs_dict["palm_pos"],      # (3,)
         obs_dict["palm_err"],      # (3,)
         obs_dict["touching_info"], # (6,)
         obs_dict["act"],           # (273,)
     ]
-
+    
     safe_parts = []
     for p in parts:
         arr = np.array(p, dtype=np.float32)
