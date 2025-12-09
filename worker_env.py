@@ -17,7 +17,9 @@ class WorkerEnv(gym.Env):
         self.config = config
         self.base_env = myo_gym.make(config.env_id)
 
-        obs_dict, _ = self.base_env.reset()
+        _, _ = self.base_env.reset()
+        obs_dict = self.base_env.obs_dict
+        
         base_vec = flatten_myo_obs_worker(obs_dict)
         self.base_dim = base_vec.shape[0]
 
@@ -40,17 +42,14 @@ class WorkerEnv(gym.Env):
     def _sample_goal(self, obs_dict):
         return np.random.normal(0, self.config.goal_std, size=self.config.goal_dim).astype(np.float32)
 
-    def reset(self, *, seed=None, options=None):
-        obs_dict, info = self.base_env.reset()
-        self.goal = self._sample_goal(obs_dict)
-        self.t = 0
-        return build_worker_obs(obs_dict, self.goal, self.t, self.config), info
+    def reset(self, **kwargs):
+        obs_vec, info = self.base_env.reset(**kwargs)
+        obs_dict = self.base_env.obs_dict
+        flat = flatten_myo_obs_worker(obs_dict)
+        return flat, info
 
     def step(self, action):
-        obs_dict, _, terminated, truncated, info = self.base_env.step(action)
-        self.t = (self.t + 1) % self.config.high_level_period
-        r_int = intrinsic_reward(obs_dict, self.goal)
-
-        obs = build_worker_obs(obs_dict, self.goal, self.t, self.config)
-        done = terminated or truncated
-        return obs, r_int, done, False, info
+        obs_vec, reward, terminated, truncated, info = self.base_env.step(action)
+        obs_dict = self.base_env.obs_dict
+        flat = flatten_myo_obs_worker(obs_dict)
+        return flat, reward, terminated, truncated, info

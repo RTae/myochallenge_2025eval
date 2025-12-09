@@ -6,21 +6,24 @@ import numpy as np
 def flatten_myo_obs_worker(obs_dict):
     """
     Build a 1D float32 vector for the worker (low-level policy).
-    Adjust keys/ordering to match your MyoSuite env's obs.
     """
-    parts = []
-
-    # ---- CHANGE THESE KEYS IF NEEDED ----
-    parts.append(obs_dict["pelvis_pos"])          # (3,)
-    parts.append(obs_dict["body_qpos"])           # (Nq,)
-    parts.append(obs_dict["body_vel"])            # (Nq,)
-    parts.append(obs_dict["ball_pos"])           # (3,)
-    parts.append(obs_dict["ball_vel"])           # (3,)
-    parts.append(obs_dict["paddle_pos"])         # (3,)
-    parts.append(obs_dict["paddle_vel"])         # (3,)
-    parts.append(obs_dict["paddle_ori"])         # (3,) e.g. Euler or axis-angle
-    parts.append(obs_dict["reach_err"])          # (3,)
-    parts.append(obs_dict["muscle_activations"]) # (Nmusc,)
+    parts = [
+        obs_dict["time"],            # (1,)
+        obs_dict["pelvis_pos"],      # (3,)
+        obs_dict["body_qpos"],       # (58,)
+        obs_dict["body_qvel"],       # (58,)
+        obs_dict["ball_pos"],        # (3,)
+        obs_dict["ball_vel"],        # (3,)
+        obs_dict["paddle_pos"],      # (3,)
+        obs_dict["paddle_vel"],      # (3,)
+        obs_dict["paddle_ori"],      # (4,)
+        obs_dict["padde_ori_err"],   # (4,)
+        obs_dict["reach_err"],       # (3,)
+        obs_dict["palm_pos"],        # (3,)
+        obs_dict["palm_err"],        # (3,)
+        obs_dict["touching_info"],   # (6,)
+        obs_dict["act"],             # (273,)
+    ]
 
     return np.concatenate(parts, axis=-1).astype(np.float32)
 

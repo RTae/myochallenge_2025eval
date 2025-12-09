@@ -19,11 +19,19 @@ class ManagerEnv(gym.Env):
         self.base_env = myo_gym.make(config.env_id)
         self.worker = PPO.load(worker_model_path)
 
-        obs_dict, _ = self.base_env.reset()
+        obs_vec, info = self.base_env.reset()
+        
+        obs_dict = self.base_env.obs_dict
         self.last_obs = obs_dict
+        flat_obs = flatten_myo_obs_manager(obs_dict)
 
-        vec = flatten_myo_obs_manager(obs_dict)
-        self.observation_space = spaces.Box(-np.inf, np.inf, shape=vec.shape, dtype=np.float32)
+        self.observation_space = spaces.Box(
+            low=-np.inf,
+            high=np.inf,
+            shape=flat_obs.shape,
+            dtype=np.float32
+        )
+
         self.action_space = spaces.Box(
             low=-config.goal_bound,
             high=config.goal_bound,
@@ -32,9 +40,14 @@ class ManagerEnv(gym.Env):
         )
 
     def reset(self, *, seed=None, options=None):
-        obs_dict, info = self.base_env.reset()
+        obs_vec, info = self.base_env.reset()
+
+        # Pull dict
+        obs_dict = self.base_env.obs_dict
         self.last_obs = obs_dict
-        return flatten_myo_obs_manager(obs_dict), info
+
+        flat = flatten_myo_obs_manager(obs_dict)
+        return flat, info
 
     def step(self, goal):
         goal = np.array(goal, dtype=np.float32)
