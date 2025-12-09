@@ -16,15 +16,33 @@ class ManagerEnv(gym.Env):
         from myosuite.utils import gym as myo_gym
 
         self.config = config
+
+        # ------------------------------
+        # Base MyoSuite environment
+        # ------------------------------
         self.base_env = myo_gym.make(config.env_id)
+
+        # ------------------------------
+        # Load trained worker
+        # ------------------------------
         self.worker = PPO.load(worker_model_path)
 
+        # ------------------------------
+        # Initialize environment
+        # ------------------------------
         obs_vec, info = self.base_env.reset()
-        
+
+        # IMPORTANT: pull the real dict
         obs_dict = self.base_env.obs_dict
+
         self.last_obs = obs_dict
+
+        # Flatten manager observation
         flat_obs = flatten_myo_obs_manager(obs_dict)
 
+        # ------------------------------
+        # Observation + Action space
+        # ------------------------------
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
@@ -39,6 +57,9 @@ class ManagerEnv(gym.Env):
             dtype=np.float32
         )
 
+    # ============================================================
+    # RESET
+    # ============================================================
     def reset(self, *, seed=None, options=None):
         obs_vec, info = self.base_env.reset()
 
@@ -49,21 +70,48 @@ class ManagerEnv(gym.Env):
         flat = flatten_myo_obs_manager(obs_dict)
         return flat, info
 
+    # ============================================================
+    # STEP
+    # ============================================================
     def step(self, goal):
         goal = np.array(goal, dtype=np.float32)
+
         total_reward = 0.0
-        terminated = truncated = False
+        terminated = False
+        truncated = False
+        info = {}
 
         obs_dict = self.last_obs
+
+        # Manager acts every K steps
         for t in range(self.config.high_level_period):
+
             if terminated or truncated:
                 break
-            worker_obs = build_worker_obs(obs_dict, goal, t, self.config).reshape(1, -1)
-            a_low, _ = self.worker.predict(worker_obs, deterministic=True)
 
-            obs_dict, r_env, terminated, truncated, info = self.base_env.step(a_low)
+            # --------------------------
+            # Build WORKER OBSERVATION
+            # --------------------------
+            worker_obs = build_worker_obs(obs_dict, goal, t, self.config)
+            worker_obs = worker_obs.reshape(1, -1)
+
+            # Low-level action
+            action_low, _ = self.worker.predict(worker_obs, deterministic=True)
+
+            # Env step (returns array)
+            obs_vec, r_env, terminated, truncated, info = self.base_env.step(action_low)
+
+            # Pull dict again
+            obs_dict = self.base_env.obs_dict
+
             total_reward += r_env
 
+        # Save last obs for next HRL step
         self.last_obs = obs_dict
+
         done = terminated or truncated
-        return flatten_myo_obs_manager(obs_dict), total_reward, done, False, info
+
+        # Manager observes FLATTENED dict features
+        flat_obs = flatten_myo_obs_manager(obs_dict)
+
+        return flat_obs, total_reward, done, False, info
