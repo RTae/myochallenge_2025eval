@@ -24,7 +24,7 @@ class ManagerEnv(gym.Env):
         self.base_env = myo_gym.make(config.env_id)
 
         # --------------------------------------------------------
-        # Load trained goal-conditioned worker
+        # Load trained worker
         # --------------------------------------------------------
         worker_model_path = os.path.abspath(worker_model_path)
         if not os.path.exists(worker_model_path):
@@ -71,7 +71,9 @@ class ManagerEnv(gym.Env):
     # STEP
     # ============================================================
     def step(self, goal):
-        goal = np.asarray(goal, dtype=np.float32)
+        # For now: worker was not trained to be goal-conditioned,
+        # so we ignore the manager's goal to avoid distribution shift.
+        zero_goal = np.zeros(self.cfg.goal_dim, dtype=np.float32)
 
         total_reward = 0.0
         terminated = False
@@ -87,15 +89,12 @@ class ManagerEnv(gym.Env):
 
             worker_obs = build_worker_obs(
                 obs_dict=obs_dict,
-                goal=goal,
-                t_in_macro=t,
+                goal=zero_goal, 
+                t_in_macro=0,
                 cfg=self.cfg,
             ).reshape(1, -1)
 
-            # Worker predicts batched action (1, act_dim)
             action_low, _ = self.worker.predict(worker_obs, deterministic=True)
-
-            # ✅ Flatten to (act_dim,) for MyoSuite
             action_low = np.asarray(action_low, dtype=np.float32).reshape(-1)
 
             obs_vec, r_env, terminated, truncated, info = self.base_env.step(action_low)
@@ -103,7 +102,7 @@ class ManagerEnv(gym.Env):
             total_reward += r_env
 
         self.last_obs = obs_dict
+        mgr_flat = flatten_myo_obs_manager(obs_dict)
         done = terminated or truncated
 
-        mgr_flat = flatten_myo_obs_manager(obs_dict)
         return mgr_flat, total_reward, done, False, info
