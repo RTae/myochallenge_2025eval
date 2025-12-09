@@ -198,9 +198,6 @@ def train_manager(cfg: Config):
 
 if __name__ == "__main__":
     cfg = Config()
-
-    prepare_experiment_directory(cfg)
-if __name__ == "__main__":
     
     prepare_experiment_directory(Config())  # creates exp folder
 
