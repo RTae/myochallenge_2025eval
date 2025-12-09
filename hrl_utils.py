@@ -2,10 +2,15 @@
 import numpy as np
 
 
-# ====== OBS FLATTENING UTILS ======
+# ================================================================
+#  FLATTEN WORKER OBSERVATION (Low-level controller)
+# ================================================================
 def flatten_myo_obs_worker(obs_dict):
     """
     Build a 1D float32 vector for the worker (low-level policy).
+
+    Total size = 429 dims:
+        1 + 3 + 58 + 58 + 3 + 3 + 3 + 3 + 4 + 4 + 3 + 3 + 3 + 6 + 273
     """
     parts = [
         obs_dict["time"],            # (1,)
@@ -28,79 +33,96 @@ def flatten_myo_obs_worker(obs_dict):
     return np.concatenate(parts, axis=-1).astype(np.float32)
 
 
+# ================================================================
+#  FLATTEN MANAGER OBSERVATION (High-level controller)
+# ================================================================
 def flatten_myo_obs_manager(obs_dict):
     """
-    Build a 1D float32 vector for the manager (high-level policy).
-    We keep this smaller than worker obs.
-    """
-    parts = []
+    Minimal observation for manager PPO.
+    Recommended features (16 dims total):
 
-    # ---- CHANGE THESE KEYS IF NEEDED ----
-    parts.append(obs_dict["pelvis_pos"])
-    parts.append(obs_dict["ball_pos"])
-    parts.append(obs_dict["ball_vel"])
-    parts.append(obs_dict["paddle_pos"])
-    parts.append(obs_dict["paddle_vel"])
-    parts.append(obs_dict["paddle_ori"])
-    parts.append(obs_dict["reach_err"])
+        ball_pos (3)
+        ball_vel (3)
+        paddle_pos (3)
+        paddle_vel (3)
+        reach_err (3)
+        time (1)
+
+    Total = 16 dims
+    """
+    parts = [
+        obs_dict["ball_pos"],
+        obs_dict["ball_vel"],
+        obs_dict["paddle_pos"],
+        obs_dict["paddle_vel"],
+        obs_dict["reach_err"],
+        obs_dict["time"],
+    ]
 
     return np.concatenate(parts, axis=-1).astype(np.float32)
 
 
-# ====== WORKER OBS + INTRINSIC REWARD ======
-def build_worker_obs(obs_dict, goal, t_in_macro, high_level_period):
+# ================================================================
+#  WORKER INPUT DURING HRL EXECUTION
+# ================================================================
+def build_worker_obs(obs_dict, goal, t, cfg):
     """
-    Worker observation = [base_worker_obs, goal, phase]
-      - goal: (3,) desired ball_to_paddle offset
-      - phase: scalar in [0,1] indicating macro-step progress
+    Worker observation during HRL:
+        [flattened_base_obs (429), goal (3), phase (1)]
+    Total dims: 433
     """
-    base = flatten_myo_obs_worker(obs_dict)
+    base = flatten_myo_obs_worker(obs_dict)         # (429,)
+    goal = np.asarray(goal, dtype=np.float32)       # (3,)
+    phase = np.array([t / cfg.high_level_period], dtype=np.float32)   # (1,)
 
-    phase = np.array(
-        [t_in_macro / max(1, high_level_period - 1)],
-        dtype=np.float32,
-    )
-
-    goal = goal.astype(np.float32)
     return np.concatenate([base, goal, phase], axis=-1).astype(np.float32)
 
 
+# ================================================================
+#  INTRINSIC REWARD FOR WORKER
+# ================================================================
 def intrinsic_reward(obs_dict, goal):
     """
-    Intrinsic reward for worker:
-      r_int = - || (paddle_pos - ball_pos) - goal ||
+    Worker reward:
+        r_int = - || (paddle_pos - ball_pos) - goal ||
     """
     ball = obs_dict["ball_pos"]
     paddle = obs_dict["paddle_pos"]
-    ball_to_paddle = paddle - ball  # current offset
+    offset = paddle - ball                   # current paddle-to-ball offset
+    err = np.linalg.norm(offset - goal)      # difference from desired goal
+    return -float(err)
 
-    pos_error = np.linalg.norm(ball_to_paddle - goal)
-    return -float(pos_error)
 
+# ================================================================
+#  HIERARCHICAL PREDICTOR (for VideoRecorder)
+# ================================================================
 def make_hierarchical_predictor(cfg, manager_model, worker_model):
     """
-    Returns a predict_fn used by VideoRecorder.
+    Function for VideoRecorder.predict_fn:
+        - Manager gets 16D manager obs → goal(3)
+        - Worker gets full obs + goal + phase(0)
     """
 
-    def predict_fn(obs, env):
-        # 1) Manager gives a goal
-        obs_vec = []  # flatten obs manually
-        for key in ["pelvis_pos", "ball_pos", "ball_vel", "paddle_pos", "paddle_vel", "paddle_ori", "reach_err"]:
-            obs_vec.append(obs[key])
-        obs_vec = np.concatenate(obs_vec).astype(np.float32).reshape(1, -1)
+    def predict_fn(obs_dict, env):
+        # -----------------------------
+        # 1) Manager predicts high-level goal (3D)
+        # -----------------------------
+        m_obs = flatten_myo_obs_manager(obs_dict).reshape(1, -1)
+        goal, _ = manager_model.predict(m_obs, deterministic=True)
+        goal = goal.astype(np.float32).flatten()  # (3,)
 
-        goal, _ = manager_model.predict(obs_vec, deterministic=True)
-        goal = goal.astype(np.float32).flatten()
-
-        # 2) Worker executes for 1 low-level step
-        worker_obs = build_worker_obs(
-            obs_dict=obs,
+        # -----------------------------
+        # 2) Worker gets full HRL obs
+        # -----------------------------
+        w_obs = build_worker_obs(
+            obs_dict=obs_dict,
             goal=goal,
-            t_in_macro=0,
-            config=cfg,
+            t=0,
+            cfg=cfg,
         ).reshape(1, -1)
 
-        action, _ = worker_model.predict(worker_obs, deterministic=True)
+        # Worker predicts muscle activations
+        action, _ = worker_model.predict(w_obs, deterministic=True)
         return action
 
     return predict_fn
