@@ -88,11 +88,11 @@ class WorkerEnv(gym.Env):
         obs_vec, env_reward, terminated, truncated, info = self.base_env.step(action)
         obs_dict = self.base_env.obs_dict
 
-        # Update phase in macro goal window
+        # Update macro-step counter
         self.t_in_macro += 1
 
-        # Intrinsic goal tracking reward
-        r_int = intrinsic_reward(obs_dict, self.goal)
+        # --- No intrinsic reward ---
+        reward = env_reward  # use MyoSuite environment reward directly
 
         # Reset goal at macro boundary or episode end
         if self.t_in_macro >= self.cfg.high_level_period or terminated or truncated:
@@ -107,7 +107,8 @@ class WorkerEnv(gym.Env):
         )
 
         info = info or {}
-        info["env_reward"] = env_reward
-        info["intrinsic_reward"] = r_int
+        info["env_reward"] = env_reward  # keep logs
+        # remove intrinsic_reward
+        # info["intrinsic_reward"] = r_int  <-- DELETE THIS
 
-        return worker_obs, r_int, terminated, truncated, info
+        return worker_obs, reward, terminated, truncated, info
