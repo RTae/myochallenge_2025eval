@@ -181,11 +181,10 @@ if __name__ == "__main__":
     worker_cfg = copy.deepcopy(base_cfg)
     manager_cfg = copy.deepcopy(base_cfg)
 
-    # Example: different timesteps / lrs
-    worker_cfg.total_timesteps = 15_000_000
+    worker_cfg.total_timesteps = 40_000_000
     worker_cfg.ppo_lr = 1e-4
     
-    manager_cfg.total_timesteps = 3_000_000
+    manager_cfg.total_timesteps = 5_000_000
     manager_cfg.ppo_lr = 3e-4
 
     train_worker(worker_cfg)
