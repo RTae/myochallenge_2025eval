@@ -1,6 +1,6 @@
 import numpy as np
 from loguru import logger
-import Config
+from config import Config
 import os
 
 def flatten_obs(obs_dict):

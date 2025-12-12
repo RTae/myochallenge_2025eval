@@ -31,7 +31,7 @@ def main():
         seed=cfg.seed,
     )
 
-    video_cb = VideoCallback(cfg, mode="single", predict_fn=predict_fn)
+    video_cb = VideoCallback(cfg, predict_fn=predict_fn)
     info_cb = InfoLoggerCallback(prefix="train/info")
 
     model.learn(

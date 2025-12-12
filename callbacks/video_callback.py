@@ -1,4 +1,3 @@
-# callbacks/video_callback.py
 import os
 import numpy as np
 import skvideo.io
@@ -16,13 +15,12 @@ class VideoCallback(BaseCallback):
     predict_fn(obs, env) to generate actions.
     """
 
-    def __init__(self, cfg: Config, mode: str, predict_fn, verbose: int = 0):
+    def __init__(self, cfg: Config, predict_fn, verbose: int = 0):
         super().__init__(verbose)
         self.cfg = cfg
-        self.mode = mode
         self.predict_fn = predict_fn
 
-        self.video_dir = os.path.join(cfg.logdir, mode, "videos")
+        self.video_dir = os.path.join(cfg.logdir, "videos")
         os.makedirs(self.video_dir, exist_ok=True)
 
         self._last_recorded = 0

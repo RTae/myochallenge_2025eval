@@ -4,7 +4,7 @@ import numpy as np
 from gymnasium import spaces
 
 from myosuite.utils import gym as myo_gym
-from utils import flatten_myo_obs_worker, HitDetector
+from utils import flatten_obs, HitDetector
 from config import Config
 
 
@@ -27,7 +27,7 @@ class CustomEnv(gym.Env):
         # Infer obs shape
         self.env.reset()
         obs_dict = self.env.obs_dict
-        obs = flatten_myo_obs_worker(obs_dict)
+        obs = flatten_obs(obs_dict)
 
         self.observation_space = spaces.Box(
             low=-np.inf,
@@ -45,7 +45,7 @@ class CustomEnv(gym.Env):
         self.hit_detector.reset(obs_dict)
         self.step_count = 0
 
-        return flatten_myo_obs_worker(obs_dict), {}
+        return flatten_obs(obs_dict), {}
 
     # --------------------------------------------------
     def step(self, action):
@@ -104,4 +104,4 @@ class CustomEnv(gym.Env):
             "dist": dist,
         }
 
-        return flatten_myo_obs_worker(obs_dict), reward, terminated, truncated, info
+        return flatten_obs(obs_dict), reward, terminated, truncated, info
