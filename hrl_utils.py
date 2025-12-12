@@ -1,10 +1,36 @@
-# hrl_utils.py
 import numpy as np
+from typing import Dict, Tuple
 
+def flatten_myo_obs_manager(obs_dict):
+    """
+    Manager sees a compact state:
+      ball_pos    (3,)
+      ball_vel    (3,)
+      paddle_pos  (3,)
+      paddle_vel  (3,)
+      reach_err   (3,)
+      time        (1,)
 
-# ================================================================
-#  FLATTEN WORKER OBSERVATION (base 424 dims)
-# ================================================================
+    Total: 16 dims
+    """
+    parts = [
+        obs_dict["ball_pos"],
+        obs_dict["ball_vel"],
+        obs_dict["paddle_pos"],
+        obs_dict["paddle_vel"],
+        obs_dict["reach_err"],
+        obs_dict["time"],
+    ]
+
+    arrays = []
+    for p in parts:
+        arr = np.asarray(p, dtype=np.float32)
+        if arr.ndim == 0:
+            arr = arr.reshape(1)
+        arrays.append(arr)
+
+    return np.concatenate(arrays, axis=-1)
+
 def flatten_myo_obs_worker(obs_dict):
     """
     Build a 1D float32 vector from the MyoSuite obs_dict.
@@ -54,113 +80,233 @@ def flatten_myo_obs_worker(obs_dict):
     return np.concatenate(arrays, axis=-1)
 
 
-# ================================================================
-#  FLATTEN MANAGER OBSERVATION (16D compact state)
-# ================================================================
-def flatten_myo_obs_manager(obs_dict):
-    """
-    Manager sees a compact state:
-      ball_pos    (3,)
-      ball_vel    (3,)
-      paddle_pos  (3,)
-      paddle_vel  (3,)
-      reach_err   (3,)
-      time        (1,)
-
-    Total: 16 dims
-    """
-    parts = [
-        obs_dict["ball_pos"],
-        obs_dict["ball_vel"],
-        obs_dict["paddle_pos"],
-        obs_dict["paddle_vel"],
-        obs_dict["reach_err"],
-        obs_dict["time"],
-    ]
-
-    arrays = []
-    for p in parts:
-        arr = np.asarray(p, dtype=np.float32)
-        if arr.ndim == 0:
-            arr = arr.reshape(1)
-        arrays.append(arr)
-
-    return np.concatenate(arrays, axis=-1)
-
-
 def build_worker_obs(obs_dict, goal, t_in_macro, cfg):
     """
-    Worker obs:
-      base        : 424
-      paddle_vel : 3
-      goal_vel   : 3
-      phase      : 1
-    Total = 431
+    Worker obs MUST include ball information for hitting.
+    
+    Structure:
+      base (proprioception) : qpos, qvel, act  (e.g., 424 dims)
+      ball_pos             : 3
+      ball_vel             : 3
+      paddle_vel           : 3 (redundant if in base, but safe)
+      goal                 : 3
+      phase                : 1
+      
+    Total = base + 13 dims
     """
-    base = flatten_myo_obs_worker(obs_dict)
-    paddle_vel = obs_dict["paddle_vel"].astype(np.float32)
-    goal = np.asarray(goal, dtype=np.float32)
-
+    # 1. Base proprioceptive observations (no ball)
+    base = flatten_myo_obs_worker(obs_dict)  # [..., 424]
+    
+    # 2. CRITICAL: Add ball observations for hitting
+    ball_pos = obs_dict["ball_pos"].astype(np.float32)  # [3]
+    ball_vel = obs_dict["ball_vel"].astype(np.float32)  # [3]
+    
+    # 3. Goal and phase info
+    paddle_vel = obs_dict["paddle_vel"].astype(np.float32)  # [3]
+    goal = np.asarray(goal, dtype=np.float32)  # [3]
     phase = np.array(
         [t_in_macro / max(1, cfg.high_level_period - 1)],
         dtype=np.float32
-    )
+    )  # [1]
 
     return np.concatenate(
-        [base, paddle_vel, goal, phase],
+        [base, ball_pos, ball_vel, paddle_vel, goal, phase],
         axis=-1
     ).astype(np.float32)
 
-
-
-def worker_reward(obs_dict, hit, contact_force, dv):
-    r = 0.0
-
-    if hit:
-        r += 10.0
-        # optional: bonus if the hit produces bigger impulse (keeps it learnable)
-        r += 0.5 * np.tanh(dv)          # 0..~0.5
-        r += 0.5 * np.tanh(contact_force) 
-        return float(r)
-
-    # pre-contact shaping (CAUSAL): move paddle toward ball
-    rel = np.array(obs_dict["ball_pos"], dtype=np.float32) - np.array(obs_dict["paddle_pos"], dtype=np.float32)
-    paddle_vel = np.array(obs_dict["paddle_vel"], dtype=np.float32)
-
-    approach = np.dot(paddle_vel, rel) / (np.linalg.norm(rel) + 1e-6)
-    if approach > 0:
-        r += 0.02 * approach
-
-    # tiny penalty to avoid freezing
-    r -= 0.01
-    return float(r)
+# MyoChallenge 2025 Physical Constants (from official specs)
+BALL_MASS = 0.0027  # kg
+BALL_RADIUS = 0.02  # m
+PADDLE_MASS = 0.150  # kg
+PADDLE_FACE_RADIUS = 0.093  # m
+PADDLE_HANDLE_RADIUS = 0.016  # m
+TABLE_HALF_WIDTH = 1.37  # m (each side)
+NET_HEIGHT = 0.305  # m
 
 class HitDetector:
-    def __init__(self, force_thr=1e-3, dv_thr=0.8):
-        self.force_thr = force_thr
+    """Detects ball-paddle contact using velocity change."""
+    
+    def __init__(self, dv_thr: float = 2.5, ball_mass: float = BALL_MASS):
+        """
+        Args:
+            dv_thr: Minimum velocity change (m/s) to register a hit.
+                    Recommended: 2.0-3.0 based on simulation timestep.
+        """
         self.dv_thr = dv_thr
-        self.prev_ball_vel = None
-
-    def reset(self, obs_dict):
-        self.prev_ball_vel = np.array(obs_dict["ball_vel"], dtype=np.float32)
-
-    def step(self, obs_dict):
-        # --- 1) contact via touching_info ---
-        ti = np.array(obs_dict.get("touching_info", []), dtype=np.float32).reshape(-1)
-        contact_force = float(np.sum(np.abs(ti))) if ti.size > 0 else 0.0
-        hit_by_force = contact_force > self.force_thr
-
-        # --- 2) hit via ball velocity jump ---
+        self.ball_mass = ball_mass
+        self._prev_ball_vel = None
+        
+    def reset(self, obs_dict: dict):
+        """Call at episode start."""
+        self._prev_ball_vel = np.array(obs_dict["ball_vel"], dtype=np.float32)
+        
+    def step(self, obs_dict: dict, dt: float = 0.01) -> tuple[bool, float, float]:
+        """
+        Returns: (hit, contact_force, dv)
+        
+        Args:
+            dt: Simulation timestep (MyoSuite default: 0.01s)
+        """
         ball_vel = np.array(obs_dict["ball_vel"], dtype=np.float32)
-        dv = 0.0 if self.prev_ball_vel is None else float(np.linalg.norm(ball_vel - self.prev_ball_vel))
-        hit_by_dv = dv > self.dv_thr
-        self.prev_ball_vel = ball_vel
-
-        hit = hit_by_force or hit_by_dv
+        
+        # Compute velocity change magnitude
+        dv = 0.0 if self._prev_ball_vel is None else float(
+            np.linalg.norm(ball_vel - self._prev_ball_vel)
+        )
+        
+        # Detect hit: velocity jump exceeds threshold
+        hit = dv > self.dv_thr
+        
+        # Calculate contact force from impulse: F = m * Δv / Δt
+        # Using official ball mass: 0.0027 kg
+        contact_force = self.ball_mass * dv / dt if hit else 0.0
+        
+        self._prev_ball_vel = ball_vel.copy()
         return hit, contact_force, dv
 
 
-
+class WorkerReward:
+    """Contact-conditioned reward with sweet spot detection."""
+    
+    def __init__(self, 
+                 hit_bonus: float = 5.0,
+                 impulse_bonus_scale: float = 2.0,
+                 force_bonus_scale: float = 1.0,
+                 sweet_spot_bonus: float = 1.0,  # NEW: bonus for center hits
+                 approach_scale: float = 0.05,
+                 inactivity_penalty: float = -0.02,
+                 energy_penalty_coef: float = 0.001,
+                 ball_vel_threshold: float = 0.1,
+                 paddle_radius: float = PADDLE_FACE_RADIUS):
+        
+        self.hit_bonus = hit_bonus
+        self.impulse_bonus_scale = impulse_bonus_scale
+        self.force_bonus_scale = force_bonus_scale
+        self.sweet_spot_bonus = sweet_spot_bonus
+        self.approach_scale = approach_scale
+        self.inactivity_penalty = inactivity_penalty
+        self.energy_penalty_coef = energy_penalty_coef
+        self.ball_vel_threshold = ball_vel_threshold
+        self.paddle_radius = paddle_radius
+        
+        self._last_ball_vel = None
+    
+    def reset(self):
+        """Reset internal velocity tracking."""
+        self._last_ball_vel = None
+        
+    def _compute_sweet_spot_bonus(self, obs_dict: Dict, hit: bool) -> float:
+        """Bonus for hitting near paddle center (within 30% of radius)."""
+        if not hit:
+            return 0.0
+        
+        ball_pos = np.array(obs_dict["ball_pos"], dtype=np.float32)
+        paddle_pos = np.array(obs_dict["paddle_pos"], dtype=np.float32)
+        
+        # Distance from ball to paddle center
+        distance = np.linalg.norm(ball_pos - paddle_pos)
+        
+        # Sweet spot: within 30% of paddle face radius
+        sweet_spot_threshold = 0.30 * self.paddle_radius
+        
+        if distance < sweet_spot_threshold:
+            return self.sweet_spot_bonus
+        
+        return 0.0
+    
+    def _compute_approach_bonus(self, obs_dict: Dict, hit: bool) -> float:
+        """Only reward approach if ball is incoming."""
+        if hit:
+            return 0.0
+        
+        ball_pos = np.array(obs_dict["ball_pos"], dtype=np.float32)
+        paddle_pos = np.array(obs_dict["paddle_pos"], dtype=np.float32)
+        ball_vel = np.array(obs_dict["ball_vel"], dtype=np.float32)
+        paddle_vel = np.array(obs_dict["paddle_vel"], dtype=np.float32)
+        
+        rel = ball_pos - paddle_pos
+        ball_to_paddle_dot = np.dot(ball_vel, rel)
+        
+        # Ball must be moving toward paddle and fast enough
+        if np.linalg.norm(ball_vel) < self.ball_vel_threshold or ball_to_paddle_dot > 0:
+            return 0.0
+        
+        approach = np.dot(paddle_vel, rel) / (np.linalg.norm(rel) + 1e-6)
+        
+        if approach > 0:
+            speed_factor = np.clip(np.linalg.norm(ball_vel), 0.0, 2.0)
+            return self.approach_scale * approach * speed_factor
+        
+        return 0.0
+    
+    def __call__(self, 
+                 obs_dict: Dict,
+                 hit: bool,
+                 external_dv: float = None,
+                 external_contact_force: float = None) -> Tuple[float, Dict]:
+        """Compute reward."""
+        
+        ball_vel = np.array(obs_dict["ball_vel"], dtype=np.float32)
+        
+        # Use external values if provided
+        if external_dv is not None and external_contact_force is not None:
+            impulse = external_dv
+            contact_force = external_contact_force
+        else:
+            # Fallback calculation
+            impulse = 0.0
+            if hit and self._last_ball_vel is not None:
+                impulse = np.linalg.norm(ball_vel - self._last_ball_vel)
+            self._last_ball_vel = ball_vel.copy()
+            contact_force = impulse * 10.0
+        
+        # Energy penalty (critical for MyoSuite)
+        muscle_act = np.array(obs_dict.get("act", []), dtype=np.float32)
+        energy_penalty = -self.energy_penalty_coef * np.sum(np.square(muscle_act))
+        
+        reward = 0.0
+        components = {
+            'hit_bonus': 0.0,
+            'impulse_bonus': 0.0,
+            'force_bonus': 0.0,
+            'sweet_spot_bonus': 0.0,  # NEW
+            'approach_bonus': 0.0,
+            'energy_penalty': energy_penalty,
+            'inactivity_penalty': 0.0
+        }
+        
+        if hit:
+            reward += self.hit_bonus
+            components['hit_bonus'] = self.hit_bonus
+            
+            # Normalize before tanh using realistic scales
+            # Typical impulse: 0-10 m/s → tanh(impulse/5.0)
+            # Typical force: 0-50 N → tanh(force/25.0)
+            impulse_bonus = self.impulse_bonus_scale * np.tanh(impulse / 5.0)
+            force_bonus = self.force_bonus_scale * np.tanh(contact_force / 25.0)
+            
+            # NEW: Sweet spot bonus
+            sweet_spot_bonus = self._compute_sweet_spot_bonus(obs_dict, hit)
+            
+            reward += impulse_bonus + force_bonus + sweet_spot_bonus
+            components['impulse_bonus'] = impulse_bonus
+            components['force_bonus'] = force_bonus
+            components['sweet_spot_bonus'] = sweet_spot_bonus
+            
+        else:
+            approach_bonus = self._compute_approach_bonus(obs_dict, hit)
+            reward += approach_bonus
+            components['approach_bonus'] = approach_bonus
+            
+            ball_speed = np.linalg.norm(obs_dict["ball_vel"])
+            inactivity = self.inactivity_penalty * (1.0 + ball_speed)
+            reward += inactivity
+            components['inactivity_penalty'] = inactivity
+        
+        reward += energy_penalty
+        
+        return float(reward), components
+    
 # ================================================================
 #  HIERARCHICAL PREDICTOR (for VideoCallback manager videos)
 # ================================================================
