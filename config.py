@@ -46,7 +46,7 @@ class Config:
     ppo_clip: float = getenv("PPO_CLIP", 0.2, float)
 
     # === Video ===
-    video_freq: int = getenv("VIDEO_FREQ", 1_000_000, int)
+    video_freq: int = getenv("VIDEO_FREQ", 100_000, int)
     eval_episodes: int = getenv("EVAL_EPISODES", 3, int)
     video_w: int = getenv("VIDEO_W", 640, int)
     video_h: int = getenv("VIDEO_H", 480, int)

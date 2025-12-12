@@ -3,54 +3,6 @@ from loguru import logger
 from config import Config
 import os
 
-def flatten_obs(obs_dict):
-    """
-    Build a 1D float32 vector from the MyoSuite obs_dict.
-
-    Keys (with shapes from your dump):
-      time           (1,)
-      pelvis_pos     (3,)
-      body_qpos      (58,)
-      body_qvel      (58,)
-      ball_pos       (3,)
-      ball_vel       (3,)
-      paddle_pos     (3,)
-      paddle_vel     (3,)
-      paddle_ori     (4,)
-      reach_err      (3,)
-      palm_pos       (3,)
-      palm_err       (3,)
-      touching_info  (6,)
-      act            (273,)
-
-    Total: 424 dims
-    """
-    parts = [
-        obs_dict["time"],
-        obs_dict["pelvis_pos"],
-        obs_dict["body_qpos"],
-        obs_dict["body_qvel"],
-        obs_dict["ball_pos"],
-        obs_dict["ball_vel"],
-        obs_dict["paddle_pos"],
-        obs_dict["paddle_vel"],
-        obs_dict["paddle_ori"],
-        obs_dict["reach_err"],
-        obs_dict["palm_pos"],
-        obs_dict["palm_err"],
-        obs_dict["touching_info"],
-        obs_dict["act"],
-    ]
-
-    arrays = []
-    for p in parts:
-        arr = np.asarray(p, dtype=np.float32)
-        if arr.ndim == 0:
-            arr = arr.reshape(1)
-        arrays.append(arr)
-
-    return np.concatenate(arrays, axis=-1)
-
 class HitDetector:
     """Detects ball-paddle contact using velocity change."""
 
@@ -86,9 +38,11 @@ class HitDetector:
 
 
 # For video callback
-def predict_fn(model, obs, env_instance):
-    action, _ = model.predict(obs, deterministic=True)
-    return action
+def make_predict_fn(model):
+    def predict_fn(obs, env_instance):
+        action, _ = model.predict(obs, deterministic=True)
+        return action
+    return predict_fn
 
 def prepare_experiment_directory(cfg: Config):
     """

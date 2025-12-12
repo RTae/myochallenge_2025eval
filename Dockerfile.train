@@ -14,5 +14,4 @@ COPY utils.py ./
 
 COPY callbacks ./callbacks
 
-
 CMD ["python", "train.py"]

@@ -4,7 +4,7 @@ from stable_baselines3.common.callbacks import CallbackList
 
 from config import Config
 from env_factory import build_env
-from utils import predict_fn, prepare_experiment_directory
+from utils import make_predict_fn, prepare_experiment_directory
 from callbacks.video_callback import VideoCallback
 from callbacks.infologger_callback import InfoLoggerCallback
 
@@ -30,7 +30,7 @@ def main():
         seed=cfg.seed,
     )
 
-    video_cb = VideoCallback(cfg, predict_fn=predict_fn)
+    video_cb = VideoCallback(cfg, predict_fn=make_predict_fn(model))
     info_cb = InfoLoggerCallback(prefix="train/info")
 
     model.learn(

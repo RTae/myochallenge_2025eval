@@ -28,7 +28,7 @@ class VideoCallback(BaseCallback):
     def _on_step(self) -> bool:
         step = self.num_timesteps
         if step - self._last_recorded >= self.cfg.video_freq:
-            path = os.path.join(self.video_dir, f"{self.mode}_step_{step}.mp4")
+            path = os.path.join(self.video_dir, f"s{step}.mp4")
             logger.info(f"🎥 Triggering video capture at step {step}")
             self._record(path)
             self._last_recorded = step
