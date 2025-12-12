@@ -1,5 +1,5 @@
 import numpy as np
-from typing import Dict, Tuple
+from typing import Dict
 
 def flatten_myo_obs_manager(obs_dict):
     """
@@ -125,63 +125,51 @@ NET_HEIGHT = 0.305  # m
 
 class HitDetector:
     """Detects ball-paddle contact using velocity change."""
-    
+
     def __init__(self, dv_thr: float = 2.5, ball_mass: float = BALL_MASS):
-        """
-        Args:
-            dv_thr: Minimum velocity change (m/s) to register a hit.
-                    Recommended: 2.0-3.0 based on simulation timestep.
-        """
         self.dv_thr = dv_thr
         self.ball_mass = ball_mass
         self._prev_ball_vel = None
-        
+
     def reset(self, obs_dict: dict):
-        """Call at episode start."""
         self._prev_ball_vel = np.array(obs_dict["ball_vel"], dtype=np.float32)
-        
-    def step(self, obs_dict: dict, dt: float = 0.01) -> tuple[bool, float, float]:
-        """
-        Returns: (hit, contact_force, dv)
-        
-        Args:
-            dt: Simulation timestep (MyoSuite default: 0.01s)
-        """
+
+    def step(self, obs_dict: dict, dt: float = 0.01):
         ball_vel = np.array(obs_dict["ball_vel"], dtype=np.float32)
-        
-        # Compute velocity change magnitude
+
         dv = 0.0 if self._prev_ball_vel is None else float(
             np.linalg.norm(ball_vel - self._prev_ball_vel)
         )
-        
+
         paddle_pos = obs_dict["paddle_pos"]
         ball_pos = obs_dict["ball_pos"]
-
         near_paddle = np.linalg.norm(ball_pos - paddle_pos) < 1.2 * PADDLE_FACE_RADIUS
+
         hit = (dv > self.dv_thr) and near_paddle
-        
-        # Calculate contact force from impulse: F = m * Δv / Δt
-        # Using official ball mass: 0.0027 kg
-        contact_force = self.ball_mass * dv / dt if hit else 0.0
-        
+
+        if hit:
+            contact_force = self.ball_mass * dv / dt
+            self._prev_ball_vel = ball_vel.copy()
+            return True, contact_force, dv
+
         self._prev_ball_vel = ball_vel.copy()
-        return hit, contact_force, dv
+        return False, 0.0, dv
 
 
 class WorkerReward:
     """Contact-conditioned reward with sweet spot detection."""
-    
-    def __init__(self, 
+
+    def __init__(self,
                  hit_bonus: float = 5.0,
                  impulse_bonus_scale: float = 2.0,
                  force_bonus_scale: float = 1.0,
-                 sweet_spot_bonus: float = 1.0,  # NEW: bonus for center hits
+                 sweet_spot_bonus: float = 1.0,
                  approach_scale: float = 0.05,
                  inactivity_penalty: float = -0.02,
                  energy_penalty_coef: float = 0.001,
                  ball_vel_threshold: float = 0.1,
                  paddle_radius: float = PADDLE_FACE_RADIUS):
-        
+
         self.hit_bonus = hit_bonus
         self.impulse_bonus_scale = impulse_bonus_scale
         self.force_bonus_scale = force_bonus_scale
@@ -191,135 +179,115 @@ class WorkerReward:
         self.energy_penalty_coef = energy_penalty_coef
         self.ball_vel_threshold = ball_vel_threshold
         self.paddle_radius = paddle_radius
-        
+
         self._last_ball_vel = None
-        
+
+    def reset(self):
+        self._last_ball_vel = None
+
     def _goal_align(self, obs_dict: Dict, goal: np.ndarray) -> float:
         pv = np.array(obs_dict["paddle_vel"], dtype=np.float32)
         gv = np.asarray(goal, dtype=np.float32)
         pv = pv / (np.linalg.norm(pv) + 1e-6)
         gv = gv / (np.linalg.norm(gv) + 1e-6)
         return float(np.dot(pv, gv))
-    
-    def reset(self):
-        """Reset internal velocity tracking."""
-        self._last_ball_vel = None
-        
+
     def _compute_sweet_spot_bonus(self, obs_dict: Dict, hit: bool) -> float:
-        """Bonus for hitting near paddle center (within 30% of radius)."""
         if not hit:
             return 0.0
-        
-        ball_pos = np.array(obs_dict["ball_pos"], dtype=np.float32)
-        paddle_pos = np.array(obs_dict["paddle_pos"], dtype=np.float32)
-        
-        # Distance from ball to paddle center
-        distance = np.linalg.norm(ball_pos - paddle_pos)
-        
-        # Sweet spot: within 30% of paddle face radius
-        sweet_spot_threshold = 0.30 * self.paddle_radius
-        
-        if distance < sweet_spot_threshold:
-            return self.sweet_spot_bonus
-        
-        return 0.0
-    
+        dist = np.linalg.norm(
+            np.array(obs_dict["ball_pos"]) - np.array(obs_dict["paddle_pos"])
+        )
+        return self.sweet_spot_bonus if dist < 0.30 * self.paddle_radius else 0.0
+
     def _compute_approach_bonus(self, obs_dict: Dict, hit: bool) -> float:
-        """Only reward approach if ball is incoming."""
         if hit:
             return 0.0
-        
-        ball_pos = np.array(obs_dict["ball_pos"], dtype=np.float32)
-        paddle_pos = np.array(obs_dict["paddle_pos"], dtype=np.float32)
-        ball_vel = np.array(obs_dict["ball_vel"], dtype=np.float32)
-        paddle_vel = np.array(obs_dict["paddle_vel"], dtype=np.float32)
-        
+
+        ball_pos = np.array(obs_dict["ball_pos"])
+        paddle_pos = np.array(obs_dict["paddle_pos"])
+        ball_vel = np.array(obs_dict["ball_vel"])
+        paddle_vel = np.array(obs_dict["paddle_vel"])
+
         rel = ball_pos - paddle_pos
-        ball_to_paddle_dot = np.dot(ball_vel, rel)
-        
-        # Ball must be moving toward paddle and fast enough
-        if np.linalg.norm(ball_vel) < self.ball_vel_threshold or ball_to_paddle_dot > 0:
+        if np.linalg.norm(ball_vel) < self.ball_vel_threshold:
             return 0.0
-        
+
+        if np.dot(ball_vel, rel) > 0:
+            return 0.0
+
         approach = np.dot(paddle_vel, rel) / (np.linalg.norm(rel) + 1e-6)
-        
         if approach > 0:
             speed_factor = np.clip(np.linalg.norm(ball_vel), 0.0, 2.0)
             return self.approach_scale * approach * speed_factor
-        
-        return 0.0
-    
-    def __call__(self, obs_dict: Dict, hit: bool, goal: np.ndarray = None,
-             external_dv: float = None, external_contact_force: float = None) -> Tuple[float, Dict]:
 
-        """Compute reward."""
-        
+        return 0.0
+
+    def __call__(self,
+                 obs_dict: Dict,
+                 hit: bool,
+                 goal: np.ndarray = None,
+                 external_dv: float = None,
+                 external_contact_force: float = None):
+
         ball_vel = np.array(obs_dict["ball_vel"], dtype=np.float32)
-        
-        # Use external values if provided
-        if external_dv is not None and external_contact_force is not None:
+
+        if external_dv is not None:
             impulse = external_dv
             contact_force = external_contact_force
         else:
-            # Fallback calculation
-            impulse = 0.0
-            if hit and self._last_ball_vel is not None:
-                impulse = np.linalg.norm(ball_vel - self._last_ball_vel)
-            self._last_ball_vel = ball_vel.copy()
+            impulse = 0.0 if self._last_ball_vel is None else np.linalg.norm(
+                ball_vel - self._last_ball_vel
+            )
             contact_force = impulse * 10.0
-        
-        # Energy penalty (critical for MyoSuite)
+
+        self._last_ball_vel = ball_vel.copy()
+
         muscle_act = np.array(obs_dict.get("act", []), dtype=np.float32)
         energy_penalty = -self.energy_penalty_coef * np.sum(np.square(muscle_act))
-        
+
         reward = 0.0
         components = {
-            'hit_bonus': 0.0,
-            'impulse_bonus': 0.0,
-            'force_bonus': 0.0,
-            'sweet_spot_bonus': 0.0,
-            'approach_bonus': 0.0,
-            'goal_alignment': 0.0, 
-            'energy_penalty': energy_penalty,
-            'inactivity_penalty': 0.0
+            "hit_bonus": 0.0,
+            "impulse_bonus": 0.0,
+            "force_bonus": 0.0,
+            "sweet_spot_bonus": 0.0,
+            "approach_bonus": 0.0,
+            "goal_alignment": 0.0,
+            "energy_penalty": energy_penalty,
+            "inactivity_penalty": 0.0,
         }
-        
+
         if hit:
             reward += self.hit_bonus
-            components['hit_bonus'] = self.hit_bonus
-            
-            # Normalize before tanh using realistic scales
-            # Typical impulse: 0-10 m/s → tanh(impulse/5.0)
-            # Typical force: 0-50 N → tanh(force/25.0)
+            components["hit_bonus"] = self.hit_bonus
+
             impulse_bonus = self.impulse_bonus_scale * np.tanh(impulse / 5.0)
             force_bonus = self.force_bonus_scale * np.tanh(contact_force / 25.0)
-            
-            # NEW: Sweet spot bonus
-            sweet_spot_bonus = self._compute_sweet_spot_bonus(obs_dict, hit)
-            
-            reward += impulse_bonus + force_bonus + sweet_spot_bonus
-            components['impulse_bonus'] = impulse_bonus
-            components['force_bonus'] = force_bonus
-            components['sweet_spot_bonus'] = sweet_spot_bonus
-            
+            sweet = self._compute_sweet_spot_bonus(obs_dict, hit)
+
+            reward += impulse_bonus + force_bonus + sweet
+            components["impulse_bonus"] = impulse_bonus
+            components["force_bonus"] = force_bonus
+            components["sweet_spot_bonus"] = sweet
+
         else:
             approach_bonus = self._compute_approach_bonus(obs_dict, hit)
             reward += approach_bonus
-            components['approach_bonus'] = approach_bonus
-            
-            ball_speed = np.linalg.norm(obs_dict["ball_vel"])
+            components["approach_bonus"] = approach_bonus
+
+            ball_speed = np.linalg.norm(ball_vel)
             inactivity = self.inactivity_penalty * (1.0 + ball_speed)
             reward += inactivity
-            components['inactivity_penalty'] = inactivity
-            
+            components["inactivity_penalty"] = inactivity
+
             if goal is not None:
                 ga = self._goal_align(obs_dict, goal)
-                goal_bonus = 0.05 * ga
+                goal_bonus = 0.03 * ga   # ✅ stabilized
                 reward += goal_bonus
                 components["goal_alignment"] = goal_bonus
-        
+
         reward += energy_penalty
-        
         return float(reward), components
     
 # ================================================================

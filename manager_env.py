@@ -6,15 +6,15 @@ from stable_baselines3 import PPO
 from loguru import logger
 
 from config import Config
-from hrl_utils import flatten_myo_obs_manager, build_worker_obs
+from hrl_utils import flatten_myo_obs_manager, build_worker_obs, HitDetector
 
 
 class ManagerEnv(gym.Env):
     """
     High-level HRL manager.
-    Action = 3D goal vector (goal_dim)
+    Action = 3D goal vector (desired paddle velocity)
     Obs    = compact manager state (16D)
-    Reward = env reward + dense shaping
+    Reward = velocity alignment + sparse hit success
     """
 
     metadata = {"render_modes": []}
@@ -33,17 +33,22 @@ class ManagerEnv(gym.Env):
         logger.info(f"[ManagerEnv] Loading worker model: {worker_model_path}")
         self.worker = PPO.load(worker_model_path)
 
-        # freeze worker parameters
+        # Freeze worker parameters
         for param in self.worker.policy.parameters():
             param.requires_grad = False
 
         assert not any(p.requires_grad for p in self.worker.policy.parameters()), \
             "Worker model parameters are not frozen!"
 
-        # infer manager obs shape
+        # Hit detector (manager-side, NOT from worker info)
+        self.hit_detector = HitDetector(dv_thr=1.5)
+
+        # Infer manager obs shape
         self.base_env.reset()
         obs_dict = self.base_env.obs_dict
         self.last_obs = obs_dict
+
+        self.hit_detector.reset(obs_dict)
 
         mgr_flat = flatten_myo_obs_manager(obs_dict)
         logger.info(f"[ManagerEnv] manager_obs_dim = {mgr_flat.shape[0]} (expected ~16)")
@@ -66,6 +71,7 @@ class ManagerEnv(gym.Env):
         self.base_env.reset(seed=seed)
         obs_dict = self.base_env.obs_dict
         self.last_obs = obs_dict
+        self.hit_detector.reset(obs_dict)
         return flatten_myo_obs_manager(obs_dict), {}
 
     def step(self, goal):
@@ -88,22 +94,35 @@ class ManagerEnv(gym.Env):
             action_low, _ = self.worker.predict(worker_obs, deterministic=True)
             action_low = action_low.reshape(-1)
 
-            _, _, terminated, truncated, info = self.base_env.step(action_low)
+            _, _, terminated, truncated, _ = self.base_env.step(action_low)
             obs_dict = self.base_env.obs_dict
 
-            # ✅ velocity-consistent shaping
+            # --------------------------------------------------
+            # 1) Velocity-consistent shaping (normalized)
+            # --------------------------------------------------
             paddle_vel = obs_dict["paddle_vel"]
-            total_reward += -np.linalg.norm(paddle_vel - goal)
+            vel_err = np.linalg.norm(paddle_vel - goal)
+            total_reward += -vel_err / self.cfg.high_level_period
 
-            # ✅ sparse success
-            if info.get("hit", False):
-                total_reward += 5.0
+            # --------------------------------------------------
+            # 2) Sparse hit success (manager-side detection)
+            # --------------------------------------------------
+            hit, _, _ = self.hit_detector.step(obs_dict)
+            if hit:
+                # Early-hit bonus (encourages timing)
+                bonus = 5.0 * (1.0 - t / self.cfg.high_level_period)
+                total_reward += bonus
                 hit_occurred = True
 
             terminated_any |= terminated
             truncated_any |= truncated
             if terminated or truncated:
                 break
+
+        # --------------------------------------------------
+        # 3) Small regularization to avoid trivial zero goals
+        # --------------------------------------------------
+        total_reward -= 0.01 * np.linalg.norm(goal)
 
         self.last_obs = obs_dict
         mgr_obs = flatten_myo_obs_manager(obs_dict)
