@@ -154,8 +154,11 @@ class HitDetector:
             np.linalg.norm(ball_vel - self._prev_ball_vel)
         )
         
-        # Detect hit: velocity jump exceeds threshold
-        hit = dv > self.dv_thr
+        paddle_pos = obs_dict["paddle_pos"]
+        ball_pos = obs_dict["ball_pos"]
+
+        near_paddle = np.linalg.norm(ball_pos - paddle_pos) < 1.2 * PADDLE_FACE_RADIUS
+        hit = (dv > self.dv_thr) and near_paddle
         
         # Calculate contact force from impulse: F = m * Δv / Δt
         # Using official ball mass: 0.0027 kg
@@ -190,6 +193,13 @@ class WorkerReward:
         self.paddle_radius = paddle_radius
         
         self._last_ball_vel = None
+        
+    def _goal_align(self, obs_dict: Dict, goal: np.ndarray) -> float:
+        pv = np.array(obs_dict["paddle_vel"], dtype=np.float32)
+        gv = np.asarray(goal, dtype=np.float32)
+        pv = pv / (np.linalg.norm(pv) + 1e-6)
+        gv = gv / (np.linalg.norm(gv) + 1e-6)
+        return float(np.dot(pv, gv))
     
     def reset(self):
         """Reset internal velocity tracking."""
@@ -239,11 +249,9 @@ class WorkerReward:
         
         return 0.0
     
-    def __call__(self, 
-                 obs_dict: Dict,
-                 hit: bool,
-                 external_dv: float = None,
-                 external_contact_force: float = None) -> Tuple[float, Dict]:
+    def __call__(self, obs_dict: Dict, hit: bool, goal: np.ndarray = None,
+             external_dv: float = None, external_contact_force: float = None) -> Tuple[float, Dict]:
+
         """Compute reward."""
         
         ball_vel = np.array(obs_dict["ball_vel"], dtype=np.float32)
@@ -269,8 +277,9 @@ class WorkerReward:
             'hit_bonus': 0.0,
             'impulse_bonus': 0.0,
             'force_bonus': 0.0,
-            'sweet_spot_bonus': 0.0,  # NEW
+            'sweet_spot_bonus': 0.0,
             'approach_bonus': 0.0,
+            'goal_alignment': 0.0, 
             'energy_penalty': energy_penalty,
             'inactivity_penalty': 0.0
         }
@@ -302,6 +311,12 @@ class WorkerReward:
             inactivity = self.inactivity_penalty * (1.0 + ball_speed)
             reward += inactivity
             components['inactivity_penalty'] = inactivity
+            
+            if goal is not None:
+                ga = self._goal_align(obs_dict, goal)
+                goal_bonus = 0.05 * ga
+                reward += goal_bonus
+                components["goal_alignment"] = goal_bonus
         
         reward += energy_penalty
         

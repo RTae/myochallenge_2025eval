@@ -192,6 +192,7 @@ if __name__ == "__main__":
     manager_cfg.ppo_lr = 3e-4
     manager_cfg.ppo_gamma = 0.995
     manager_cfg.ppo_n_steps = 512
+    manager_cfg.ppo_batch_size = 256
 
     train_worker(worker_cfg)
     train_manager(manager_cfg)

@@ -60,11 +60,13 @@ class WorkerEnv(gym.Env):
     # --------------------------------------------------
     def _sample_goal(self):
         """Desired paddle velocity (small magnitude)."""
-        return np.random.normal(
+        g = np.random.normal(
             loc=0.0,
-            scale=self.cfg.goal_std,  # e.g., 0.2–0.4
+            scale=self.cfg.goal_std,
             size=(3,),
         ).astype(np.float32)
+        
+        return np.clip(g, -self.cfg.goal_bound, self.cfg.goal_bound)
 
     # --------------------------------------------------
     def reset(self, *, seed=None, options=None):
@@ -110,6 +112,7 @@ class WorkerEnv(gym.Env):
         r_int, reward_components = self.reward_fn(
             obs_dict=obs_dict,
             hit=hit,
+            goal=self.goal,
             external_dv=dv,
             external_contact_force=contact_force,
         )
