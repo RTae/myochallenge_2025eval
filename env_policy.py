@@ -49,7 +49,6 @@ class CustomEnv(gym.Env):
         paddle_pos = obs_dict["paddle_pos"]
         self.prev_dist = np.linalg.norm(ball_pos - paddle_pos)
 
-        # ✅ return obs directly
         return obs, {}
 
     # --------------------------------------------------
