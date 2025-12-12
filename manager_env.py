@@ -69,12 +69,13 @@ class ManagerEnv(gym.Env):
         return flatten_myo_obs_manager(obs_dict), {}
 
     def step(self, goal):
-        goal = np.clip(goal, -0.15, 0.15).astype(np.float32)
+        goal = np.clip(goal, -self.cfg.goal_bound, self.cfg.goal_bound).astype(np.float32)
 
         total_reward = 0.0
         obs_dict = self.last_obs
         terminated_any = False
         truncated_any = False
+        hit_occurred = False
 
         for t in range(self.cfg.high_level_period):
             worker_obs = build_worker_obs(
@@ -90,11 +91,14 @@ class ManagerEnv(gym.Env):
             _, _, terminated, truncated, info = self.base_env.step(action_low)
             obs_dict = self.base_env.obs_dict
 
+            # ✅ velocity-consistent shaping
             paddle_vel = obs_dict["paddle_vel"]
             total_reward += -np.linalg.norm(paddle_vel - goal)
 
+            # ✅ sparse success
             if info.get("hit", False):
                 total_reward += 5.0
+                hit_occurred = True
 
             terminated_any |= terminated
             truncated_any |= truncated
@@ -104,4 +108,8 @@ class ManagerEnv(gym.Env):
         self.last_obs = obs_dict
         mgr_obs = flatten_myo_obs_manager(obs_dict)
 
-        return mgr_obs, total_reward, terminated_any, truncated_any, {}
+        info = {
+            "hit_occurred": hit_occurred
+        }
+
+        return mgr_obs, total_reward, terminated_any, truncated_any, info

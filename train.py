@@ -44,13 +44,17 @@ def prepare_experiment_directory(cfg: Config):
 # TRAIN WORKER
 # ============================================================
 def train_worker(cfg: Config):
-    logger.info("🦵 Training worker (goal-conditioned low-level)...")
+    logger.info("Training worker ...")
 
     worker_logdir = os.path.join(cfg.logdir, "worker")
     os.makedirs(worker_logdir, exist_ok=True)
-
+    
+    cfg.eval_mode = False
     env = build_vec_env(worker=True, cfg=cfg)
-    eval_env = build_vec_env(worker=True, cfg=cfg)
+
+    cfg_eval = copy.deepcopy(cfg)
+    cfg_eval.eval_mode = True
+    eval_env = build_vec_env(worker=True, cfg=cfg_eval)
 
     eval_callback = EvalCallback(
         eval_env,
@@ -182,9 +186,12 @@ if __name__ == "__main__":
 
     worker_cfg.total_timesteps = 40_000_000
     worker_cfg.ppo_lr = 1e-4
-    
+    worker_cfg.ppo_gamma = 0.99
+
     manager_cfg.total_timesteps = 5_000_000
     manager_cfg.ppo_lr = 3e-4
+    manager_cfg.ppo_gamma = 0.995
+    manager_cfg.ppo_n_steps = 512
 
     train_worker(worker_cfg)
     train_manager(manager_cfg)
