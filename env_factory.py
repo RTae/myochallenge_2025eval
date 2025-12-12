@@ -1,10 +1,12 @@
 from stable_baselines3.common.vec_env import SubprocVecEnv
+from stable_baselines3.common.monitor import Monitor
 from loguru import logger
 
 def build_env(cfg):
     def make_env():
         from env_policy import CustomEnv
-        return CustomEnv(cfg)
+        return Monitor(CustomEnv(cfg))
 
-    logger.info(f"🌍 Creating {cfg.num_envs} parallel environments.")
-    return SubprocVecEnv([make_env for _ in range(cfg.num_envs)])
+    logger.info(f"Creating {cfg.num_envs} parallel environments")
+    env = SubprocVecEnv([make_env for _ in range(cfg.num_envs)])
+    return env

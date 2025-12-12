@@ -21,7 +21,7 @@ class CustomEnv(gym.Env):
         self.env = myo_gym.make(cfg.env_id)
 
         self.hit_detector = HitDetector(dv_thr=0.25, ball_mass=cfg.BALL_MASS, paddle_face_radius=cfg.PADDLE_FACE_RADIUS)
-        self.max_steps = cfg.worker_episode_len
+        self.max_steps = cfg.episode_len
         self.step_count = 0
 
         # Infer obs shape
@@ -54,9 +54,6 @@ class CustomEnv(gym.Env):
 
         self.step_count += 1
 
-        # -----------------------------
-        # Hit detection
-        # -----------------------------
         hit, contact_force, dv = self.hit_detector.step(obs_dict)
 
         ball_pos = obs_dict["ball_pos"]
@@ -68,28 +65,21 @@ class CustomEnv(gym.Env):
 
         reward = 0.0
 
-        # -----------------------------
-        # Phase-based shaping (implicit)
-        # -----------------------------
         if dist > 0.6:
-            # approach
             rel = ball_pos - paddle_pos
             if np.dot(ball_vel, rel) < 0:
                 reward += 0.1 * np.dot(paddle_vel, rel) / (np.linalg.norm(rel) + 1e-6)
 
         elif dist > 0.25:
-            # preparation
             reward += 0.05 * np.linalg.norm(paddle_vel)
 
         else:
-            # strike zone
             reward += -0.05
             if hit:
                 reward += 15.0
                 reward += np.tanh(dv / 3.0)
                 reward += np.tanh(contact_force / 20.0)
 
-        # energy penalty
         act = np.array(obs_dict.get("act", []), dtype=np.float32)
         reward += -0.001 * np.sum(act ** 2)
 
@@ -97,11 +87,11 @@ class CustomEnv(gym.Env):
         if self.step_count >= self.max_steps:
             truncated = True
 
-        info = {
-            "hit": hit,
-            "dv": dv,
-            "contact_force": contact_force,
-            "dist": dist,
-        }
+        info.update({
+            "hit": int(hit),
+            "dv": float(dv),
+            "contact_force": float(contact_force),
+            "dist": float(dist),
+        })
 
         return flatten_obs(obs_dict), reward, terminated, truncated, info

@@ -29,7 +29,7 @@ class Config:
     goal_dim: int = getenv("GOAL_DIM", 3, int)
     goal_std: float = getenv("GOAL_STD", 0.10, float)
     goal_bound: float = getenv("GOAL_BOUND", 0.25, float)
-    worker_episode_len = 1000
+    episode_len = 300
 
     # === Training ===
     total_timesteps: int = getenv("TOTAL_TIMESTEPS", 10_000_000, int)
