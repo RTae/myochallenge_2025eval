@@ -11,7 +11,7 @@ from config import Config
 from env_factory import build_vec_env
 from callbacks.video_callback import VideoCallback
 from callbacks.infologger_callback import InfoLoggerCallback
-from hrl_utils import build_worker_obs, make_hierarchical_predictor
+from utils import build_worker_obs, make_hierarchical_predictor
 from stable_baselines3 import PPO as PPO_LOAD
 
 

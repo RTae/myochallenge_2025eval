@@ -4,7 +4,7 @@ import numpy as np
 from gymnasium import spaces
 
 from config import Config
-from hrl_utils import build_worker_obs, WorkerReward, HitDetector
+from utils import build_worker_obs, WorkerReward, HitDetector
 from loguru import logger
 
 

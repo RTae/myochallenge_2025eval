@@ -6,7 +6,7 @@ from stable_baselines3 import PPO
 from loguru import logger
 
 from config import Config
-from hrl_utils import flatten_myo_obs_manager, build_worker_obs, HitDetector
+from utils import flatten_myo_obs_manager, build_worker_obs, HitDetector
 
 
 class ManagerEnv(gym.Env):

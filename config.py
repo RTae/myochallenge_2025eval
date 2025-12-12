@@ -55,3 +55,12 @@ class Config:
 
     # === Eval ===
     eval_freq: int = getenv("EVAL_FREQ", 500_000, int)
+
+    # MyoChallenge 2025 Physical Constants (from official specs)
+    BALL_MASS = 0.0027  # kg
+    BALL_RADIUS = 0.02  # m
+    PADDLE_MASS = 0.150  # kg
+    PADDLE_FACE_RADIUS = 0.093  # m
+    PADDLE_HANDLE_RADIUS = 0.016  # m
+    TABLE_HALF_WIDTH = 1.37  # m (each side)
+    NET_HEIGHT = 0.305  # m
