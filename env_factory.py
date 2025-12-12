@@ -1,4 +1,8 @@
-from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
+from stable_baselines3.common.vec_env import (
+    DummyVecEnv,
+    SubprocVecEnv,
+    VecMonitor,          # 👈 ADD THIS
+)
 
 def build_vec_env(worker: bool, cfg, worker_model_path: str = None):
     def make_env():
@@ -10,6 +14,10 @@ def build_vec_env(worker: bool, cfg, worker_model_path: str = None):
             return ManagerEnv(cfg, worker_model_path)
 
     if worker:
-        return SubprocVecEnv([make_env for _ in range(cfg.num_envs)])
+        env = SubprocVecEnv([make_env for _ in range(cfg.num_envs)])
     else:
-        return DummyVecEnv([make_env])   # manager MUST be single-env
+        env = DummyVecEnv([make_env])
+
+    env = VecMonitor(env)
+
+    return env

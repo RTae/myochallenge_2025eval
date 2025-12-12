@@ -116,7 +116,7 @@ def train_worker(cfg: Config):
 # TRAIN MANAGER
 # ============================================================
 def train_manager(cfg: Config):
-    logger.info("🧠 Training manager (high-level HRL)...")
+    logger.info("Training manager ...")
 
     manager_logdir = os.path.join(cfg.logdir, "manager")
     os.makedirs(manager_logdir, exist_ok=True)
@@ -154,7 +154,6 @@ def train_manager(cfg: Config):
         seed=cfg.seed,
     )
 
-    # HRL predictor for visualization (manager + worker on raw env)
     worker_model = PPO_LOAD.load(worker_model_path)
     hrl_predict = make_hierarchical_predictor(cfg, model, worker_model)
 
