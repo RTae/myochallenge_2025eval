@@ -5,7 +5,7 @@ from collections import deque
 from config import Config
 
 
-class MultiHitRallyEnv(gym.Env):
+class CustomEnv(gym.Env):
     """
     Multi-hit rally environment for MyoChallenge 2025.
     Key changes:
