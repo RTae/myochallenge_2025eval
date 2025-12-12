@@ -7,10 +7,10 @@ WORKDIR /app
 
 COPY train.py ./
 COPY env_factory.py ./
+COPY env_policy.py ./
+
 COPY config.py ./
-COPY hrl_utils.py ./
-COPY manager_env.py ./
-COPY worker_env.py ./
+COPY utils.py ./
 
 COPY callbacks ./callbacks
 

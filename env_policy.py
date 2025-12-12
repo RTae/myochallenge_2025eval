@@ -1,4 +1,3 @@
-# single_policy_env.py
 import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
@@ -10,7 +9,13 @@ from config import Config
 
 class CustomEnv(gym.Env):
     """
-    Single-policy PPO environment for MyoSuite table tennis.
+    Custom Environment Wrapper for MyoSuite environment with tailored reward structure.
+    1. Progress-based shaping reward to encourage ball approach.
+    2. Sparse hit reward upon successful paddle-ball contact.
+    3. Energy regularization to penalize excessive actions.
+    4. Instrumentation for detailed episode metrics.
+    5. Episode truncation based on maximum step count.
+    6. Observation flattening for compatibility with RL algorithms.
     """
 
     metadata = {"render_modes": []}
@@ -20,14 +25,19 @@ class CustomEnv(gym.Env):
         self.cfg = cfg
         self.env = myo_gym.make(cfg.env_id)
 
-        self.hit_detector = HitDetector(dv_thr=0.25, ball_mass=cfg.BALL_MASS, paddle_face_radius=cfg.PADDLE_FACE_RADIUS)
+        self.hit_detector = HitDetector(
+            dv_thr=0.25,
+            ball_mass=cfg.BALL_MASS,
+            paddle_face_radius=cfg.PADDLE_FACE_RADIUS,
+        )
+
         self.max_steps = cfg.episode_len
         self.step_count = 0
+        self.prev_dist = None
 
         # Infer obs shape
         self.env.reset()
-        obs_dict = self.env.obs_dict
-        obs = flatten_obs(obs_dict)
+        obs = flatten_obs(self.env.obs_dict)
 
         self.observation_space = spaces.Box(
             low=-np.inf,
@@ -45,53 +55,71 @@ class CustomEnv(gym.Env):
         self.hit_detector.reset(obs_dict)
         self.step_count = 0
 
+        ball_pos = obs_dict["ball_pos"]
+        paddle_pos = obs_dict["paddle_pos"]
+        self.prev_dist = np.linalg.norm(ball_pos - paddle_pos)
+
         return flatten_obs(obs_dict), {}
 
     # --------------------------------------------------
     def step(self, action):
         obs, _, terminated, truncated, info = self.env.step(action)
         obs_dict = info.get("obs_dict", {}) if info else self.env.obs_dict
-
         self.step_count += 1
 
         hit, contact_force, dv = self.hit_detector.step(obs_dict)
 
         ball_pos = obs_dict["ball_pos"]
         paddle_pos = obs_dict["paddle_pos"]
-        paddle_vel = obs_dict["paddle_vel"]
         ball_vel = obs_dict["ball_vel"]
 
-        dist = np.linalg.norm(ball_pos - paddle_pos)
+        rel = ball_pos - paddle_pos
+        dist = np.linalg.norm(rel)
+        ball_speed = np.linalg.norm(ball_vel)
 
+        incoming = float(np.dot(ball_vel, rel) < 0.0)
+
+        # --------------------------------------------------
+        # PROGRESS-BASED SHAPING (core fix)
+        # --------------------------------------------------
         reward = 0.0
+        if incoming and self.prev_dist is not None:
+            progress = self.prev_dist - dist
+            reward += 2.0 * np.clip(progress, -0.05, 0.05)
 
-        if dist > 0.6:
-            rel = ball_pos - paddle_pos
-            if np.dot(ball_vel, rel) < 0:
-                reward += 0.1 * np.dot(paddle_vel, rel) / (np.linalg.norm(rel) + 1e-6)
+        self.prev_dist = dist
 
-        elif dist > 0.25:
-            reward += 0.05 * np.linalg.norm(paddle_vel)
+        # --------------------------------------------------
+        # HIT REWARD (dominant, sparse)
+        # --------------------------------------------------
+        if hit:
+            reward += 20.0
+            reward += np.tanh(dv / 3.0)
+            reward += np.tanh(contact_force / 20.0)
 
-        else:
-            reward += -0.05
-            if hit:
-                reward += 15.0
-                reward += np.tanh(dv / 3.0)
-                reward += np.tanh(contact_force / 20.0)
-
+        # --------------------------------------------------
+        # ENERGY REGULARIZATION
+        # --------------------------------------------------
         act = np.array(obs_dict.get("act", []), dtype=np.float32)
-        reward += -0.001 * np.sum(act ** 2)
+        reward -= 0.001 * np.sum(act ** 2)
 
-        # episode cutoff
+        # --------------------------------------------------
+        # Episode cutoff
+        # --------------------------------------------------
         if self.step_count >= self.max_steps:
             truncated = True
 
+        # --------------------------------------------------
+        # Instrumentation (Method 1)
+        # --------------------------------------------------
+        info = info or {}
         info.update({
             "hit": int(hit),
             "dv": float(dv),
             "contact_force": float(contact_force),
             "dist": float(dist),
+            "incoming": incoming,
+            "ball_speed": float(ball_speed),
         })
 
         return flatten_obs(obs_dict), reward, terminated, truncated, info

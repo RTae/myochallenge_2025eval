@@ -32,7 +32,7 @@ class Config:
     episode_len = 300
 
     # === Training ===
-    total_timesteps: int = getenv("TOTAL_TIMESTEPS", 10_000_000, int)
+    total_timesteps: int = getenv("TOTAL_TIMESTEPS", 40_000_000, int)
     logdir: str = getenv("LOGDIR", "./logs", str)
     train_log_freq: int = getenv("TRAIN_LOG_FREQ", 2000, int)
 
