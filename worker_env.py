@@ -4,17 +4,17 @@ import numpy as np
 from gymnasium import spaces
 
 from config import Config
-from hrl_utils import build_worker_obs, intrinsic_reward
-
+from hrl_utils import build_worker_obs, HitDetector, worker_reward
 from loguru import logger
 
 
 class WorkerEnv(gym.Env):
     """
-    Low-level goal-conditioned worker.
-    Obs = [base_obs (424), goal (3), phase (1)] = (428,)
-    Act = MyoSuite muscle activations
-    Reward = intrinsic reward (goal tracking)
+    Low-level worker (contact-conditioned).
+
+    Obs    = [base (424), paddle_vel (3), goal_vel (3), phase (1)]
+    Action = muscle activations
+    Reward = contact-conditioned (hit-driven)
     """
 
     metadata = {"render_modes": []}
@@ -26,89 +26,90 @@ class WorkerEnv(gym.Env):
         self.cfg = config
         self.base_env = myo_gym.make(config.env_id)
 
-        # HRL state
-        self.goal = np.zeros(self.cfg.goal_dim, dtype=np.float32)
-        self.t_in_macro = 0
+        # --- hit detector ---
+        self.hit_detector = HitDetector(force_thr=1e-3, dv_thr=0.8)
 
-        # Infer obs space
+        self.goal = np.zeros(3, dtype=np.float32)
+        self.t_in_macro = 0
+        self.hit_count = 0
+        self.step_count = 0
+
+        # Infer obs shape
         self.base_env.reset()
         obs_dict = self.base_env.obs_dict
-
-        # First sampled goal
         self.goal = self._sample_goal()
-        self.t_in_macro = 0
 
         worker_obs = build_worker_obs(
-            obs_dict=obs_dict,
-            goal=self.goal,
-            t_in_macro=self.t_in_macro,
-            cfg=self.cfg,
+            obs_dict, self.goal, self.t_in_macro, self.cfg
         )
-        logger.info(f"[WorkerEnv] worker_obs_dim = {worker_obs.shape[0]} (expected 428)")
 
-        # Observation space (428,)
         self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf,
+            low=-np.inf,
+            high=np.inf,
             shape=worker_obs.shape,
             dtype=np.float32,
         )
 
         self.action_space = self.base_env.action_space
 
-    # ------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------
+    # --------------------------------------------------
     def _sample_goal(self):
-        """Sample goal offset near zero for training."""
+        """
+        Desired paddle velocity (small magnitude).
+        """
         return np.random.normal(
             loc=0.0,
-            scale=self.cfg.goal_std,
-            size=(self.cfg.goal_dim,),
+            scale=self.cfg.goal_std,  # e.g. 0.2–0.4
+            size=(3,),
         ).astype(np.float32)
 
-    # ------------------------------------------------------------
-    # Gym API
-    # ------------------------------------------------------------
+    # --------------------------------------------------
     def reset(self, *, seed=None, options=None):
         self.base_env.reset(seed=seed)
         obs_dict = self.base_env.obs_dict
 
+        self.hit_detector.reset(obs_dict)
         self.goal = self._sample_goal()
         self.t_in_macro = 0
 
-        worker_obs = build_worker_obs(
-            obs_dict=obs_dict,
-            goal=self.goal,
-            t_in_macro=self.t_in_macro,
-            cfg=self.cfg,
-        )
-        return worker_obs, {}
+        return build_worker_obs(
+            obs_dict, self.goal, self.t_in_macro, self.cfg
+        ), {}
 
+    # --------------------------------------------------
     def step(self, action):
-        obs_vec, env_reward, terminated, truncated, info = self.base_env.step(action)
+        _, _, terminated, truncated, info = self.base_env.step(action)
         obs_dict = self.base_env.obs_dict
 
-        # Update macro-step counter
         self.t_in_macro += 1
 
-        # --- No intrinsic reward ---
-        reward = env_reward  # use MyoSuite environment reward directly
+        hit, contact_force, dv = self.hit_detector.step(obs_dict)
+        
+        self.hit_count += int(hit)
+        self.step_count += 1
+        
+        # ---- INTRINSIC REWARD ----
+        r_int = worker_reward(
+            obs_dict=obs_dict,
+            hit=hit,
+            contact_force=contact_force,
+            dv=dv,
+        )
 
-        # Reset goal at macro boundary or episode end
+        # ---- GOAL RESET ----
         if self.t_in_macro >= self.cfg.high_level_period or terminated or truncated:
             self.goal = self._sample_goal()
             self.t_in_macro = 0
 
-        worker_obs = build_worker_obs(
-            obs_dict=obs_dict,
-            goal=self.goal,
-            t_in_macro=self.t_in_macro,
-            cfg=self.cfg,
+        obs = build_worker_obs(
+            obs_dict, self.goal, self.t_in_macro, self.cfg
         )
 
         info = info or {}
-        info["env_reward"] = env_reward  # keep logs
-        # remove intrinsic_reward
-        # info["intrinsic_reward"] = r_int  <-- DELETE THIS
+        info["hit"] = hit
+        info["hit_rate"] = self.hit_count / max(1, self.step_count)
+        info["contact_force"] = contact_force
+        info["dv"] = dv
+        info["intrinsic_reward"] = r_int
 
-        return worker_obs, reward, terminated, truncated, info
+        return obs, r_int, terminated, truncated, info

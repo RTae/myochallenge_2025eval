@@ -10,13 +10,11 @@ from stable_baselines3.common.callbacks import EvalCallback, CallbackList
 from config import Config
 from env_factory import build_vec_env
 from callbacks.video_callback import VideoCallback
-from hrl_utils import build_worker_obs, flatten_myo_obs_worker, make_hierarchical_predictor
+from callbacks.infologger_callback import InfoLoggerCallback
+from hrl_utils import build_worker_obs, make_hierarchical_predictor
 from stable_baselines3 import PPO as PPO_LOAD
 
 
-# ============================================================
-# Create experiment directory logs/expN/
-# ============================================================
 def prepare_experiment_directory(cfg: Config):
     """
     Creates logs/exp1, exp2, ... automatically.
@@ -95,10 +93,11 @@ def train_worker(cfg: Config):
         return np.asarray(action, dtype=np.float32).reshape(-1)
 
     video_cb = VideoCallback(cfg, mode="worker", predict_fn=worker_predict)
+    info_cb = InfoLoggerCallback()
 
     model.learn(
         total_timesteps=cfg.total_timesteps,
-        callback=CallbackList([eval_callback, video_cb]),
+        callback=CallbackList([eval_callback, video_cb, info_cb]),
     )
 
     worker_path = os.path.join(worker_logdir, "worker.zip")
@@ -156,10 +155,11 @@ def train_manager(cfg: Config):
     hrl_predict = make_hierarchical_predictor(cfg, model, worker_model)
 
     video_cb = VideoCallback(cfg, mode="manager", predict_fn=hrl_predict)
+    info_cb = InfoLoggerCallback()
 
     model.learn(
         total_timesteps=cfg.total_timesteps,
-        callback=CallbackList([eval_callback, video_cb]),
+        callback=CallbackList([eval_callback, video_cb, info_cb]),
     )
 
     manager_path = os.path.join(manager_logdir, "manager.zip")
@@ -181,13 +181,13 @@ if __name__ == "__main__":
     worker_cfg = copy.deepcopy(base_cfg)
     manager_cfg = copy.deepcopy(base_cfg)
 
-    worker_cfg.total_timesteps = 30_000_000
+    worker_cfg.total_timesteps = 3_000_000
     worker_cfg.ppo_lr = 1e-4
     
     manager_cfg.total_timesteps = 10_000_000
     manager_cfg.ppo_lr = 3e-4
 
     train_worker(worker_cfg)
-    train_manager(manager_cfg)
+    #train_manager(manager_cfg)
 
     logger.info("🎉 HRL Training Complete!")

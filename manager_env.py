@@ -1,4 +1,3 @@
-# manager_env.py
 import os
 import gymnasium as gym
 import numpy as np
@@ -38,7 +37,8 @@ class ManagerEnv(gym.Env):
         for param in self.worker.policy.parameters():
             param.requires_grad = False
 
-        logger.info(f"Worker training mode: {self.worker.policy.training}")
+        assert not any(p.requires_grad for p in self.worker.policy.parameters()), \
+            "Worker model parameters are not frozen!"
 
         # infer manager obs shape
         self.base_env.reset()
@@ -69,27 +69,12 @@ class ManagerEnv(gym.Env):
         return flatten_myo_obs_manager(obs_dict), {}
 
     def step(self, goal):
-        """
-        Manager step:
-        - Action = goal (dx, dy, dz)
-        - Holds goal for K worker steps
-        - Reward = env_reward + dense shaping
-        """
-
-        goal = np.asarray(goal, dtype=np.float32).reshape(-1)
-        goal = np.clip(goal, -self.cfg.goal_bound, self.cfg.goal_bound)
+        goal = np.clip(goal, -0.15, 0.15).astype(np.float32)
 
         total_reward = 0.0
-        terminated = False
-        truncated = False
-        info = {}
-
         obs_dict = self.last_obs
 
         for t in range(self.cfg.high_level_period):
-            if terminated or truncated:
-                break
-
             worker_obs = build_worker_obs(
                 obs_dict=obs_dict,
                 goal=goal,
@@ -98,19 +83,17 @@ class ManagerEnv(gym.Env):
             ).reshape(1, -1)
 
             action_low, _ = self.worker.predict(worker_obs, deterministic=True)
-            action_low = np.asarray(action_low, dtype=np.float32).reshape(-1)
+            action_low = action_low.reshape(-1)
 
-            _, env_reward, terminated, truncated, info = self.base_env.step(action_low)
+            _, _, terminated, truncated, _ = self.base_env.step(action_low)
             obs_dict = self.base_env.obs_dict
 
-            # dense shaping
-            paddle = obs_dict["paddle_pos"]
-            ball = obs_dict["ball_pos"]
-            dist = np.linalg.norm(paddle - ball)
+            rel = obs_dict["paddle_pos"] - obs_dict["ball_pos"]
+            goal_err = np.linalg.norm(rel - goal)
 
-            total_reward += env_reward - 0.1 * dist
+            total_reward += -goal_err   # ← pure shaping
 
         self.last_obs = obs_dict
-        done = terminated or truncated
+        mgr_obs = flatten_myo_obs_manager(obs_dict)
 
-        return flatten_myo_obs_manager(obs_dict), total_reward, done, False, info
+        return mgr_obs, total_reward, False, False, {}

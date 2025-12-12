@@ -88,43 +88,77 @@ def flatten_myo_obs_manager(obs_dict):
     return np.concatenate(arrays, axis=-1)
 
 
-# ================================================================
-#  WORKER OBS WITH GOAL + PHASE (428 dims)
-# ================================================================
 def build_worker_obs(obs_dict, goal, t_in_macro, cfg):
     """
-    Worker observation during training and HRL:
-      base   = flatten_myo_obs_worker (424)
-      goal   = (3,)
-      phase  = (1,)  in [0,1]
-
-    Total: 424 + 3 + 1 = 428
+    Worker obs:
+      base        : 424
+      paddle_vel : 3
+      goal_vel   : 3
+      phase      : 1
+    Total = 431
     """
     base = flatten_myo_obs_worker(obs_dict)
+    paddle_vel = obs_dict["paddle_vel"].astype(np.float32)
     goal = np.asarray(goal, dtype=np.float32)
 
-    # Phase in [0, 1]
-    denom = max(1, cfg.high_level_period - 1)
-    phase = np.array([t_in_macro / denom], dtype=np.float32)
+    phase = np.array(
+        [t_in_macro / max(1, cfg.high_level_period - 1)],
+        dtype=np.float32
+    )
 
-    return np.concatenate([base, goal, phase], axis=-1).astype(np.float32)
+    return np.concatenate(
+        [base, paddle_vel, goal, phase],
+        axis=-1
+    ).astype(np.float32)
 
 
-# ================================================================
-#  INTRINSIC REWARD FOR WORKER
-# ================================================================
-def intrinsic_reward(obs_dict, goal):
-    """
-    Intrinsic reward: how close paddle-ball offset is to the desired goal.
-      offset = paddle_pos - ball_pos
-      r_int  = - || offset - goal ||
-    """
-    ball = obs_dict["ball_pos"]
-    paddle = obs_dict["paddle_pos"]
-    offset = paddle - ball  # current paddle relative to ball
 
-    err = np.linalg.norm(offset - goal)
-    return -float(err)
+def worker_reward(obs_dict, hit, contact_force, dv):
+    r = 0.0
+
+    if hit:
+        r += 10.0
+        # optional: bonus if the hit produces bigger impulse (keeps it learnable)
+        r += 0.5 * np.tanh(dv)          # 0..~0.5
+        r += 0.5 * np.tanh(contact_force) 
+        return float(r)
+
+    # pre-contact shaping (CAUSAL): move paddle toward ball
+    rel = np.array(obs_dict["ball_pos"], dtype=np.float32) - np.array(obs_dict["paddle_pos"], dtype=np.float32)
+    paddle_vel = np.array(obs_dict["paddle_vel"], dtype=np.float32)
+
+    approach = np.dot(paddle_vel, rel) / (np.linalg.norm(rel) + 1e-6)
+    if approach > 0:
+        r += 0.02 * approach
+
+    # tiny penalty to avoid freezing
+    r -= 0.01
+    return float(r)
+
+class HitDetector:
+    def __init__(self, force_thr=1e-3, dv_thr=0.8):
+        self.force_thr = force_thr
+        self.dv_thr = dv_thr
+        self.prev_ball_vel = None
+
+    def reset(self, obs_dict):
+        self.prev_ball_vel = np.array(obs_dict["ball_vel"], dtype=np.float32)
+
+    def step(self, obs_dict):
+        # --- 1) contact via touching_info ---
+        ti = np.array(obs_dict.get("touching_info", []), dtype=np.float32).reshape(-1)
+        contact_force = float(np.sum(np.abs(ti))) if ti.size > 0 else 0.0
+        hit_by_force = contact_force > self.force_thr
+
+        # --- 2) hit via ball velocity jump ---
+        ball_vel = np.array(obs_dict["ball_vel"], dtype=np.float32)
+        dv = 0.0 if self.prev_ball_vel is None else float(np.linalg.norm(ball_vel - self.prev_ball_vel))
+        hit_by_dv = dv > self.dv_thr
+        self.prev_ball_vel = ball_vel
+
+        hit = hit_by_force or hit_by_dv
+        return hit, contact_force, dv
+
 
 
 # ================================================================
