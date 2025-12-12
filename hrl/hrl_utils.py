@@ -157,7 +157,9 @@ class HitDetector:
 
 
 class WorkerReward:
-    """Contact-conditioned reward with proximity-gated shaping."""
+    """Contact-conditioned reward with proximity-gated shaping
+       and forced-commitment near the ball.
+    """
 
     def __init__(self,
                  hit_bonus: float = 10.0,
@@ -169,7 +171,8 @@ class WorkerReward:
                  energy_penalty_coef: float = 0.001,
                  ball_vel_threshold: float = 0.1,
                  paddle_radius: float = PADDLE_FACE_RADIUS,
-                 near_thresh: float = 0.6):
+                 near_thresh: float = 0.6,
+                 commit_thresh: float = 0.3):  # NEW
 
         self.hit_bonus = hit_bonus
         self.impulse_bonus_scale = impulse_bonus_scale
@@ -181,6 +184,7 @@ class WorkerReward:
         self.ball_vel_threshold = ball_vel_threshold
         self.paddle_radius = paddle_radius
         self.near_thresh = near_thresh
+        self.commit_thresh = commit_thresh  # NEW
 
         self._last_ball_vel = None
 
@@ -189,25 +193,28 @@ class WorkerReward:
         self._last_ball_vel = None
 
     # --------------------------------------------------
-    def _near_ball(self, obs_dict) -> bool:
+    def _ball_dist(self, obs_dict) -> float:
         return np.linalg.norm(
             np.array(obs_dict["ball_pos"]) - np.array(obs_dict["paddle_pos"])
-        ) < self.near_thresh
+        )
+
+    def _near_ball(self, obs_dict) -> bool:
+        return self._ball_dist(obs_dict) < self.near_thresh
+
+    def _commit_zone(self, obs_dict) -> bool:
+        return self._ball_dist(obs_dict) < self.commit_thresh
 
     # --------------------------------------------------
     def _goal_align(self, obs_dict, goal) -> float:
         pv = np.array(obs_dict["paddle_vel"], dtype=np.float32)
         gv = np.asarray(goal, dtype=np.float32)
-        pv = pv / (np.linalg.norm(pv) + 1e-6)
-        gv = gv / (np.linalg.norm(gv) + 1e-6)
+        pv /= (np.linalg.norm(pv) + 1e-6)
+        gv /= (np.linalg.norm(gv) + 1e-6)
         return float(np.dot(pv, gv))
 
     # --------------------------------------------------
     def _compute_sweet_spot_bonus(self, obs_dict) -> float:
-        dist = np.linalg.norm(
-            np.array(obs_dict["ball_pos"]) - np.array(obs_dict["paddle_pos"])
-        )
-        return self.sweet_spot_bonus if dist < 0.30 * self.paddle_radius else 0.0
+        return self.sweet_spot_bonus if self._ball_dist(obs_dict) < 0.30 * self.paddle_radius else 0.0
 
     # --------------------------------------------------
     def _compute_approach_bonus(self, obs_dict) -> float:
@@ -243,16 +250,14 @@ class WorkerReward:
         ball_vel = np.array(obs_dict["ball_vel"], dtype=np.float32)
 
         # --------------------------------------------------
-        # Impulse / force
+        # Impulse / force (ONLY meaningful if hit)
         # --------------------------------------------------
-        if external_dv is not None:
+        if hit and external_dv is not None:
             impulse = external_dv
             contact_force = external_contact_force
         else:
-            impulse = 0.0 if self._last_ball_vel is None else np.linalg.norm(
-                ball_vel - self._last_ball_vel
-            )
-            contact_force = impulse * 10.0
+            impulse = 0.0
+            contact_force = 0.0
 
         self._last_ball_vel = ball_vel.copy()
 
@@ -271,6 +276,7 @@ class WorkerReward:
             "approach_bonus": 0.0,
             "goal_alignment": 0.0,
             "energy_penalty": energy_penalty,
+            "commit_penalty": 0.0,
             "inactivity_penalty": 0.0,
         }
 
@@ -291,29 +297,32 @@ class WorkerReward:
             components["sweet_spot_bonus"] = sweet
 
         # ==================================================
-        # NO-HIT PHASE (GATED)
+        # NO-HIT PHASE (STRICTLY GATED)
         # ==================================================
         else:
-            near = self._near_ball(obs_dict)
+            if self._commit_zone(obs_dict):
+                # 🔥 CLOSE but no hit → punish hovering
+                reward += -0.08
+                components["commit_penalty"] = -0.08
 
-            if near:
+            elif self._near_ball(obs_dict):
                 approach_bonus = self._compute_approach_bonus(obs_dict)
                 reward += approach_bonus
                 components["approach_bonus"] = approach_bonus
 
                 if goal is not None:
-                    ga = self._goal_align(obs_dict, goal)
-                    goal_bonus = 0.03 * ga
+                    ga = np.clip(self._goal_align(obs_dict, goal), -0.5, 0.5)
+                    goal_bonus = 0.02 * ga
                     reward += goal_bonus
                     components["goal_alignment"] = goal_bonus
+
             else:
-                # IMPORTANT: stop reward hacking far away
                 reward += self.inactivity_penalty
                 components["inactivity_penalty"] = self.inactivity_penalty
 
         reward += energy_penalty
         return float(reward), components
-    
+
 # ================================================================
 #  HIERARCHICAL PREDICTOR (for VideoCallback manager videos)
 # ================================================================
