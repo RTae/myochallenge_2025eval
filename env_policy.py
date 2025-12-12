@@ -1,7 +1,5 @@
 import gymnasium as gym
 import numpy as np
-from gymnasium import spaces
-
 from myosuite.utils import gym as myo_gym
 from config import Config
 
@@ -12,8 +10,7 @@ class CustomEnv(gym.Env):
 
     - Policy observes raw Gym obs (flat vector)
     - Reward uses obs_dict (semantic, stable)
-    - Contact via touching_info (not heuristics)
-    - Curriculum-ready reward structure
+    - No opponent / no rally logic (single-agent focus)
     """
 
     metadata = {"render_modes": []}
@@ -28,11 +25,11 @@ class CustomEnv(gym.Env):
         self.step_count = 0
         self.total_steps = 0
 
-        # For approach shaping
-        self.prev_dist = None
+        # Shaping state
+        self.prev_reach_dist = None
         self.hit_once = False
 
-        # ---- Spaces (IMPORTANT: use env spaces directly) ----
+        # ---- Spaces ----
         obs, _ = self.env.reset()
         self.observation_space = self.env.observation_space
         self.action_space = self.env.action_space
@@ -42,16 +39,14 @@ class CustomEnv(gym.Env):
 
     # --------------------------------------------------
     def reset(self, *, seed=None, options=None):
-        obs, info = self.env.reset(seed=seed)
-
+        obs, _ = self.env.reset(seed=seed)
         obs_dict = self.env.obs_dict
 
         self.step_count = 0
         self.hit_once = False
 
-        ball_pos = obs_dict["ball_pos"]
-        paddle_pos = obs_dict["paddle_pos"]
-        self.prev_dist = np.linalg.norm(ball_pos - paddle_pos)
+        reach_err = obs_dict["reach_err"]
+        self.prev_reach_dist = float(np.linalg.norm(reach_err))
 
         return obs, {}
 
@@ -66,9 +61,9 @@ class CustomEnv(gym.Env):
         # -----------------------------
         # Curriculum scheduling
         # -----------------------------
-        if self.total_steps < 2_000_000:
+        if self.total_steps < 10_000_000:
             self.phase = 1
-        elif self.total_steps < 6_000_000:
+        elif self.total_steps < 20_000_000:
             self.phase = 2
         else:
             self.phase = 3
@@ -81,13 +76,11 @@ class CustomEnv(gym.Env):
         paddle_pos = obs_dict["paddle_pos"]
         paddle_vel = obs_dict["paddle_vel"]
         reach_err = obs_dict["reach_err"]
-        muscle_act = obs_dict["muscle_activations"]
+        muscle_act = np.asarray(obs_dict["act"], dtype=np.float32)
         touch = obs_dict["touching_info"]
 
-        # Touch indices (from spec)
+        # Touch indices
         TOUCH_PADDLE = 0
-        TOUCH_OWN = 1
-        TOUCH_OPP = 2
         TOUCH_GROUND = 3
         TOUCH_NET = 4
         TOUCH_ENV = 5
@@ -95,24 +88,34 @@ class CustomEnv(gym.Env):
         # -----------------------------
         # Geometry
         # -----------------------------
+        reach_dist = float(np.linalg.norm(reach_err))
+        ball_speed = float(np.linalg.norm(ball_vel))
+
         rel = ball_pos - paddle_pos
-        dist = np.linalg.norm(rel)
-        ball_speed = np.linalg.norm(ball_vel)
         incoming = float(np.dot(ball_vel, rel) < 0.0)
 
         # -----------------------------
         # Reward
         # -----------------------------
         reward = 0.0
+        truncated = False
 
-        # (1) Pre-contact shaping (Phase 1–2 only)
-        if self.phase <= 2 and not self.hit_once and incoming and self.prev_dist is not None:
-            progress = self.prev_dist - dist
-            reward += 2.0 * np.clip(progress, -0.05, 0.05)
+        # ========== (1) PRE-CONTACT SHAPING ==========
+        if self.phase <= 2 and not self.hit_once and incoming:
 
-        self.prev_dist = dist
+            # Reach-error progress
+            if self.prev_reach_dist is not None:
+                progress = self.prev_reach_dist - reach_dist
+                reward += 2.0 * np.clip(progress, -0.05, 0.05)
 
-        # (2) Paddle-ball contact
+            # Paddle velocity toward ball (only when close)
+            if reach_dist < 0.30:
+                approach_speed = np.dot(paddle_vel, reach_err) / (reach_dist + 1e-6)
+                reward += 0.1 * np.clip(approach_speed, 0.0, 1.0)
+
+        self.prev_reach_dist = reach_dist
+
+        # ========== (2) CONTACT ==========
         hit = touch[TOUCH_PADDLE] > 0.5
 
         if hit:
@@ -121,12 +124,16 @@ class CustomEnv(gym.Env):
             # Base hit reward
             reward += 20.0 if self.phase == 1 else 15.0 if self.phase == 2 else 10.0
 
-            # Post-hit quality (Phase ≥2)
+            # Post-hit quality
             if self.phase >= 2:
                 reward += 1.0 * np.tanh(ball_speed / 3.0)
                 reward += 1.0 * np.tanh(ball_vel[0] / 2.0)
 
-        # (3) Failure penalties (Phase ≥2)
+            # Penalize weak taps
+            if ball_speed < 0.5:
+                reward -= 2.0
+
+        # ========== (3) FAILURE PENALTIES ==========
         if self.phase >= 2:
             if touch[TOUCH_NET] > 0.5:
                 reward -= 3.0
@@ -135,8 +142,8 @@ class CustomEnv(gym.Env):
             if touch[TOUCH_ENV] > 0.5:
                 reward -= 1.5
 
-        # (4) Energy regularization (very small, always on)
-        reward -= 5e-5 * np.sum(muscle_act ** 2)
+        # ========== (4) ENERGY REGULARIZATION ==========
+        reward -= 5e-5 * np.mean(muscle_act ** 2)
 
         # -----------------------------
         # Episode cutoff
@@ -145,15 +152,16 @@ class CustomEnv(gym.Env):
             truncated = True
 
         # -----------------------------
-        # Info (for logging)
+        # Info
         # -----------------------------
         info = info or {}
         info.update({
             "phase": self.phase,
             "hit": int(hit),
-            "dist": float(dist),
+            "reach_dist": float(reach_dist),
             "incoming": incoming,
             "ball_speed": float(ball_speed),
+            "energy": float(np.mean(muscle_act ** 2)),
         })
 
         return obs, reward, terminated, truncated, info

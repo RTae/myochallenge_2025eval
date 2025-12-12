@@ -37,8 +37,8 @@ class Config:
     train_log_freq: int = getenv("TRAIN_LOG_FREQ", 2000, int)
 
     # === PPO ===
-    ppo_n_steps: int = getenv("PPO_N_STEPS", 2048, int)
-    ppo_batch_size: int = getenv("PPO_BATCH_SIZE", 4096, int)
+    ppo_n_steps: int = getenv("PPO_N_STEPS", 4096, int)
+    ppo_batch_size: int = getenv("PPO_BATCH_SIZE", 512, int)
     ppo_gamma: float = getenv("PPO_GAMMA", 0.99, float)
     ppo_lambda: float = getenv("PPO_LAMBDA", 0.95, float)
     ppo_lr: float = getenv("PPO_LR", 1e-4, float)
@@ -46,7 +46,7 @@ class Config:
     ppo_clip: float = getenv("PPO_CLIP", 0.2, float)
 
     # === Video ===
-    video_freq: int = getenv("VIDEO_FREQ", 100_000, int)
+    video_freq: int = getenv("VIDEO_FREQ", 1_000_000, int)
     eval_episodes: int = getenv("EVAL_EPISODES", 3, int)
     video_w: int = getenv("VIDEO_W", 640, int)
     video_h: int = getenv("VIDEO_H", 480, int)
