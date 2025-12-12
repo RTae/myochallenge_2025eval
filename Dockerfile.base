@@ -1,5 +1,5 @@
 #################################################
-### Base image with Python 3.12 + uv           ##
+### Base image with Python 3.11 + uv           ##
 #################################################
 FROM nvcr.io/nvidia/cuda:13.0.1-base-ubuntu24.04 AS python-base
 
@@ -12,25 +12,54 @@ ENV DEBIAN_FRONTEND=noninteractive \
     CPATH="" \
     PYTHONPATH=""
 
-# Install Python 3.12 + essentials
-RUN apt-get clean && apt-get update && apt-get install -y --no-install-recommends \
-    python3.12 python3.12-venv python3.12-dev python-is-python3 \
-    build-essential curl ca-certificates git \
-    # MuJoCo + EGL + rendering
-    libgl1-mesa-dev libglfw3 libglfw3-dev libglew-dev patchelf \
-    libosmesa6-dev libegl1 libglvnd-dev libxcb1 libxrandr2 libxinerama1 libxi6 \
+# ------------------------------------------------
+# Restore Ubuntu 24.04 repositories
+# (needed for system deps, NOT for Python)
+# ------------------------------------------------
+RUN printf "deb http://archive.ubuntu.com/ubuntu noble main universe multiverse\n\
+deb http://archive.ubuntu.com/ubuntu noble-updates main universe multiverse\n\
+deb http://archive.ubuntu.com/ubuntu noble-security main universe multiverse\n" \
+> /etc/apt/sources.list
+
+# ------------------------------------------------
+# System dependencies ONLY (no Python here)
+# ------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    ca-certificates \
+    git \
+    \
+    libgl1-mesa-dev \
+    libglfw3 \
+    libglfw3-dev \
+    libglew-dev \
+    patchelf \
+    libosmesa6-dev \
+    libegl1 \
+    libglvnd-dev \
+    libxcb1 \
+    libxrandr2 \
+    libxinerama1 \
+    libxi6 \
+    \
     ffmpeg \
-    # Optional quality-of-life tools
-    vim less \
+    vim \
+    less \
+    \
     && rm -rf /var/lib/apt/lists/*
 
-# Verify Python version
-RUN python3 --version && python --version
-
+# ------------------------------------------------
 # Install uv
+# ------------------------------------------------
 ARG UV_VERSION=0.8.22
 RUN curl -LsSf https://astral.sh/uv/${UV_VERSION}/install.sh | sh
 ENV PATH="/root/.local/bin:${PATH}"
+
+# ------------------------------------------------
+# Install Python 3.11 via uv (REQUIRED)
+# ------------------------------------------------
+RUN uv python install 3.11
 
 
 #################################################
@@ -39,7 +68,7 @@ ENV PATH="/root/.local/bin:${PATH}"
 FROM python-base AS builder-base
 WORKDIR $PYSETUP_PATH
 
-# Install MuJoCo 
+# Install MuJoCo
 ENV MUJOCO_VERSION=3.3.0
 ENV MUJOCO_PATH=/root/.mujoco/mujoco-${MUJOCO_VERSION}
 ENV LD_LIBRARY_PATH=${MUJOCO_PATH}/bin:${LD_LIBRARY_PATH}
@@ -49,11 +78,17 @@ RUN mkdir -p /root/.mujoco && \
     curl -L https://github.com/deepmind/mujoco/releases/download/${MUJOCO_VERSION}/mujoco-${MUJOCO_VERSION}-linux-x86_64.tar.gz \
     | tar -xz -C /root/.mujoco
 
-# Copy only dependency files first (cache friendly)
+# Copy dependency files (cache-friendly)
 COPY ./pyproject.toml ./uv.lock ./
 
-# Install dependencies into venv using uv
-RUN uv sync --no-dev --frozen --python python3.12 --directory $PYSETUP_PATH
+# ------------------------------------------------
+# Install dependencies using uv + Python 3.11
+# ------------------------------------------------
+RUN uv sync \
+    --no-dev \
+    --frozen \
+    --python 3.11 \
+    --directory $PYSETUP_PATH
 
 # Activate venv by default
 ENV VIRTUAL_ENV=$VENV_PATH
