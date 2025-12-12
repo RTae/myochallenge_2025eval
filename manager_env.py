@@ -73,6 +73,8 @@ class ManagerEnv(gym.Env):
 
         total_reward = 0.0
         obs_dict = self.last_obs
+        terminated_any = False
+        truncated_any = False
 
         for t in range(self.cfg.high_level_period):
             worker_obs = build_worker_obs(
@@ -85,15 +87,21 @@ class ManagerEnv(gym.Env):
             action_low, _ = self.worker.predict(worker_obs, deterministic=True)
             action_low = action_low.reshape(-1)
 
-            _, _, terminated, truncated, _ = self.base_env.step(action_low)
+            _, _, terminated, truncated, info = self.base_env.step(action_low)
             obs_dict = self.base_env.obs_dict
 
-            rel = obs_dict["paddle_pos"] - obs_dict["ball_pos"]
-            goal_err = np.linalg.norm(rel - goal)
+            paddle_vel = obs_dict["paddle_vel"]
+            total_reward += -np.linalg.norm(paddle_vel - goal)
 
-            total_reward += -goal_err   # ← pure shaping
+            if info.get("hit", False):
+                total_reward += 5.0
+
+            terminated_any |= terminated
+            truncated_any |= truncated
+            if terminated or truncated:
+                break
 
         self.last_obs = obs_dict
         mgr_obs = flatten_myo_obs_manager(obs_dict)
 
-        return mgr_obs, total_reward, False, False, {}
+        return mgr_obs, total_reward, terminated_any, truncated_any, {}

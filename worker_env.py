@@ -73,8 +73,13 @@ class WorkerEnv(gym.Env):
 
         self.hit_detector.reset(obs_dict)
         self.reward_fn.reset()
-        
-        self.goal = self._sample_goal()
+
+        # ✅ FIX: deterministic goal during eval
+        if getattr(self.cfg, "eval_mode", False):
+            self.goal = np.zeros(self.cfg.goal_dim, dtype=np.float32)
+        else:
+            self.goal = self._sample_goal()
+
         self.t_in_macro = 0
         self.hit_count = 0
         self.step_count = 0
@@ -82,7 +87,7 @@ class WorkerEnv(gym.Env):
         return build_worker_obs(
             obs_dict, self.goal, self.t_in_macro, self.cfg
         ), {}
-
+        
     # --------------------------------------------------
     def step(self, action):
         obs, _, terminated, truncated, info = self.base_env.step(action)

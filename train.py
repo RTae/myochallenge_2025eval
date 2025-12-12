@@ -177,17 +177,16 @@ if __name__ == "__main__":
     base_cfg = Config()
     prepare_experiment_directory(base_cfg)
 
-    # You can override these per-stage if you want different budgets
     worker_cfg = copy.deepcopy(base_cfg)
     manager_cfg = copy.deepcopy(base_cfg)
 
-    worker_cfg.total_timesteps = 3_000_000
+    worker_cfg.total_timesteps = 40_000_000
     worker_cfg.ppo_lr = 1e-4
     
-    manager_cfg.total_timesteps = 10_000_000
+    manager_cfg.total_timesteps = 5_000_000
     manager_cfg.ppo_lr = 3e-4
 
     train_worker(worker_cfg)
-    #train_manager(manager_cfg)
+    train_manager(manager_cfg)
 
-    logger.info("🎉 HRL Training Complete!")
+    logger.info("🎉 Training Complete!")
