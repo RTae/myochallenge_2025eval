@@ -12,13 +12,6 @@ from callbacks.infologger_callback import InfoLoggerCallback
 from stable_baselines3.common.callbacks import EvalCallback
 from stable_baselines3.common.vec_env import VecVideoRecorder
 
-
-def main():
-    cfg = Config()
-    prepare_experiment_directory(cfg)
-
-    env = build_env(cfg)
-
     # model = PPO(
     #     "MlpPolicy",
     #     env,
@@ -34,14 +27,19 @@ def main():
     #     n_epochs=cfg.ppo_epochs,
     #     seed=cfg.seed,
     # )
-    
-    # --- Lattice PPO ---
+
+def main():
+    cfg = Config()
+    prepare_experiment_directory(cfg)
+
+    env = build_env(cfg)
+
     model = RecurrentPPO(
-        policy=LatticeRecurrentActorCriticPolicy, 
+        policy=LatticeRecurrentActorCriticPolicy,
         env=env,
         tensorboard_log=cfg.logdir,
         verbose=1,
-        device='auto',
+        device="auto",
         batch_size=cfg.ppo_batch_size,
         n_steps=cfg.ppo_n_steps,
         n_epochs=cfg.ppo_epochs,
@@ -52,27 +50,30 @@ def main():
         ent_coef=3.62109e-06,
         max_grad_norm=0.7,
         vf_coef=0.835671,
-        use_sde=False,
-        sde_sample_freq=1,
         policy_kwargs=dict(
             use_lattice=True,
             use_expln=True,
             ortho_init=False,
             log_std_init=0.0,
-            # activation_fn=nn.ReLU,
             std_clip=(1e-3, 10),
-            expln_eps=1e-6,
-            full_std=False,
-            std_reg=0.0,
         ),
     )
 
     info_cb = InfoLoggerCallback(prefix="train/info")
-    
-    # ---- eval env (single env only) ----
+
+    # ---- eval env (single env) ----
     eval_cfg = Config()
     eval_cfg.num_envs = 1
     eval_env = build_env(eval_cfg)
+
+    # ---- wrap eval env with video recorder ----
+    eval_env = VecVideoRecorder(
+        eval_env,
+        video_folder=os.path.join(cfg.logdir, "videos"),
+        record_video_trigger=lambda step: step % cfg.video_freq == 0,
+        video_length=cfg.video_frames,
+        name_prefix="eval",
+    )
 
     eval_callback = EvalCallback(
         eval_env,
@@ -83,20 +84,11 @@ def main():
         deterministic=True,
         render=False,
     )
-    
-    eval_env = VecVideoRecorder(
-        eval_env,
-        video_folder= os.path.join(cfg.logdir, "videos"),
-        record_video_trigger=lambda step: step % cfg.video_freq == 0,
-        video_length=cfg.video_frames,
-        name_prefix="eval"
-    )
 
     model.learn(
         total_timesteps=cfg.total_timesteps,
-        callback=CallbackList([eval_env, info_cb, eval_callback]),
+        callback=CallbackList([info_cb, eval_callback]),
     )
-    
 
     model.save(os.path.join(cfg.logdir, "model"))
     env.close()
