@@ -1,6 +1,8 @@
 import os
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CallbackList
+from sb3_contrib import RecurrentPPO
+from lattice.ppo.policies import LatticeRecurrentActorCriticPolicy
 
 from config import Config
 from env_factory import build_env
@@ -17,19 +19,51 @@ def main():
     env = build_env(cfg)
     eval_env = build_env(cfg)
 
-    model = PPO(
-        "MlpPolicy",
-        env,
-        verbose=1,
+    # model = PPO(
+    #     "MlpPolicy",
+    #     env,
+    #     verbose=1,
+    #     device='auto',
+    #     tensorboard_log=cfg.logdir,
+    #     n_steps=cfg.ppo_n_steps,
+    #     batch_size=cfg.ppo_batch_size,
+    #     gamma=cfg.ppo_gamma,
+    #     learning_rate=cfg.ppo_lr,
+    #     gae_lambda=cfg.ppo_lambda,
+    #     clip_range=cfg.ppo_clip,
+    #     n_epochs=cfg.ppo_epochs,
+    #     seed=cfg.seed,
+    # )
+    
+    # --- Lattice PPO ---
+    model = RecurrentPPO(policy=LatticeRecurrentActorCriticPolicy, 
+        env=env,
         tensorboard_log=cfg.logdir,
-        n_steps=cfg.ppo_n_steps,
+        verbose=1,
+        device='auto',
         batch_size=cfg.ppo_batch_size,
-        gamma=cfg.ppo_gamma,
+        n_steps=cfg.ppo_n_steps,
         learning_rate=cfg.ppo_lr,
-        gae_lambda=cfg.ppo_lambda,
+        ent_coef=3.62109e-06,
         clip_range=cfg.ppo_clip,
-        n_epochs=cfg.ppo_epochs,
-        seed=cfg.seed,
+        gamma=cfg.ppo_gamma,
+        gae_lambda=cfg.ppo_lambda,
+        max_grad_norm=0.7,
+        vf_coef=0.835671,
+        n_epochs=cfg.ppo_n_steps,
+        use_sde=False,
+        sde_sample_freq=1,
+        policy_kwargs=dict(
+            use_lattice=True,
+            use_expln=True,
+            ortho_init=False,
+            log_std_init=0.0,
+            # activation_fn=nn.ReLU,
+            std_clip=(1e-3, 10),
+            expln_eps=1e-6,
+            full_std=False,
+            std_reg=0.0,
+        ),
     )
 
     video_cb = VideoCallback(cfg, predict_fn=make_predict_fn(model))

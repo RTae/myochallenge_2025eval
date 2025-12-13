@@ -1,13 +1,9 @@
+# config.py
 import os
 from dataclasses import dataclass
 
 
 def getenv(name, default, cast_fn=str):
-    """
-    Helper to read environment variables with type casting.
-    Example:
-        NUM_ENVS=16 python train_all.py
-    """
     val = os.getenv(name)
     if val is None:
         return default
@@ -19,48 +15,56 @@ def getenv(name, default, cast_fn=str):
 
 @dataclass
 class Config:
-    # === Environment ===
+    # ==================================================
+    # Environment
+    # ==================================================
     env_id: str = getenv("ENV_ID", "myoChallengeTableTennisP2-v0", str)
     seed: int = getenv("SEED", 42, int)
-    num_envs: int = getenv("NUM_ENVS", 24, int)
 
-    # === HRL ===
-    high_level_period: int = getenv("HL_PERIOD", 15, int)
-    goal_dim: int = getenv("GOAL_DIM", 3, int)
-    goal_std: float = getenv("GOAL_STD", 0.10, float)
-    goal_bound: float = getenv("GOAL_BOUND", 0.25, float)
-    episode_len = 300
+    # IMPORTANT: keep this small early
+    num_envs: int = getenv("NUM_ENVS", 8, int)
 
-    # === Training ===
-    total_timesteps: int = getenv("TOTAL_TIMESTEPS", 40_000_000, int)
+    # Episode length (~3 seconds)
+    episode_len: int = getenv("EPISODE_LEN", 300, int)
+
+    # ==================================================
+    # Training
+    # ==================================================
+    total_timesteps: int = getenv("TOTAL_TIMESTEPS", 10_000_000, int)
     logdir: str = getenv("LOGDIR", "./logs", str)
-    train_log_freq: int = getenv("TRAIN_LOG_FREQ", 2000, int)
 
-    # === PPO ===
-    ppo_n_steps: int = getenv("PPO_N_STEPS", 4096, int)
-    ppo_batch_size: int = getenv("PPO_BATCH_SIZE", 512, int)
+    # ==================================================
+    # PPO (FAST FEEDBACK)
+    # ==================================================
+    ppo_n_steps: int = getenv("PPO_N_STEPS", 1024, int)
+    ppo_batch_size: int = getenv("PPO_BATCH_SIZE", 256, int)
+    ppo_epochs: int = getenv("PPO_EPOCHS", 5, int)
+
+    ppo_lr: float = getenv("PPO_LR", 2.5e-5, float)
+
     ppo_gamma: float = getenv("PPO_GAMMA", 0.99, float)
     ppo_lambda: float = getenv("PPO_LAMBDA", 0.95, float)
-    ppo_lr: float = getenv("PPO_LR", 1e-4, float)
-    ppo_epochs: int = getenv("PPO_EPOCHS", 5, int)
     ppo_clip: float = getenv("PPO_CLIP", 0.2, float)
 
-    # === Video ===
-    video_freq: int = getenv("VIDEO_FREQ", 1_000_000, int)
+    # ==================================================
+    # Evaluation & Video
+    # ==================================================
+    eval_freq: int = getenv("EVAL_FREQ", 500_000, int)
     eval_episodes: int = getenv("EVAL_EPISODES", 3, int)
+
+    video_freq: int = getenv("VIDEO_FREQ", 1_000_000, int)
     video_w: int = getenv("VIDEO_W", 640, int)
     video_h: int = getenv("VIDEO_H", 480, int)
     camera_id: int = getenv("CAMERA_ID", 1, int)
     video_frames: int = getenv("VIDEO_FRAMES", 300, int)
 
-    # === Eval ===
-    eval_freq: int = getenv("EVAL_FREQ", 500_000, int)
-
-    # MyoChallenge 2025 Physical Constants (from official specs)
-    BALL_MASS = 0.0027  # kg
-    BALL_RADIUS = 0.02  # m
-    PADDLE_MASS = 0.150  # kg
-    PADDLE_FACE_RADIUS = 0.093  # m
-    PADDLE_HANDLE_RADIUS = 0.016  # m
-    TABLE_HALF_WIDTH = 1.37  # m (each side)
-    NET_HEIGHT = 0.305  # m
+    # ==================================================
+    # Physics constants (from MyoChallenge spec)
+    # ==================================================
+    BALL_MASS = 0.0027
+    BALL_RADIUS = 0.02
+    PADDLE_MASS = 0.150
+    PADDLE_FACE_RADIUS = 0.093
+    PADDLE_HANDLE_RADIUS = 0.016
+    TABLE_HALF_WIDTH = 1.37
+    NET_HEIGHT = 0.305
