@@ -36,8 +36,8 @@ class Config:
     # ==================================================
     # PPO (FAST FEEDBACK)
     # ==================================================
-    ppo_n_steps: int = getenv("PPO_N_STEPS", 1024, int)
-    ppo_batch_size: int = getenv("PPO_BATCH_SIZE", 256, int)
+    ppo_n_steps: int = getenv("PPO_N_STEPS", 128, int)
+    ppo_batch_size: int = getenv("PPO_BATCH_SIZE", 32, int)
     ppo_epochs: int = getenv("PPO_EPOCHS", 5, int)
 
     ppo_lr: float = getenv("PPO_LR", 2.5e-5, float)
