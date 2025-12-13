@@ -1,37 +1,22 @@
 import os
-from stable_baselines3 import PPO
-
-from stable_baselines3.common.callbacks import CallbackList
+from stable_baselines3.common.callbacks import CallbackList, EvalCallback
 from sb3_contrib import RecurrentPPO
 from lattice.ppo.policies import LatticeRecurrentActorCriticPolicy
 
 from config import Config
 from env_factory import build_env
-from utils import prepare_experiment_directory
+from utils import prepare_experiment_directory, make_predict_fn
 from callbacks.infologger_callback import InfoLoggerCallback
-from stable_baselines3.common.callbacks import EvalCallback
-from stable_baselines3.common.vec_env import VecVideoRecorder
+from callbacks.video_callback import VideoCallback
 
-    # model = PPO(
-    #     "MlpPolicy",
-    #     env,
-    #     verbose=1,
-    #     device='auto',
-    #     tensorboard_log=cfg.logdir,
-    #     n_steps=cfg.ppo_n_steps,
-    #     batch_size=cfg.ppo_batch_size,
-    #     gamma=cfg.ppo_gamma,
-    #     learning_rate=cfg.ppo_lr,
-    #     gae_lambda=cfg.ppo_lambda,
-    #     clip_range=cfg.ppo_clip,
-    #     n_epochs=cfg.ppo_epochs,
-    #     seed=cfg.seed,
-    # )
 
 def main():
     cfg = Config()
     prepare_experiment_directory(cfg)
 
+    # ========================
+    # Training env (NO render)
+    # ========================
     env = build_env(cfg)
 
     model = RecurrentPPO(
@@ -61,21 +46,14 @@ def main():
 
     info_cb = InfoLoggerCallback(prefix="train/info")
 
-    # ---- eval env (single env) ----
+    # ========================
+    # Eval callback (NO video)
+    # ========================
     eval_cfg = Config()
     eval_cfg.num_envs = 1
     eval_env = build_env(eval_cfg)
 
-    # ---- wrap eval env with video recorder ----
-    eval_env = VecVideoRecorder(
-        eval_env,
-        video_folder=os.path.join(cfg.logdir, "videos"),
-        record_video_trigger=lambda step: step % cfg.video_freq == 0,
-        video_length=cfg.video_frames,
-        name_prefix="eval",
-    )
-
-    eval_callback = EvalCallback(
+    eval_cb = EvalCallback(
         eval_env,
         best_model_save_path=cfg.logdir,
         log_path=os.path.join(cfg.logdir, "eval"),
@@ -85,9 +63,14 @@ def main():
         render=False,
     )
 
+    # ========================
+    # Video callback (manual)
+    # ========================
+    video_cb = VideoCallback(cfg, make_predict_fn(model))
+
     model.learn(
         total_timesteps=cfg.total_timesteps,
-        callback=CallbackList([info_cb, eval_callback]),
+        callback=CallbackList([info_cb, eval_cb, video_cb]),
     )
 
     model.save(os.path.join(cfg.logdir, "model"))
