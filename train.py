@@ -20,7 +20,7 @@ def main():
 
     # # Train worker
     worker_cfg = copy.deepcopy(cfg)
-    # worker_cfg.logdir = os.path.join(cfg.logdir, "worker")
+    worker_cfg.logdir = os.path.join(cfg.logdir, "worker")
     # env_worker = build_env(worker_cfg, worker=True)
 
     # worker_model = RecurrentPPO(
