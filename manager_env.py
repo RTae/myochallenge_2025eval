@@ -226,18 +226,18 @@ class TableTennisManager(myo_gym.Env):
             horizontal_angle = 0.0
             vertical_angle = 0.0
         
-        # Combine into Manager observation
-        manager_obs = np.concatenate([
+        # Combine into Manager observation using hstack
+        manager_obs = np.hstack([
             ball_pos,                    # 0-2: ball position
             ball_vel,                    # 3-5: ball velocity
             paddle_pos,                  # 6-8: paddle position
             paddle_vel,                  # 9-11: paddle velocity
-            np.array([current_time]),    # 12: current time
-            np.array([ball_height_ratio]),  # 13: ball height relative to net
-            np.array([distance_to_ball]),   # 14: distance to ball
-            np.array([time_to_net]),        # 15: time to net crossing
-            np.array([horizontal_angle, vertical_angle])  # 16-17: ball angles
-        ], dtype=np.float32)
+            current_time,                # 12: current time (scalar)
+            ball_height_ratio,           # 13: ball height relative to net
+            distance_to_ball,            # 14: distance to ball
+            time_to_net,                 # 15: time to net crossing
+            [horizontal_angle, vertical_angle]  # 16-17: ball angles
+        ]).astype(np.float32)
         
         return manager_obs
     
