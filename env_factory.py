@@ -26,7 +26,7 @@ def create_worker_vector_env(cfg: Config, num_envs: int) -> VecNormalize:
         def _init():
             # Create Worker environment
             env = TableTennisWorker(cfg)
-            return Monitor(env)
+            return Monitor(env, info_keywords=("is_success",))
         return _init
     
     logger.info(f"Creating {num_envs} parallel Worker environments")
@@ -41,9 +41,6 @@ def create_worker_vector_env(cfg: Config, num_envs: int) -> VecNormalize:
         norm_reward=False, 
         clip_obs=10.0
     )
-    
-    # Optional: Add VecMonitor for additional stats
-    env = VecMonitor(env)
     
     return env
 
@@ -76,7 +73,7 @@ def create_manager_vector_env(cfg: Config,
                 config=cfg
             )
             
-            return Monitor(manager_env)
+            return Monitor(manager_env, info_keywords=("is_success",))
         return _init
     
     logger.info(f"Creating {num_envs} parallel Manager environments")
@@ -92,9 +89,6 @@ def create_manager_vector_env(cfg: Config,
         clip_obs=10.0,
         gamma=cfg.ppo_gamma
     )
-    
-    # Optional: Add VecMonitor
-    env = VecMonitor(env)
     
     return env
 

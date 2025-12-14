@@ -1,13 +1,12 @@
 from typing import Tuple, Dict, Optional
 import numpy as np
 from loguru import logger
-from gymnasium import spaces
 
 from myosuite.utils import gym as myo_gym
 from config import Config
 
 
-class TableTennisWorker:
+class TableTennisWorker(myo_gym.Env):
     """
     Goal-conditioned Worker.
     - Observation: [paddle_pos(3), paddle_vel(3), time(1), goal(7)] => 14D
@@ -24,12 +23,12 @@ class TableTennisWorker:
         # Goal space: [t, px, py, pz, vx, vy, vz]
         self.goal_low = np.array([0.0, -2.0, -1.0, 0.0, -5.0, -5.0, -5.0], dtype=np.float32)
         self.goal_high = np.array([3.0, 0.0, 1.0, 3.0, 5.0, 5.0, 5.0], dtype=np.float32)
-        self.goal_space = spaces.Box(low=self.goal_low, high=self.goal_high, dtype=np.float32)
+        self.goal_space = myo_gym.spaces.Box(low=self.goal_low, high=self.goal_high, dtype=np.float32)
 
         # Obs: paddle_pos(3) + paddle_vel(3) + time(1) + goal(7)
         self.state_dim = 7
         self.observation_dim = self.state_dim + self.goal_space.shape[0]  # 14
-        self.observation_space = spaces.Box(
+        self.observation_space = myo_gym.spaces.Box(
             low=-np.inf, high=np.inf, shape=(self.observation_dim,), dtype=np.float32
         )
 
@@ -124,7 +123,9 @@ class TableTennisWorker:
             "position_error": float(goal_info.get("position_error", 0.0)),
             "time_error": float(goal_info.get("time_error", 0.0)),
             "velocity_error": float(goal_info.get("velocity_error", 0.0)),
+            "is_success": info['solved'], # Using base env success signal
         })
+        
 
         return augmented_obs, total_reward, terminated, truncated, info
 

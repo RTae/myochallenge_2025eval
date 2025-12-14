@@ -72,7 +72,7 @@ def main():
     # Learn
     logger.info("🚧 Training Worker Policy 🚧")
     worker_model.learn(
-        total_timesteps=worker_cfg.total_timesteps,
+        total_timesteps=worker_cfg.worker_total_timesteps,
         callback=CallbackList([info_cb, eval_cb, video_cb]),
     )
 
@@ -85,7 +85,6 @@ def main():
     # Train Manager
     manager_cfg = copy.deepcopy(cfg)
     
-    manager_cfg.total_timesteps = 5_000_000
     manager_cfg.ppo_lr = 3e-4
     manager_cfg.ppo_gamma = 0.995
     manager_cfg.ppo_n_steps = 512
@@ -138,7 +137,7 @@ def main():
     # Learn
     logger.info("🚧 Training Manager Policy 🚧")
     manager_model.learn(
-        total_timesteps=manager_cfg.total_timesteps,
+        total_timesteps=manager_cfg.manager_total_timesteps,
         callback=CallbackList([info_cb, eval_cb, video_cb]),
     )
 

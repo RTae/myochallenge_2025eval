@@ -1,12 +1,11 @@
 from typing import Tuple, Dict, Optional, Any
 import numpy as np
-from loguru import logger
-from gymnasium import spaces
 
 from config import Config
+from myosuite.utils import gym as myo_gym
 
 
-class TableTennisManager:
+class TableTennisManager(myo_gym.Env):
     """
     Manager (high-level policy):
     - Action: worker goal (7D)  [t, px, py, pz, vx, vy, vz]
@@ -32,10 +31,10 @@ class TableTennisManager:
         self.observation_dim = 18
         self.action_dim = 7
 
-        self.observation_space = spaces.Box(
+        self.observation_space = myo_gym.spaces.Box(
             low=-np.inf, high=np.inf, shape=(self.observation_dim,), dtype=np.float32
         )
-        self.action_space = spaces.Box(
+        self.action_space = myo_gym.spaces.Box(
             low=self.worker_env.goal_low,
             high=self.worker_env.goal_high,
             shape=(self.action_dim,),
@@ -144,6 +143,7 @@ class TableTennisManager:
             "target_time": float(manager_action[0]),
             "target_pos": manager_action[1:4].tolist(),
             "target_vel": manager_action[4:7].tolist(),
+            "is_success": worker_info['solved'], # Using base env success signal
         }
 
         if hit_occurred:
