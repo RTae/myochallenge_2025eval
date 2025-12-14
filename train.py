@@ -53,7 +53,7 @@ def main():
     eval_cfg.num_envs = 1
     
     # Callback Worker
-    eval_worker_env = build_env(eval_cfg)
+    eval_worker_env = build_env(eval_cfg, worker=True)
     eval_worker_cb = EvalCallback(
         eval_worker_env,
         best_model_save_path=os.path.join(worker_cfg.logdir, "best_model"),
@@ -115,7 +115,7 @@ def main():
         seed=manager_cfg.seed,
     )
     
-    eval_manager_env = build_env(eval_cfg)
+    eval_manager_env = build_env(eval_cfg, worker=False, worker_model=worker_model)
     eval_manager_cb = EvalCallback(
         eval_manager_env,
         best_model_save_path=os.path.join(manager_cfg.logdir, "best_model"),
