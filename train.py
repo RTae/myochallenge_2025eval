@@ -83,7 +83,7 @@ def main():
     # Train Manager
     manager_cfg = copy.deepcopy(cfg)
     
-    manager_cfg.total_timesteps = 5_000_000
+    manager_cfg.total_timesteps = 20_000
     manager_cfg.ppo_lr = 3e-4
     manager_cfg.ppo_gamma = 0.995
     manager_cfg.ppo_n_steps = 512
@@ -141,7 +141,6 @@ def main():
 
     manager_model.save(os.path.join(manager_cfg.logdir, "model.pkl"))
     eval_manager_env.close()
-    video_manager_env.close()
     env_manager.close()
 
 if __name__ == "__main__":

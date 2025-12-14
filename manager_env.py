@@ -49,7 +49,7 @@ class TableTennisManager:
         self.total_manager_episodes = 0
 
         # Constants
-        self.net_height = 1.59
+        self.net_height = self.config.NET_HEIGHT
 
         logger.info("✓ Manager initialized")
         logger.info(f"  Max decisions/episode: {self.max_manager_decisions}")
