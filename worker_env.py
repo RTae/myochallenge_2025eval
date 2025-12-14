@@ -52,7 +52,7 @@ class TableTennisWorker(myo_gym.Env):
     
     def reset(self, seed: Optional[int] = None) -> Tuple[np.ndarray, Dict]:
         """Reset environment and sample new target."""
-        _, info = self.env.reset(seed=seed)
+        obs, info = self.env.reset(seed=seed)
         
         # Store initial state
         obs_dict = self.env.obs_dict
@@ -65,12 +65,11 @@ class TableTennisWorker(myo_gym.Env):
         self.total_episodes += 1
         
         # Prepare observation
-        augmented_obs = self._augment_observation()
         info['goal'] = self.current_goal.copy()
         info['training_stage'] = self.training_stage
         info['total_episodes'] = self.total_episodes
         
-        return augmented_obs, info
+        return obs, info
     
     def _sample_absolute_target(self) -> np.ndarray:
         """
@@ -93,12 +92,12 @@ class TableTennisWorker(myo_gym.Env):
             target_time = current_time + np.random.uniform(0.15, 0.4)
             
             table_positions = [
-                np.array([-1.0, -0.5, 1.2]),   # Back left
-                np.array([-1.0, 0.0, 1.2]),    # Back center
-                np.array([-1.0, 0.5, 1.2]),    # Back right
-                np.array([-0.5, -0.5, 1.5]),   # Front left
-                np.array([-0.5, 0.0, 1.5]),    # Front center
-                np.array([-0.5, 0.5, 1.5])     # Front right
+                np.array([-1.0, -0.5, 1.2], dtype=np.float32),   # Back left
+                np.array([-1.0, 0.0, 1.2], dtype=np.float32),    # Back center
+                np.array([-1.0, 0.5, 1.2], dtype=np.float32),    # Back right
+                np.array([-0.5, -0.5, 1.5], dtype=np.float32),   # Front left
+                np.array([-0.5, 0.0, 1.5], dtype=np.float32),    # Front center
+                np.array([-0.5, 0.5, 1.5], dtype=np.float32)     # Front right
             ]
             target_pos = random.choice(table_positions) + np.random.uniform(-0.1, 0.1, 3)
             target_vel = np.random.uniform(-2.0, 2.0, 3)
@@ -111,22 +110,26 @@ class TableTennisWorker(myo_gym.Env):
                 np.random.uniform(-1.5, -0.3),   # x: back to near net
                 np.random.uniform(-0.8, 0.8),    # y: left to right
                 np.random.uniform(0.8, 2.0)      # z: low to high
-            ])
+            ], dtype=np.float32)
             
             target_vel = np.random.uniform(-3.0, 3.0, 3)
         
-        # Create goal array
+        # Create goal array - FIXED: Convert all elements to scalars explicitly
         goal = np.array([
-            target_time,
-            target_pos[0], target_pos[1], target_pos[2],
-            target_vel[0], target_vel[1], target_vel[2]
+            float(target_time),  # Explicitly convert to scalar float
+            float(target_pos[0]),
+            float(target_pos[1]), 
+            float(target_pos[2]),
+            float(target_vel[0]),
+            float(target_vel[1]), 
+            float(target_vel[2])
         ], dtype=np.float32)
         
         return np.clip(goal, self.goal_low, self.goal_high)
     
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         """Take environment step with curriculum learning."""
-        _, base_reward, terminated, truncated, info = self.env.step(action)
+        obs, base_reward, terminated, truncated, info = self.env.step(action)
         
         # Calculate goal-conditioned reward
         goal_reward, goal_info = self._calculate_absolute_target_reward()
@@ -150,9 +153,6 @@ class TableTennisWorker(myo_gym.Env):
         # Combine rewards
         total_reward = goal_reward + 0.1 * base_reward
         
-        # Prepare next observation
-        augmented_obs = self._augment_observation()
-        
         # Add info
         info.update({
             'goal_reward': float(goal_reward),
@@ -164,7 +164,7 @@ class TableTennisWorker(myo_gym.Env):
             'time_error': goal_info.get('time_error', 0)
         })
         
-        return augmented_obs, float(total_reward), terminated, truncated, info
+        return obs, float(total_reward), terminated, truncated, info
     
     def _calculate_absolute_target_reward(self) -> Tuple[float, Dict]:
         """
