@@ -1,5 +1,6 @@
 import gymnasium as gym
 import numpy as np
+from loguru import logger
 from myosuite.utils import gym as myo_gym
 from collections import deque
 from config import Config
@@ -73,10 +74,10 @@ class CustomEnv(gym.Env):
         avg_rally = float(np.mean(self.rally_lengths)) if self.rally_lengths else 0.0
         if self.current_phase == 1 and avg_rally >= 1.5:
             self.current_phase = 2
-            print("🏆 Phase 2 unlocked")
+            logger.info("🏆 Phase 2 unlocked")
         elif self.current_phase == 2 and avg_rally >= 3.0:
             self.current_phase = 3
-            print("🏆 Phase 3 unlocked")
+            logger.info("🏆 Phase 3 unlocked")
 
     # --------------------------------------------------
     def step(self, action):
@@ -111,18 +112,12 @@ class CustomEnv(gym.Env):
         pelvis_speed_xy = float(np.linalg.norm(pelvis_delta))
         self.prev_pelvis_pos = pelvis_pos.copy()
 
-        # ==================================================
-        # MyoSuite reward components
-        # ==================================================
+        # Reward components
         rwd = (info or {}).get("rwd_dict", {})
         dense = float(rwd.get("dense", 0.0))
         act_reg = float(rwd.get("act_reg", 0.0))
 
         custom = 0.0
-
-        # ==================================================
-        # CORE FIX: PELVIS TRANSLATION
-        # ==================================================
 
         # (1) Reward pelvis motion toward ball (far range)
         if incoming and lateral_dist > 0.25:

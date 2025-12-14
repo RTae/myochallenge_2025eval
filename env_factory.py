@@ -4,8 +4,8 @@ from loguru import logger
 
 def build_env(cfg):
     def make_env():
-        from env_policy import CustomEnv
-        return Monitor(CustomEnv(cfg))
+        from myosuite.utils import gym as myo_gym
+        return Monitor(myo_gym.make(cfg.env_id))
 
     logger.info(f"Creating {cfg.num_envs} parallel environments")
     env = SubprocVecEnv([make_env for _ in range(cfg.num_envs)])
