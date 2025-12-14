@@ -1,8 +1,7 @@
 from typing import Optional
-import torch
 from loguru import logger
 
-from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize, VecMonitor
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize
 from stable_baselines3.common.monitor import Monitor
 from sb3_contrib import RecurrentPPO
 from config import Config
