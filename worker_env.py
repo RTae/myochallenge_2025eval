@@ -8,13 +8,25 @@ from config import Config
 
 class TableTennisWorker(myo_gym.Env):
     """
-    Goal-conditioned Worker.
-    - Observation: [paddle_pos(3), paddle_vel(3), time(1), goal(7)] => 14D
-    - Reward: goal-conditioned shaping + small base env reward
-    - Curriculum: advances by EPISODE success rate (not step-wise)
+    Goal-conditioned Worker (motor primitive).
+
+    Observation (20D):
+      [paddle_pos(3), paddle_vel(3), paddle_ori(3), reach_err(3), time(1), goal(7)]
+
+    Action:
+      same as base env action_space
+
+    Reward:
+      smooth approach shaping to goal (no ball semantics besides reach_err)
+
+    Curriculum:
+      advances by EPISODE success rate (not step-wise)
     """
 
+    metadata = {"render_modes": []}
+
     def __init__(self, config: Config, device: str = "cpu"):
+        super().__init__()
         self.config = config
         self.device = device
 
@@ -25,9 +37,9 @@ class TableTennisWorker(myo_gym.Env):
         self.goal_high = np.array([3.0, 0.0, 1.0, 3.0, 5.0, 5.0, 5.0], dtype=np.float32)
         self.goal_space = myo_gym.spaces.Box(low=self.goal_low, high=self.goal_high, dtype=np.float32)
 
-        # Obs: paddle_pos(3) + paddle_vel(3) + time(1) + goal(7)
-        self.state_dim = 7
-        self.observation_dim = self.state_dim + self.goal_space.shape[0]  # 14
+        # Obs: paddle_pos(3)+paddle_vel(3)+paddle_ori(3)+reach_err(3)+time(1) + goal(7) = 20
+        self.state_dim = 13
+        self.observation_dim = self.state_dim + self.goal_space.shape[0]  # 20
         self.observation_space = myo_gym.spaces.Box(
             low=-np.inf, high=np.inf, shape=(self.observation_dim,), dtype=np.float32
         )
@@ -36,11 +48,6 @@ class TableTennisWorker(myo_gym.Env):
 
         self.current_goal: Optional[np.ndarray] = None
         self._initial_paddle_pos: Optional[np.ndarray] = None
-
-        # Reward parameters
-        self.position_weight = 2.0
-        self.velocity_weight = 1.0
-        self.success_bonus = 20.0
 
         # Curriculum
         self.training_stage = 0
@@ -76,22 +83,22 @@ class TableTennisWorker(myo_gym.Env):
         info = dict(info)
         info.update({
             "goal": self.current_goal.copy(),
-            "training_stage": self.training_stage,
-            "total_episodes": self.total_episodes,
+            "training_stage": int(self.training_stage),
+            "total_episodes": int(self.total_episodes),
         })
         return augmented_obs, info
 
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict]:
-        obs, base_reward, terminated, truncated, info = self.env.step(action)
+        _, base_reward, terminated, truncated, info = self.env.step(action)
 
-        # Goal-conditioned shaping
-        goal_reward, goal_info = self._calculate_absolute_target_reward()
+        # Goal-conditioned shaping (worker reward)
+        goal_reward, goal_info = self._calculate_reward()
 
         # Mark goal achieved once per episode
         if goal_info.get("goal_achieved", False):
             self._episode_goal_achieved = True
 
-        # Combine rewards
+        # Combine rewards (base env reward is small, mostly for “alive” signals)
         total_reward = float(goal_reward + 0.1 * float(base_reward))
 
         # If episode ended, update curriculum using EPISODE success
@@ -122,10 +129,10 @@ class TableTennisWorker(myo_gym.Env):
             "recent_success_rate": float(np.mean(self.recent_successes)) if self.recent_successes else 0.0,
             "position_error": float(goal_info.get("position_error", 0.0)),
             "time_error": float(goal_info.get("time_error", 0.0)),
-            "velocity_error": float(goal_info.get("velocity_error", 0.0)),
-            "is_success": info['solved'], # Using base env success signal
+            "velocity_norm": float(goal_info.get("velocity_norm", 0.0)),
+            "moving_toward_target": bool(goal_info.get("moving_toward_target", True)),
+            "is_success": bool(info.get("solved", False)),
         })
-        
 
         return augmented_obs, total_reward, terminated, truncated, info
 
@@ -134,15 +141,17 @@ class TableTennisWorker(myo_gym.Env):
     # -------------------------
     def _augment_observation(self) -> np.ndarray:
         obs_dict = self.env.obs_dict
+
         paddle_pos = np.array(obs_dict["paddle_pos"], dtype=np.float32).flatten()
         paddle_vel = np.array(obs_dict["paddle_vel"], dtype=np.float32).flatten()
+        paddle_ori = np.array(obs_dict["paddle_ori"], dtype=np.float32).flatten()
+        reach_err = np.array(obs_dict["reach_err"], dtype=np.float32).flatten()
         current_time = np.array([float(obs_dict["time"])], dtype=np.float32)
 
         if self.current_goal is None:
-            # Should not happen in normal flow, but keep safe
             self.current_goal = self._sample_absolute_target()
 
-        state = np.hstack([paddle_pos, paddle_vel, current_time])
+        state = np.hstack([paddle_pos, paddle_vel, paddle_ori, reach_err, current_time])
         augmented_obs = np.hstack([state, self.current_goal]).astype(np.float32)
         return augmented_obs
 
@@ -187,7 +196,7 @@ class TableTennisWorker(myo_gym.Env):
 
         return np.clip(goal, self.goal_low, self.goal_high).astype(np.float32)
 
-    def _calculate_absolute_target_reward(self) -> Tuple[float, Dict]:
+    def _calculate_reward(self) -> Tuple[float, Dict]:
         obs_dict = self.env.obs_dict
 
         paddle_pos = np.array(obs_dict["paddle_pos"], dtype=np.float32)
@@ -199,56 +208,75 @@ class TableTennisWorker(myo_gym.Env):
 
         target_time = float(self.current_goal[0])
         target_pos = self.current_goal[1:4]
-        target_vel = self.current_goal[4:7]
 
-        time_error = abs(current_time - target_time)
+        # Errors
         pos_error = float(np.linalg.norm(paddle_pos - target_pos))
-        vel_error = float(np.linalg.norm(paddle_vel - target_vel))
+        vel_norm = float(np.linalg.norm(paddle_vel))
+        time_error = abs(current_time - target_time)
 
         reward = 0.0
         goal_achieved = False
 
+        # Direction terms
+        if pos_error > 1e-6:
+            direction_to_target = (target_pos - paddle_pos) / pos_error
+        else:
+            direction_to_target = np.zeros(3, dtype=np.float32)
+
+        if vel_norm > 1e-6:
+            vel_dir = paddle_vel / vel_norm
+        else:
+            vel_dir = np.zeros(3, dtype=np.float32)
+
+        moving_toward_target = np.dot(direction_to_target, vel_dir) > 0.0
+
         if current_time < target_time:
-            time_remaining = target_time - current_time
-            if time_remaining > 1e-6:
-                pos_to_go = target_pos - paddle_pos
-                desired_vel = pos_to_go / time_remaining
+            time_remaining = max(0.05, target_time - current_time)
 
-                vel_norm = float(np.linalg.norm(paddle_vel))
-                desired_norm = float(np.linalg.norm(desired_vel))
-                if vel_norm > 0 and desired_norm > 0:
-                    vel_alignment = float(np.dot(paddle_vel, desired_vel) / (vel_norm * desired_norm))
-                    vel_alignment = max(0.0, vel_alignment)
-                else:
-                    vel_alignment = 0.0
+            # Progress reward
+            if self._initial_paddle_pos is not None:
+                initial_dist = float(np.linalg.norm(target_pos - self._initial_paddle_pos))
+                initial_dist = max(0.1, initial_dist)
+                progress = 1.0 - min(1.0, pos_error / initial_dist)
+            else:
+                progress = 1.0 - min(1.0, pos_error)
 
-                if self._initial_paddle_pos is not None:
-                    initial_distance = float(np.linalg.norm(target_pos - self._initial_paddle_pos))
-                    initial_distance = max(0.1, initial_distance)
-                    current_progress = 1.0 - (pos_error / initial_distance)
-                else:
-                    current_progress = 1.0 - min(1.0, pos_error / 1.0)
+            reward += 2.0 * progress
 
-                reward = (
-                    self.position_weight * float(current_progress) +
-                    self.velocity_weight * float(vel_alignment)
-                )
+            # Direction alignment (gentle)
+            alignment = max(0.0, float(np.dot(vel_dir, direction_to_target)))
+            reward += 0.5 * alignment
+
+            # Optimal speed (clamped)
+            optimal_speed = np.clip(pos_error / time_remaining, 0.0, 3.0)
+            speed_error = abs(vel_norm - optimal_speed)
+            reward -= 0.2 * speed_error
+
+            # Penalty for ballistic motion
+            reward -= 0.03 * vel_norm
+
+            # Penalize moving away
+            if not moving_toward_target and pos_error > 0.05:
+                reward -= 0.3
 
         else:
-            if (time_error < 0.02) and (pos_error < 0.05) and (vel_error < 0.5):
-                reward = self.success_bonus - pos_error - 0.5 * vel_error
+            # Continuous accuracy-based reward (no gambling)
+            reward += 5.0 * np.exp(-20.0 * pos_error)
+            reward -= 0.5 * vel_norm
+            reward -= 1.5 * time_error
+
+            # Success flag only (curriculum)
+            if pos_error < 0.05 and vel_norm < 0.5 and time_error < 0.05:
                 goal_achieved = True
-            else:
-                reward = -pos_error - 0.5 * vel_error - time_error
 
         info = {
             "goal_achieved": bool(goal_achieved),
-            "time_error": float(time_error),
             "position_error": float(pos_error),
-            "velocity_error": float(vel_error),
-            "current_time": float(current_time),
-            "target_time": float(target_time),
+            "velocity_norm": float(vel_norm),
+            "time_error": float(time_error),
+            "moving_toward_target": bool(moving_toward_target),
         }
+
         return float(reward), info
 
     # Forwarding helpers
