@@ -10,7 +10,6 @@ from env_factory import build_env
 from utils import prepare_experiment_directory, make_predict_fn
 from callbacks.infologger_callback import InfoLoggerCallback
 from callbacks.video_callback import VideoCallback
-from worker_env import TableTennisWorker
 
 
 def main():
@@ -63,7 +62,8 @@ def main():
         deterministic=True,
         render=False,
     )
-    video_cb = VideoCallback(worker_cfg, make_predict_fn(worker_model))
+    video_worker_env = build_env(eval_cfg, worker=True)
+    video_cb = VideoCallback(video_worker_env, worker_cfg, make_predict_fn(worker_model))
 
     # Learn
     worker_model.learn(
@@ -74,12 +74,13 @@ def main():
     worker_model_path = os.path.join(worker_cfg.logdir, "model.pkl")
     worker_model.save(worker_model_path)
     eval_worker_env.close()
+    video_worker_env.close()
     env_worker.close()
     
     # Train Manager
     manager_cfg = copy.deepcopy(cfg)
     
-    manager_cfg.total_timesteps = 10_000
+    manager_cfg.total_timesteps = 20_000
     manager_cfg.ppo_lr = 3e-4
     manager_cfg.ppo_gamma = 0.995
     manager_cfg.ppo_n_steps = 512
@@ -121,7 +122,8 @@ def main():
         deterministic=True,
         render=False,
     )
-    video_cb = VideoCallback(manager_cfg, make_predict_fn(manager_model))
+    video_manager_env = build_env(eval_cfg, worker=True)
+    video_cb = VideoCallback(video_manager_env, manager_cfg, make_predict_fn(manager_model))
     
     # Learn
     manager_model.learn(
@@ -131,6 +133,7 @@ def main():
 
     manager_model.save(os.path.join(manager_cfg.logdir, "model.pkl"))
     eval_manager_env.close()
+    video_manager_env.close()
     env_manager.close()
 
 if __name__ == "__main__":

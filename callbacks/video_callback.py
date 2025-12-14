@@ -5,19 +5,17 @@ from loguru import logger
 from stable_baselines3.common.callbacks import BaseCallback
 
 from config import Config
-from myosuite.utils import gym as myo_gym
-
 
 class VideoCallback(BaseCallback):
     """
-    Generic video callback for SB3.
-    Uses a raw MyoSuite env (not WorkerEnv/ManagerEnv) and a user-provided
-    predict_fn(obs, env) to generate actions.
+    Video callback for SB3.
+    Uses a DEDICATED raw MyoSuite env.
     """
 
-    def __init__(self, cfg: Config, predict_fn, verbose: int = 0):
+    def __init__(self, env, cfg: Config, predict_fn, verbose: int = 0):
         super().__init__(verbose)
         self.cfg = cfg
+        self.env = env
         self.predict_fn = predict_fn
 
         self.video_dir = os.path.join(cfg.logdir, "videos")
@@ -29,31 +27,25 @@ class VideoCallback(BaseCallback):
         step = self.num_timesteps
         if step - self._last_recorded >= self.cfg.video_freq:
             path = os.path.join(self.video_dir, f"s{step}.mp4")
-            logger.info(f"🎥 Triggering video capture at step {step}")
+            logger.info(f"🎥 Recording video at step {step}")
             self._record(path)
             self._last_recorded = step
         return True
 
     def _record(self, video_path: str):
-        # Headless Mujoco
-        os.environ["MUJOCO_GL"] = "egl"
-        os.environ.pop("DISPLAY", None)
-
-        env = myo_gym.make(self.cfg.env_id)
-        obs, _ = env.reset(seed=self.cfg.seed + 123)
+        obs, _ = self.env.reset(seed=self.cfg.seed + 123)
 
         # warmup renderer
-        _ = env.sim.renderer.render_offscreen(
+        self.env.sim.renderer.render_offscreen(
             width=self.cfg.video_w,
             height=self.cfg.video_h,
             camera_id=self.cfg.camera_id,
         )
 
         frames = []
-        logger.info(f"🎥 Recording video → {video_path}")
 
         for _ in range(self.cfg.video_frames):
-            frame = env.sim.renderer.render_offscreen(
+            frame = self.env.sim.renderer.render_offscreen(
                 width=self.cfg.video_w,
                 height=self.cfg.video_h,
                 camera_id=self.cfg.camera_id,
@@ -61,15 +53,13 @@ class VideoCallback(BaseCallback):
             frames.append(frame)
 
             if self.predict_fn is not None:
-                action = self.predict_fn(obs, env)
+                action = self.predict_fn(obs, self.env)
             else:
-                action = np.zeros(env.action_space.shape[0], dtype=np.float32)
+                action = np.zeros(self.env.action_space.shape[0], dtype=np.float32)
 
-            obs, _, terminated, truncated, _ = env.step(action)
+            obs, _, terminated, truncated, _ = self.env.step(action)
             if terminated or truncated:
-                obs, _ = env.reset(seed=self.cfg.seed + 123)
-
-        env.close()
+                obs, _ = self.env.reset(seed=self.cfg.seed + 123)
 
         skvideo.io.vwrite(
             video_path,
