@@ -78,3 +78,7 @@ def main():
         total_timesteps=cfg.worker_total_timesteps,
         callback=CallbackList([info_cb, eval_cb, video_cb]),
     )
+
+
+if __name__ == "__main__":
+    main()
