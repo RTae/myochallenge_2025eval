@@ -4,6 +4,7 @@ from loguru import logger
 
 from myosuite.utils import gym as myo_gym
 from config import Config
+from utils import quat_to_paddle_normal
 
 
 class TableTennisWorker(myo_gym.Env):
@@ -135,25 +136,37 @@ class TableTennisWorker(myo_gym.Env):
         })
 
         return augmented_obs, total_reward, terminated, truncated, info
-
-    # -------------------------
-    # Internal helpers
-    # -------------------------
+    
     def _augment_observation(self) -> np.ndarray:
         obs_dict = self.env.obs_dict
 
         paddle_pos = np.array(obs_dict["paddle_pos"], dtype=np.float32).flatten()
         paddle_vel = np.array(obs_dict["paddle_vel"], dtype=np.float32).flatten()
-        paddle_ori = np.array(obs_dict["paddle_ori"], dtype=np.float32).flatten()
+
+        paddle_ori_q = np.array(obs_dict["paddle_ori"], dtype=np.float32).flatten()
+        paddle_ori = quat_to_paddle_normal(paddle_ori_q)
+
         reach_err = np.array(obs_dict["reach_err"], dtype=np.float32).flatten()
         current_time = np.array([float(obs_dict["time"])], dtype=np.float32)
 
         if self.current_goal is None:
             self.current_goal = self._sample_absolute_target()
 
-        state = np.hstack([paddle_pos, paddle_vel, paddle_ori, reach_err, current_time])
+        state = np.hstack([
+            paddle_pos,      # 3
+            paddle_vel,      # 3
+            paddle_ori,      # 3
+            reach_err,       # 3
+            current_time     # 1
+        ])
+
         augmented_obs = np.hstack([state, self.current_goal]).astype(np.float32)
+
+        assert augmented_obs.shape[0] == self.observation_dim, \
+            f"Worker obs dim mismatch: {augmented_obs.shape[0]} vs {self.observation_dim}"
+
         return augmented_obs
+
 
     def _sample_absolute_target(self) -> np.ndarray:
         obs_dict = self.env.obs_dict

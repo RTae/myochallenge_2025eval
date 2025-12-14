@@ -1,5 +1,6 @@
 from loguru import logger
 from config import Config
+import numpy as np
 import os
 
 # For video callback
@@ -32,3 +33,22 @@ def prepare_experiment_directory(cfg: Config):
     cfg.logdir = exp_dir
     logger.info(f"📁 Created new experiment folder: {exp_dir}")
     return exp_dir
+
+def quat_to_paddle_normal(q: np.ndarray) -> np.ndarray:
+    """
+    Convert quaternion (x, y, z, w) to paddle surface normal (3D).
+    Assumes the paddle's local +Z axis is the hitting normal.
+    """
+    q = q.astype(np.float32)
+    q = q / (np.linalg.norm(q) + 1e-8)
+
+    x, y, z, w = q
+
+    # Third column of rotation matrix (Z axis)
+    normal = np.array([
+        2.0 * (x*z + w*y),
+        2.0 * (y*z - w*x),
+        1.0 - 2.0 * (x*x + y*y),
+    ], dtype=np.float32)
+
+    return normal

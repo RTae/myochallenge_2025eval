@@ -4,6 +4,9 @@ import numpy as np
 from config import Config
 from myosuite.utils import gym as myo_gym
 
+from utils import quat_to_paddle_normal
+
+
 
 class TableTennisManager(myo_gym.Env):
     """
@@ -43,6 +46,7 @@ class TableTennisManager(myo_gym.Env):
         self.observation_space = myo_gym.spaces.Box(
             low=-np.inf, high=np.inf, shape=(self.observation_dim,), dtype=np.float32
         )
+        
         self.action_space = myo_gym.spaces.Box(
             low=self.worker_env.goal_low,
             high=self.worker_env.goal_high,
@@ -63,7 +67,7 @@ class TableTennisManager(myo_gym.Env):
         self.current_decision = 0
         self.total_manager_episodes += 1
 
-        manager_obs = self._extract_manager_observation()
+        manager_obs = self._augment_observation()
         info = {
             "manager_episode": int(self.total_manager_episodes),
             "total_hits": int(self.total_hits),
@@ -131,7 +135,7 @@ class TableTennisManager(myo_gym.Env):
         )
 
         next_manager_obs = (
-            self._extract_manager_observation()
+            self._augment_observation()
             if (not terminated and not truncated)
             else np.zeros(self.observation_dim, dtype=np.float32)
         )
@@ -168,7 +172,7 @@ class TableTennisManager(myo_gym.Env):
         # Base env obs_dict is inside worker_env.env
         return self.worker_env.env.obs_dict
 
-    def _extract_manager_observation(self) -> np.ndarray:
+    def _augment_observation(self) -> np.ndarray:
         obs_dict = self._get_obs_dict()
 
         ball_pos = np.array(obs_dict["ball_pos"], dtype=np.float32).flatten()
@@ -176,7 +180,9 @@ class TableTennisManager(myo_gym.Env):
 
         paddle_pos = np.array(obs_dict["paddle_pos"], dtype=np.float32).flatten()
         paddle_vel = np.array(obs_dict["paddle_vel"], dtype=np.float32).flatten()
-        paddle_ori = np.array(obs_dict["paddle_ori"], dtype=np.float32).flatten()
+
+        paddle_ori_q = np.array(obs_dict["paddle_ori"], dtype=np.float32).flatten()
+        paddle_ori = quat_to_paddle_normal(paddle_ori_q)
 
         reach_err = np.array(obs_dict["reach_err"], dtype=np.float32).flatten()
         touching_info = np.array(obs_dict["touching_info"], dtype=np.float32).flatten()
@@ -194,7 +200,11 @@ class TableTennisManager(myo_gym.Env):
             current_time,     # 1
         ]).astype(np.float32)
 
+        assert manager_obs.shape[0] == self.observation_dim, \
+            f"Manager obs dim mismatch: {manager_obs.shape[0]} vs {self.observation_dim}"
+
         return manager_obs
+
 
     def _calculate_manager_reward(
         self,
