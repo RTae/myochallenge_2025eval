@@ -11,6 +11,9 @@ from utils import prepare_experiment_directory, make_predict_fn
 from callbacks.infologger_callback import InfoLoggerCallback
 from callbacks.video_callback import VideoCallback
 
+from worker_env import TableTennisWorker
+from manager_env import TableTennisManager
+
 
 def main():
     cfg = Config()
@@ -62,7 +65,7 @@ def main():
         deterministic=True,
         render=False,
     )
-    video_worker_env = build_env(eval_cfg, worker=True)
+    video_worker_env = TableTennisWorker(worker_cfg)
     video_cb = VideoCallback(video_worker_env, worker_cfg, make_predict_fn(worker_model))
 
     # Learn
@@ -122,7 +125,12 @@ def main():
         deterministic=True,
         render=False,
     )
-    video_manager_env = build_env(eval_cfg, worker=True)
+    video_worker_env = TableTennisWorker(worker_cfg)
+    video_manager_env = TableTennisManager(
+        worker_env=video_worker_env,
+        worker_model=worker_model,
+        config=manager_cfg,
+    )
     video_cb = VideoCallback(video_manager_env, manager_cfg, make_predict_fn(manager_model))
     
     # Learn
