@@ -6,8 +6,6 @@ from myosuite.utils import gym as myo_gym
 
 from utils import quat_to_paddle_normal
 
-
-
 class TableTennisManager(myo_gym.Env):
     """
     Manager (high-level policy):
