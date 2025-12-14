@@ -30,7 +30,7 @@ class Config:
     # ==================================================
     # Training
     # ==================================================
-    total_timesteps: int = getenv("TOTAL_TIMESTEPS", 10_000_000, int)
+    total_timesteps: int = getenv("TOTAL_TIMESTEPS", 10_000, int)
     logdir: str = getenv("LOGDIR", "./logs", str)
 
     # ==================================================

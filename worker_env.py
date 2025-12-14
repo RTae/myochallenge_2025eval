@@ -65,11 +65,71 @@ class TableTennisWorker(myo_gym.Env):
         self.total_episodes += 1
         
         # Prepare observation
+        augmented_obs = self._augment_observation()
         info['goal'] = self.current_goal.copy()
         info['training_stage'] = self.training_stage
         info['total_episodes'] = self.total_episodes
         
-        return obs, info
+        return augmented_obs, info
+    
+    def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict]:
+        """Take environment step with curriculum learning."""
+        obs, base_reward, terminated, truncated, info = self.env.step(action)
+        
+        # Calculate goal-conditioned reward
+        goal_reward, goal_info = self._calculate_absolute_target_reward()
+        goal_achieved = goal_info.get('goal_achieved', False)
+        
+        # Update success tracking
+        self.recent_successes.append(1 if goal_achieved else 0)
+        
+        # Keep only last 100 episodes
+        if len(self.recent_successes) > 100:
+            self.recent_successes.pop(0)
+        
+        # Check for curriculum advancement
+        if len(self.recent_successes) == 100:
+            success_rate = np.mean(self.recent_successes)
+            if success_rate > 0.6 and self.training_stage < 2:
+                self.training_stage += 1
+                logger.info(f"Advanced to training stage {self.training_stage} (success: {success_rate:.2f})")
+                self.recent_successes = []  # Reset tracking for new stage
+        
+        # Combine rewards
+        total_reward = goal_reward + 0.1 * base_reward
+        
+        # Prepare next observation
+        augmented_obs = self._augment_observation()
+        
+        # Add info
+        info.update({
+            'goal_reward': float(goal_reward),
+            'goal_achieved': goal_achieved,
+            'training_stage': self.training_stage,
+            'total_episodes': self.total_episodes,
+            'recent_success_rate': np.mean(self.recent_successes) if self.recent_successes else 0.0,
+            'position_error': goal_info.get('position_error', 0),
+            'time_error': goal_info.get('time_error', 0)
+        })
+        
+        return augmented_obs, float(total_reward), terminated, truncated, info
+    
+    def _augment_observation(self) -> np.ndarray:
+        """Combine state and goal into single observation vector."""
+        obs_dict = self.env.obs_dict
+        
+        # Extract current state
+        paddle_pos = obs_dict['paddle_pos']  # shape (3,)
+        paddle_vel = obs_dict['paddle_vel']  # shape (3,)
+        current_time = obs_dict['time']      # scalar
+        
+        # Create state vector using hstack (handles scalars better)
+        state = np.hstack([paddle_pos, paddle_vel, current_time])
+        
+        # Combine state with goal
+        augmented_obs = np.hstack([state, self.current_goal])
+        
+        return augmented_obs.astype(np.float32)
     
     def _sample_absolute_target(self) -> np.ndarray:
         """
@@ -126,45 +186,6 @@ class TableTennisWorker(myo_gym.Env):
         ], dtype=np.float32)
         
         return np.clip(goal, self.goal_low, self.goal_high)
-    
-    def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict]:
-        """Take environment step with curriculum learning."""
-        obs, base_reward, terminated, truncated, info = self.env.step(action)
-        
-        # Calculate goal-conditioned reward
-        goal_reward, goal_info = self._calculate_absolute_target_reward()
-        goal_achieved = goal_info.get('goal_achieved', False)
-        
-        # Update success tracking
-        self.recent_successes.append(1 if goal_achieved else 0)
-        
-        # Keep only last 100 episodes
-        if len(self.recent_successes) > 100:
-            self.recent_successes.pop(0)
-        
-        # Check for curriculum advancement
-        if len(self.recent_successes) == 100:
-            success_rate = np.mean(self.recent_successes)
-            if success_rate > 0.6 and self.training_stage < 2:
-                self.training_stage += 1
-                logger.info(f"Advanced to training stage {self.training_stage} (success: {success_rate:.2f})")
-                self.recent_successes = []  # Reset tracking for new stage
-        
-        # Combine rewards
-        total_reward = goal_reward + 0.1 * base_reward
-        
-        # Add info
-        info.update({
-            'goal_reward': float(goal_reward),
-            'goal_achieved': goal_achieved,
-            'training_stage': self.training_stage,
-            'total_episodes': self.total_episodes,
-            'recent_success_rate': np.mean(self.recent_successes) if self.recent_successes else 0.0,
-            'position_error': goal_info.get('position_error', 0),
-            'time_error': goal_info.get('time_error', 0)
-        })
-        
-        return obs, float(total_reward), terminated, truncated, info
     
     def _calculate_absolute_target_reward(self) -> Tuple[float, Dict]:
         """
