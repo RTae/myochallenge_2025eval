@@ -7,7 +7,8 @@ WORKDIR /app
 
 COPY train.py ./
 COPY env_factory.py ./
-COPY env_policy.py ./
+COPY worker_env.py ./
+COPY manager_env.py ./
 COPY lattice ./lattice
 
 COPY config.py ./
