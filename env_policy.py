@@ -1,12 +1,12 @@
-import gymnasium as gym
 import numpy as np
 from loguru import logger
 from myosuite.utils import gym as myo_gym
 from collections import deque
 from config import Config
+from loguru import logger
 
 
-class CustomEnv(gym.Env):
+class CustomEnv(myo_gym.Env):
     """
     MyoChallenge Table Tennis – pelvis-aware, anti-undercut environment.
 

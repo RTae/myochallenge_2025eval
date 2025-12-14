@@ -1,6 +1,8 @@
+import copy
 import os
 from stable_baselines3.common.callbacks import CallbackList, EvalCallback
 from sb3_contrib import RecurrentPPO
+from stable_baselines3 import PPO
 from lattice.ppo.policies import LatticeRecurrentActorCriticPolicy
 
 from config import Config
@@ -8,30 +10,31 @@ from env_factory import build_env
 from utils import prepare_experiment_directory, make_predict_fn
 from callbacks.infologger_callback import InfoLoggerCallback
 from callbacks.video_callback import VideoCallback
+from worker_env import TableTennisWorker
 
 
 def main():
     cfg = Config()
     prepare_experiment_directory(cfg)
 
-    # ========================
-    # Training env (NO render)
-    # ========================
-    env = build_env(cfg)
+    # Train worker
+    worker_cfg = copy.deepcopy(cfg)
+    worker_cfg.logdir = os.path.join(cfg.logdir, "worker")
+    env_worker = build_env(worker_cfg, worker=True)
 
-    model = RecurrentPPO(
+    worker_model = RecurrentPPO(
         policy=LatticeRecurrentActorCriticPolicy,
-        env=env,
-        tensorboard_log=cfg.logdir,
+        env=env_worker,
+        tensorboard_log=worker_cfg.logdir,
         verbose=1,
         device="auto",
-        batch_size=cfg.ppo_batch_size,
-        n_steps=cfg.ppo_n_steps,
-        n_epochs=cfg.ppo_epochs,
-        learning_rate=cfg.ppo_lr,
-        clip_range=cfg.ppo_clip,
-        gamma=cfg.ppo_gamma,
-        gae_lambda=cfg.ppo_lambda,
+        batch_size=worker_cfg.ppo_batch_size,
+        n_steps=worker_cfg.ppo_n_steps,
+        n_epochs=worker_cfg.ppo_epochs,
+        learning_rate=worker_cfg.ppo_lr,
+        clip_range=worker_cfg.ppo_clip,
+        gamma=worker_cfg.ppo_gamma,
+        gae_lambda=worker_cfg.ppo_lambda,
         ent_coef=3.62109e-06,
         max_grad_norm=0.7,
         vf_coef=0.835671,
@@ -44,38 +47,96 @@ def main():
         ),
     )
 
+    # Callback Share
     info_cb = InfoLoggerCallback(prefix="train/info")
-
-    # ========================
-    # Eval callback (NO video)
-    # ========================
     eval_cfg = Config()
     eval_cfg.num_envs = 1
-    eval_env = build_env(eval_cfg)
-
-    eval_cb = EvalCallback(
-        eval_env,
-        best_model_save_path=cfg.logdir,
-        log_path=os.path.join(cfg.logdir, "eval"),
-        eval_freq=cfg.eval_freq,
-        n_eval_episodes=cfg.eval_episodes,
+    
+    # Callback Worker
+    eval_worker_env = build_env(eval_cfg)
+    eval_worker_cb = EvalCallback(
+        eval_worker_env,
+        best_model_save_path=os.path.join(worker_cfg.logdir, "best_model"),
+        log_path=os.path.join(worker_cfg.logdir, "eval"),
+        eval_freq=worker_cfg.eval_freq,
+        n_eval_episodes=worker_cfg.eval_episodes,
         deterministic=True,
         render=False,
     )
+    video_cb = VideoCallback(worker_cfg, make_predict_fn(worker_model))
 
-    # ========================
-    # Video callback (manual)
-    # ========================
-    video_cb = VideoCallback(cfg, make_predict_fn(model))
-
-    model.learn(
-        total_timesteps=cfg.total_timesteps,
-        callback=CallbackList([info_cb, eval_cb, video_cb]),
+    # Learn
+    worker_model.learn(
+        total_timesteps=worker_cfg.total_timesteps,
+        callback=CallbackList([info_cb, eval_worker_cb, video_cb]),
     )
 
-    model.save(os.path.join(cfg.logdir, "model"))
-    env.close()
+    worker_model_path = os.path.join(worker_cfg.logdir, "model.pkl")
+    worker_model.save(worker_model_path)
+    worker_model.close()
+    eval_worker_env.close()
+    env_worker.close()
+    
+    # Train Manager
+    
+    manager_cfg = copy.deepcopy(cfg)
+    
+    manager_cfg.total_timesteps = 5_000_000
+    manager_cfg.ppo_lr = 3e-4
+    manager_cfg.ppo_gamma = 0.995
+    manager_cfg.ppo_n_steps = 512
+    manager_cfg.ppo_batch_size = 256
+    manager_cfg.logdir = os.path.join(cfg.logdir, "manager")
+    
+    worker_env_single = TableTennisWorker(cfg)
+    worker_model = RecurrentPPO.load(
+        worker_model_path,
+        env=worker_env_single
+    )
+    
+    env_manager = build_env(
+        manager_cfg, 
+        worker=False,
+        worker_model=worker_model
+    )
 
+    manager_model = PPO(
+        "MlpPolicy",
+        env_manager,
+        verbose=1,
+        tensorboard_log=os.path.join(cfg.logdir, "manager"),
+        n_steps=manager_cfg.ppo_n_steps,
+        batch_size=manager_cfg.ppo_batch_size,
+        gamma=manager_cfg.ppo_gamma,
+        learning_rate=manager_cfg.ppo_lr,
+        gae_lambda=manager_cfg.ppo_lambda,
+        clip_range=manager_cfg.ppo_clip,
+        n_epochs=manager_cfg.ppo_epochs,
+        seed=manager_cfg.seed,
+    )
+    
+    eval_manager_env = build_env(eval_cfg)
+    eval_manager_cb = EvalCallback(
+        eval_manager_env,
+        best_model_save_path=os.path.join(manager_cfg.logdir, "best_model"),
+        log_path=os.path.join(manager_cfg.logdir, "eval"),
+        eval_freq=manager_cfg.eval_freq,
+        n_eval_episodes=manager_cfg.eval_episodes,
+        deterministic=True,
+        render=False,
+    )
+    video_cb = VideoCallback(manager_cfg, make_predict_fn(manager_model))
+    
+    # Learn
+    manager_model.learn(
+        total_timesteps=manager_cfg.total_timesteps,
+        callback=CallbackList([info_cb, eval_manager_cb, video_cb]),
+    )
+
+    manager_model.save(os.path.join(manager_cfg.logdir, "model.pkl"))
+    manager_model.close()
+    eval_manager_env.close()
+    env_manager.close()
 
 if __name__ == "__main__":
     main()
