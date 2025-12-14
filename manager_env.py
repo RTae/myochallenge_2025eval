@@ -51,10 +51,6 @@ class TableTennisManager:
         # Constants
         self.net_height = self.config.NET_HEIGHT
 
-        logger.info("✓ Manager initialized")
-        logger.info(f"  Max decisions/episode: {self.max_manager_decisions}")
-        logger.info(f"  Obs dim: {self.observation_dim}, Act dim: {self.action_dim}")
-
     def reset(self, seed: Optional[int] = None) -> Tuple[np.ndarray, Dict]:
         self.worker_env.reset(seed=seed)
 

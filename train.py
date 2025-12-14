@@ -13,6 +13,7 @@ from callbacks.video_callback import VideoCallback
 
 from worker_env import TableTennisWorker
 from manager_env import TableTennisManager
+from loguru import logger
 
 
 def main():
@@ -69,6 +70,7 @@ def main():
     video_cb = VideoCallback(video_worker_env, worker_cfg, make_predict_fn(worker_model))
 
     # Learn
+    logger.info("🚧 Training Worker Policy 🚧")
     worker_model.learn(
         total_timesteps=worker_cfg.total_timesteps,
         callback=CallbackList([info_cb, eval_cb, video_cb]),
@@ -83,7 +85,7 @@ def main():
     # Train Manager
     manager_cfg = copy.deepcopy(cfg)
     
-    manager_cfg.total_timesteps = 20_000
+    manager_cfg.total_timesteps = 5_000_000
     manager_cfg.ppo_lr = 3e-4
     manager_cfg.ppo_gamma = 0.995
     manager_cfg.ppo_n_steps = 512
@@ -134,14 +136,20 @@ def main():
     video_cb = VideoCallback(video_manager_env, manager_cfg, make_predict_fn(manager_model))
     
     # Learn
+    logger.info("🚧 Training Manager Policy 🚧")
     manager_model.learn(
         total_timesteps=manager_cfg.total_timesteps,
         callback=CallbackList([info_cb, eval_cb, video_cb]),
     )
 
     manager_model.save(os.path.join(manager_cfg.logdir, "model.pkl"))
+    
     eval_manager_env.close()
+    video_worker_env.close()
+    video_manager_env.close()
     env_manager.close()
+    
+    logger.info("🏁 Training Complete 🏁")
 
 if __name__ == "__main__":
     main()

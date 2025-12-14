@@ -30,7 +30,7 @@ class Config:
     # ==================================================
     # Training
     # ==================================================
-    total_timesteps: int = getenv("TOTAL_TIMESTEPS", 20_000, int)
+    total_timesteps: int = getenv("TOTAL_TIMESTEPS", 30_000_000, int)
     logdir: str = getenv("LOGDIR", "./logs", str)
 
     # ==================================================
@@ -52,7 +52,7 @@ class Config:
     eval_freq: int = getenv("EVAL_FREQ", 50_000, int)
     eval_episodes: int = getenv("EVAL_EPISODES", 3, int)
 
-    video_freq: int = getenv("VIDEO_FREQ", 10_000, int)
+    video_freq: int = getenv("VIDEO_FREQ", 1_000_000, int)
     video_w: int = getenv("VIDEO_W", 640, int)
     video_h: int = getenv("VIDEO_H", 480, int)
     camera_id: int = getenv("CAMERA_ID", 1, int)
