@@ -73,7 +73,6 @@ def main():
 
     worker_model_path = os.path.join(worker_cfg.logdir, "model.pkl")
     worker_model.save(worker_model_path)
-    worker_model.close()
     eval_worker_env.close()
     env_worker.close()
     
@@ -88,10 +87,8 @@ def main():
     manager_cfg.ppo_batch_size = 256
     manager_cfg.logdir = os.path.join(cfg.logdir, "manager")
     
-    worker_env_single = TableTennisWorker(cfg)
     worker_model = RecurrentPPO.load(
         worker_model_path,
-        env=worker_env_single
     )
     
     env_manager = build_env(
@@ -134,7 +131,6 @@ def main():
     )
 
     manager_model.save(os.path.join(manager_cfg.logdir, "model.pkl"))
-    manager_model.close()
     eval_manager_env.close()
     env_manager.close()
 

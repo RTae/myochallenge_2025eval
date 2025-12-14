@@ -174,9 +174,9 @@ class TableTennisWorker(myo_gym.Env):
             
             target_vel = np.random.uniform(-3.0, 3.0, 3)
         
-        # Create goal array - FIXED: Convert all elements to scalars explicitly
+        # Create goal array
         goal = np.array([
-            float(target_time),  # Explicitly convert to scalar float
+            float(target_time),
             float(target_pos[0]),
             float(target_pos[1]), 
             float(target_pos[2]),
