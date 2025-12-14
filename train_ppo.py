@@ -12,12 +12,13 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3 import PPO
 from config import Config
 from utils import prepare_experiment_directory, make_predict_fn
+from custom_env import CustomEnv
 
 
 def create_env(cfg: Config,  num_envs: int) -> VecNormalize:
     def make_env(rank: int):
         def _init():
-            env = myo_gym.make(cfg.env_id)
+            env = CustomEnv(cfg, device="cpu")
             return Monitor(env, info_keywords=("is_success",))
         return _init
     
