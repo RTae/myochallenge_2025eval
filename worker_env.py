@@ -112,6 +112,7 @@ class TableTennisWorker(myo_gym.Env):
             **info,
             **rinfo,
             "episode_goal_achieved": self._episode_goal_achieved,
+            "is_success": info.get("solved"),
         }
 
     # ------------------------------------------------------------------
