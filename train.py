@@ -20,9 +20,9 @@ def main():
     # # Train worker
     cfg = copy.deepcopy(cfg)
     cfg.logdir = os.path.join(cfg.logdir)
-    env = build_env(cfg, env_type="worker")
+    env = build_env(cfg, env_type="pain")
 
-    worker_model = DRSPCRLRecurrentPPO(
+    model = DRSPCRLRecurrentPPO(
         policy=LatticeRecurrentActorCriticPolicy,
         env=env,
         tensorboard_log=cfg.logdir,
@@ -59,7 +59,7 @@ def main():
     eval_cfg.num_envs = 1
     
     # Callback Worker
-    eval_env = build_env(eval_cfg, env_type="worker")
+    eval_env = build_env(eval_cfg, env_type="pain")
     eval_cb = EvalCallback(
         eval_env,
         best_model_save_path=os.path.join(cfg.logdir, "best_model"),
@@ -70,15 +70,15 @@ def main():
         render=False,
     )
     video_env = CustomEnv(cfg)
-    video_cb = VideoCallback(video_env, cfg, make_predict_fn(worker_model))
+    video_cb = VideoCallback(video_env, cfg, make_predict_fn(model))
 
-    worker_model.learn(
+    model.learn(
         total_timesteps=cfg.worker_total_timesteps,
         callback=CallbackList([info_cb, eval_cb, video_cb]),
     )
 
     model_path = os.path.join(cfg.logdir, "model.pkl")
-    worker_model.save(model_path)
+    model.save(model_path)
     eval_env.close()
     video_env.close()
     env.close()

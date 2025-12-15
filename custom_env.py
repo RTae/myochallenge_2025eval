@@ -1,11 +1,11 @@
 from typing import Tuple, Dict, Optional
 import numpy as np
 
-from myosuite.utils import gym as myo_gym
+from myosuite.utils import gym
 from config import Config
 
 
-class CustomEnv(myo_gym.Env):
+class CustomEnv(gym.Env):
 
     metadata = {"render_modes": []}
 
@@ -13,7 +13,7 @@ class CustomEnv(myo_gym.Env):
         super().__init__()
         self.config = config
         self.device = device
-        self.env = myo_gym.make(config.env_id)
+        self.env = gym.make(config.env_id)
         
     def reset(self, seed: Optional[int] = None) -> Tuple[np.ndarray, Dict]:
         obs, info = self.env.reset(seed=seed)
