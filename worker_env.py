@@ -59,9 +59,8 @@ class TableTennisWorker(myo_gym.Env):
         # --- Reward knobs ---
         self.success_pos_thr = 0.06
         self.success_vel_thr = 0.6 
-        self.success_time_thr = 0.08
+        self.success_time_thr = 0.20
         self.success_bonus = 12.0 
-        self.post_target_vel_penalty = 0.2
 
     # ------------------------------------------------------------------
     # API
@@ -210,15 +209,16 @@ class TableTennisWorker(myo_gym.Env):
             reward += 0.2 * torso_up
 
         else:
-            # Post-target: encourage being AT the target and settled
-            # Smooth shaping near success basin (helps get first successes)
+            # Position attraction
             reward += 3.0 * np.exp(-8.0 * pos_error)
-            reward += 1.5 * np.exp(-12.0 * time_error)
 
-            # Settle term (prevents the "arm flail")
-            reward -= self.post_target_vel_penalty * vel_norm
+            # Progressive time shaping
+            reward += 2.0 * np.exp(-1.5 * time_error)
 
-            # Hard success condition + BIG bonus (critical)
+            # Stronger settling pressure
+            reward -= 0.4 * vel_norm
+
+            # Hard success condition + BIG bonus
             if (
                 pos_error < self.success_pos_thr
                 and vel_norm < self.success_vel_thr
