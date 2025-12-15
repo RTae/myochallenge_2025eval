@@ -19,7 +19,7 @@ class TableTennisWorker(myo_gym.Env):
        goal(7)]
 
     Reward:
-      smooth reaching + posture stability
+      smooth reaching + posture stability + (IMPORTANT) success bonus
     """
 
     metadata = {"render_modes": []}
@@ -35,23 +35,15 @@ class TableTennisWorker(myo_gym.Env):
         # Goal space: [t, px, py, pz, vx, vy, vz]
         self.goal_low = np.array([0.0, -2.0, -1.0, 0.0, -5.0, -5.0, -5.0], dtype=np.float32)
         self.goal_high = np.array([3.0,  0.0,  1.0, 3.0,  5.0,  5.0,  5.0], dtype=np.float32)
-        self.goal_space = myo_gym.spaces.Box(
-            low=self.goal_low,
-            high=self.goal_high,
-            dtype=np.float32
-        )
+        self.goal_space = myo_gym.spaces.Box(low=self.goal_low, high=self.goal_high, dtype=np.float32)
 
         # Observation: 10 state + 7 goal = 17
         self.state_dim = 10
         self.observation_dim = 17
 
         self.observation_space = myo_gym.spaces.Box(
-            low=-np.inf,
-            high=np.inf,
-            shape=(self.observation_dim,),
-            dtype=np.float32,
+            low=-np.inf, high=np.inf, shape=(self.observation_dim,), dtype=np.float32
         )
-
         self.action_space = self.env.action_space
 
         # Episode state
@@ -63,6 +55,13 @@ class TableTennisWorker(myo_gym.Env):
         self.training_stage = 0
         self.recent_successes = []
         self.total_episodes = 0
+
+        # --- Reward knobs ---
+        self.success_pos_thr = 0.06
+        self.success_vel_thr = 0.6 
+        self.success_time_thr = 0.08
+        self.success_bonus = 12.0 
+        self.post_target_vel_penalty = 0.2
 
     # ------------------------------------------------------------------
     # API
@@ -112,7 +111,7 @@ class TableTennisWorker(myo_gym.Env):
             **info,
             **rinfo,
             "episode_goal_achieved": self._episode_goal_achieved,
-            "is_success": info.get("solved"),
+            "is_success": bool(info.get("solved", False)),  # keep your key
         }
 
     # ------------------------------------------------------------------
@@ -134,13 +133,7 @@ class TableTennisWorker(myo_gym.Env):
         if self.current_goal is None:
             self.current_goal = self._sample_goal()
 
-        state = np.hstack([
-            paddle_pos,
-            paddle_vel,
-            paddle_ori,
-            time,
-        ])
-
+        state = np.hstack([paddle_pos, paddle_vel, paddle_ori, time])
         obs_vec = np.hstack([state, self.current_goal]).astype(np.float32)
 
         assert obs_vec.shape[0] == self.observation_dim, \
@@ -172,12 +165,7 @@ class TableTennisWorker(myo_gym.Env):
             dp = np.random.uniform(-0.8, 0.8, size=3)
             dv = np.random.uniform(-3.0, 3.0, size=3)
 
-        goal = np.array([
-            t0 + dt,
-            *(p0 + dp),
-            *dv,
-        ], dtype=np.float32)
-
+        goal = np.array([t0 + dt, *(p0 + dp), *dv], dtype=np.float32)
         return np.clip(goal, self.goal_low, self.goal_high)
 
     # ------------------------------------------------------------------
@@ -192,14 +180,18 @@ class TableTennisWorker(myo_gym.Env):
         torso_up = float(obs.get("torso_up", 1.0))
         time = float(obs["time"])
 
+        # Safety
+        if self.current_goal is None:
+            self.current_goal = self._sample_goal()
+
         target_time = float(self.current_goal[0])
-        target_pos = self.current_goal[1:4]
+        target_pos = np.asarray(self.current_goal[1:4], dtype=np.float32)
 
         pos_error = float(np.linalg.norm(paddle_pos - target_pos))
         vel_norm = float(np.linalg.norm(paddle_vel))
-        time_error = abs(time - target_time)
+        time_error = float(abs(time - target_time))
 
-        # Direction alignment
+        # Direction alignment (only helps pre-target)
         if pos_error > 1e-6 and vel_norm > 1e-6:
             dir_to_target = (target_pos - paddle_pos) / pos_error
             vel_dir = paddle_vel / vel_norm
@@ -211,23 +203,35 @@ class TableTennisWorker(myo_gym.Env):
         goal_achieved = False
 
         if time < target_time:
-            reward += 3.0 * np.exp(-3.0 * pos_error)
-            reward += 0.5 * alignment
-            reward -= 0.01 * vel_norm
-            reward += 0.3 * torso_up
+            # Pre-target: move toward target without going crazy
+            reward += 2.0 * np.exp(-4.0 * pos_error)     # sharper than before
+            reward += 0.6 * alignment
+            reward -= 0.02 * vel_norm
+            reward += 0.2 * torso_up
+
         else:
-            reward += 4.0 * np.exp(-6.0 * pos_error)
-            reward -= 0.5 * vel_norm
-            reward -= 1.0 * time_error
+            # Post-target: encourage being AT the target and settled
+            # Smooth shaping near success basin (helps get first successes)
+            reward += 3.0 * np.exp(-8.0 * pos_error)
+            reward += 1.5 * np.exp(-12.0 * time_error)
 
-            if pos_error < 0.06 and vel_norm < 0.5:
+            # Settle term (prevents the "arm flail")
+            reward -= self.post_target_vel_penalty * vel_norm
+
+            # Hard success condition + BIG bonus (critical)
+            if (
+                pos_error < self.success_pos_thr
+                and vel_norm < self.success_vel_thr
+                and time_error < self.success_time_thr
+            ):
                 goal_achieved = True
+                reward += self.success_bonus
 
-        return reward, {
-            "goal_achieved": goal_achieved,
-            "position_error": pos_error,
-            "velocity_norm": vel_norm,
-            "time_error": time_error,
+        return float(reward), {
+            "goal_achieved": bool(goal_achieved),
+            "position_error": float(pos_error),
+            "velocity_norm": float(vel_norm),
+            "time_error": float(time_error),
         }
 
     # ------------------------------------------------------------------
@@ -240,7 +244,7 @@ class TableTennisWorker(myo_gym.Env):
             self.recent_successes.pop(0)
 
         if len(self.recent_successes) == 100:
-            rate = np.mean(self.recent_successes)
+            rate = float(np.mean(self.recent_successes))
             if rate > 0.6 and self.training_stage < 2:
                 self.training_stage += 1
                 self.recent_successes.clear()
