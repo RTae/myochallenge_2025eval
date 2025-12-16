@@ -22,7 +22,7 @@ def create_env(cfg: Config,  num_envs: int) -> VecNormalize:
             return Monitor(env, info_keywords=("is_success",))
         return _init
     
-    logger.info(f"Creating {num_envs} parallel Manager environments")
+    logger.info(f"Creating {num_envs} parallel environments")
     
     # Create vectorized environment
     env = SubprocVecEnv([make_env(i) for i in range(num_envs)])
@@ -42,13 +42,13 @@ def main():
     cfg = Config()
     prepare_experiment_directory(cfg)
     
-    env = create_env
+    env = create_env(cfg, num_envs=1)
 
     model = PPO(
         "MlpPolicy",
         env,
         verbose=1,
-        tensorboard_log=os.path.join(cfg.logdir, "manager"),
+        tensorboard_log=os.path.join(cfg.logdir),
         n_steps=cfg.ppo_n_steps,
         batch_size=cfg.ppo_batch_size,
         gamma=cfg.ppo_gamma,
