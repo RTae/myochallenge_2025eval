@@ -26,6 +26,8 @@ class Config:
 
     # Episode length (~3 seconds)
     episode_len: int = getenv("EPISODE_LEN", 300, int)
+    
+    curriculum_level:float = 0.0
 
     # ==================================================
     # Training

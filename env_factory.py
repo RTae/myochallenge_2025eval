@@ -128,39 +128,22 @@ def create_plain_vector_env(cfg: Config, num_envs: int) -> VecNormalize:
     
     return env
 
-def create_curriculum_vector_env(cfg: Config, num_envs: int) -> VecNormalize:
-    """
-    Create vectorized plain environments for training.
-    
-    Args:
-        cfg: Configuration
-        num_envs: Number of parallel environments
-    
-    Returns:
-        Vectorized and normalized plain environment
-    """ 
-    
-    def make_env(rank: int):
+def create_plain_vector_env(cfg: Config, num_envs: int):
+    def make_env(rank):
         def _init():
-            # Create plain environment
             env = CurriculumEnv(cfg)
             return Monitor(env, info_keywords=("is_success",))
         return _init
-    
-    logger.info(f"Creating {num_envs} parallel plain environments")
-    
-    # Create vectorized environment
+
     env = SubprocVecEnv([make_env(i) for i in range(num_envs)])
-    
-    # Add normalization
     env = VecNormalize(
-        env, 
-        norm_obs=True, 
-        norm_reward=True, 
+        env,
+        norm_obs=True,
+        norm_reward=True,
         clip_obs=10.0,
-        clip_reward=10.0
+        clip_reward=10.0,
+        gamma=cfg.ppo_gamma,
     )
-    
     return env
 
 def build_env(cfg: Config, 

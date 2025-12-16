@@ -8,6 +8,7 @@ from env_factory import build_env
 from utils import prepare_experiment_directory, make_predict_fn
 from callbacks.infologger_callback import InfoLoggerCallback
 from callbacks.video_callback import VideoCallback
+from callbacks.curriculum_callback import CurriculumCallback
 
 from custom_env import CustomEnv
 from dr_spcrl import DRSPCRLRecurrentPPO
@@ -20,7 +21,7 @@ def main():
     # # Train worker
     cfg = copy.deepcopy(cfg)
     cfg.logdir = os.path.join(cfg.logdir)
-    env = build_env(cfg, env_type="plain")
+    env = build_env(cfg, env_type="curriculum")
 
     model = DRSPCRLRecurrentPPO(
         policy=LatticeRecurrentActorCriticPolicy,
@@ -60,7 +61,7 @@ def main():
     eval_cfg.num_envs = 1
     
     # Callback Worker
-    eval_env = build_env(eval_cfg, env_type="plain")
+    eval_env = build_env(eval_cfg, env_type="curriculum")
     eval_cb = EvalCallback(
         eval_env,
         best_model_save_path=os.path.join(cfg.logdir, "best_model"),
@@ -72,10 +73,17 @@ def main():
     )
     video_env = CustomEnv(cfg)
     video_cb = VideoCallback(video_env, cfg, make_predict_fn(model))
+    curriculum_cb = CurriculumCallback(
+        cfg,
+        total_steps=cfg.worker_total_timesteps,
+        freeze_patience=5,
+        freeze_threshold=0.05,
+        verbose=1,
+    )
 
     model.learn(
         total_timesteps=cfg.worker_total_timesteps,
-        callback=CallbackList([info_cb, eval_cb, video_cb]),
+        callback=CallbackList([info_cb, eval_cb, video_cb, curriculum_cb]),
     )
 
     model_path = os.path.join(cfg.logdir, "model.pkl")
