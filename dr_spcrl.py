@@ -14,9 +14,7 @@ from sb3_contrib import RecurrentPPO
 # ============================================================
 
 class BetaNet(nn.Module):
-    """
-    beta_phi(s, a) >= 0 via softplus
-    """
+    """beta_phi(s, a) >= 0 via softplus"""
 
     def __init__(self, obs_dim: int, act_dim: int, hidden: int = 128):
         super().__init__()
@@ -53,49 +51,38 @@ class DRSPCRLRecurrentPPO(RecurrentPPO):
         self.beta_updates = int(beta_updates)
         self.lr_curr = float(lr_curr)
         self.alpha = float(alpha)
-
         super().__init__(*args, **kwargs)
-
-    # ------------------------------------------------------------
-    # Setup
-    # ------------------------------------------------------------
 
     def _setup_model(self) -> None:
         super()._setup_model()
-
         obs_dim = int(np.prod(self.observation_space.shape))
         act_dim = int(np.prod(self.action_space.shape))
-
         self.beta_net = BetaNet(obs_dim, act_dim).to(self.device)
         self.beta_opt = th.optim.Adam(self.beta_net.parameters(), lr=self.lr_beta)
 
     # ------------------------------------------------------------
-    # Robust value (minibatch dual approximation)
+    # Robust value
     # ------------------------------------------------------------
-
-    def robust_value(self, values: th.Tensor, beta: th.Tensor) -> th.Tensor:
+    def robust_value(self, values_1d: th.Tensor, beta_1d: th.Tensor) -> th.Tensor:
         """
-        Robust value using minibatch distribution:
-            V_rob = -β log(mean(exp(-V/β))) - β ε
+        values_1d: (B,)
+        beta_1d:   (B,)  (positive)
+        Return:    (B,)
+          V_rob = -β log(mean(exp(-V/β))) - β ε
         """
-        values = values.view(-1)
-        beta = beta.view(-1, 1)
+        values_1d = values_1d.view(-1)              # (B,)
+        beta_1d = beta_1d.view(-1).clamp_min(1e-4)  # (B,)
 
-        exp_term = th.exp(-values.unsqueeze(0) / beta)
-        mean_exp = exp_term.mean(dim=0)
+        # (B,B): each row corresponds to a different beta_i
+        exp_term = th.exp(-values_1d.unsqueeze(0) / beta_1d.unsqueeze(1))
+        mean_exp = exp_term.mean(dim=1)  # (B,)
 
-        v_rob = -beta.squeeze() * th.log(mean_exp + 1e-12)
-        v_rob -= beta.squeeze() * self.epsilon
-        return v_rob
-
-    # ------------------------------------------------------------
-    # Training
-    # ------------------------------------------------------------
+        v_rob = -beta_1d * th.log(mean_exp + 1e-12) - beta_1d * float(self.epsilon)
+        return v_rob  # (B,)
 
     def train(self) -> None:
         self.policy.set_training_mode(True)
 
-        # learning rate schedule
         self._update_learning_rate(self.policy.optimizer)
         clip_range = self.clip_range(self._current_progress_remaining)
         clip_range_vf = (
@@ -107,25 +94,22 @@ class DRSPCRLRecurrentPPO(RecurrentPPO):
         # ========================================================
         # (A) Beta updates
         # ========================================================
-
         for _ in range(self.beta_updates):
             rollout_data = next(self.rollout_buffer.get(self.batch_size))
 
-            obs = rollout_data.observations
-            act = rollout_data.actions
             mask = rollout_data.mask.view(-1) > 0.5
-
-            if mask.sum() < 2:
+            if mask.sum().item() < 2:
                 continue
 
-            obs = obs[mask]
-            act = act[mask]
+            obs = rollout_data.observations[mask]
+            act = rollout_data.actions[mask]
 
+            # old_values often (B,1) -> make it (B,)
             with th.no_grad():
-                values = rollout_data.old_values[mask]
+                values_old = rollout_data.old_values[mask].view(-1)
 
-            beta = self.beta_net(obs, act)
-            v_rob = self.robust_value(values, beta)
+            beta = self.beta_net(obs, act).view(-1)  # (B,)
+            v_rob = self.robust_value(values_old, beta)
 
             loss_beta = -v_rob.mean()
 
@@ -137,64 +121,69 @@ class DRSPCRLRecurrentPPO(RecurrentPPO):
         # ========================================================
         # (B) PPO updates
         # ========================================================
-
         entropy_losses, pg_losses, value_losses, clip_fractions = [], [], [], []
 
-        for epoch in range(self.n_epochs):
+        for _epoch in range(self.n_epochs):
             for rollout_data in self.rollout_buffer.get(self.batch_size):
-
-                obs = rollout_data.observations
-                actions = rollout_data.actions
-                old_log_prob = rollout_data.old_log_prob
-                old_values = rollout_data.old_values
-                returns = rollout_data.returns
-
                 mask = rollout_data.mask.view(-1) > 0.5
-                if mask.sum() < 2:
+                if mask.sum().item() < 2:
                     continue
 
+                # Evaluate on full batch (recurrent)
                 values, log_prob, entropy = self.policy.evaluate_actions(
-                    obs,
-                    actions,
+                    rollout_data.observations,
+                    rollout_data.actions,
                     rollout_data.lstm_states,
                     rollout_data.episode_starts,
                 )
 
-                obs = obs[mask]
-                actions = actions[mask]
-                values = values[mask]
-                log_prob = log_prob[mask]
-                old_log_prob = old_log_prob[mask]
-                old_values = old_values[mask]
-                returns = returns[mask]
+                # Mask everything consistently
+                obs = rollout_data.observations[mask]
+                actions = rollout_data.actions[mask]
 
+                # critical: squeeze to 1D
+                values = values[mask].view(-1)                    # (B,)
+                old_values = rollout_data.old_values[mask].view(-1)
+                returns = rollout_data.returns[mask].view(-1)
+
+                log_prob = log_prob[mask].view(-1)
+                old_log_prob = rollout_data.old_log_prob[mask].view(-1)
+
+                # Robust advantage/target
                 with th.no_grad():
-                    beta = self.beta_net(obs, actions)
-                    v_rob = self.robust_value(old_values, beta)
-                    adv_rob = v_rob - values
+                    beta = self.beta_net(obs, actions).view(-1)   # (B,)
+                    v_rob = self.robust_value(old_values, beta)   # (B,)
+                    adv_rob = (v_rob - values).detach()
                     adv_rob = (adv_rob - adv_rob.mean()) / (adv_rob.std() + 1e-8)
 
                 ratio = th.exp(log_prob - old_log_prob)
-                pg_loss = -th.mean(
-                    th.min(
-                        adv_rob * ratio,
-                        adv_rob * th.clamp(ratio, 1 - clip_range, 1 + clip_range),
-                    )
-                )
+                pg_loss1 = adv_rob * ratio
+                pg_loss2 = adv_rob * th.clamp(ratio, 1 - clip_range, 1 + clip_range)
+                pg_loss = -th.mean(th.min(pg_loss1, pg_loss2))
                 pg_losses.append(pg_loss.item())
 
+                clip_fraction = th.mean((th.abs(ratio - 1) > clip_range).float()).item()
+                clip_fractions.append(clip_fraction)
+
+                # Value prediction (clip vf) — all 1D
                 if clip_range_vf is None:
                     values_pred = values
                 else:
                     values_pred = old_values + th.clamp(
-                        values - old_values, -clip_range_vf, clip_range_vf
+                        values - old_values,
+                        -clip_range_vf,
+                        clip_range_vf,
                     )
 
-                v_target = v_rob.detach()
+                v_target = v_rob.detach().view(-1)  # (B,)
                 value_loss = F.mse_loss(values_pred, v_target)
                 value_losses.append(value_loss.item())
 
-                entropy_loss = -th.mean(entropy[mask]) if entropy is not None else -th.mean(log_prob)
+                # Entropy loss (mask correctly)
+                if entropy is None:
+                    entropy_loss = -th.mean(-log_prob)  # fallback
+                else:
+                    entropy_loss = -th.mean(entropy[mask].view(-1))
                 entropy_losses.append(entropy_loss.item())
 
                 loss = pg_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
@@ -207,32 +196,30 @@ class DRSPCRLRecurrentPPO(RecurrentPPO):
         # ========================================================
         # (C) Epsilon curriculum update
         # ========================================================
-
         with th.no_grad():
             batch = next(self.rollout_buffer.get(self.batch_size))
             mask = batch.mask.view(-1) > 0.5
-            if mask.sum() > 0:
-                beta_bar = self.beta_net(
-                    batch.observations[mask], batch.actions[mask]
-                ).mean().item()
+            if mask.sum().item() > 0:
+                beta_bar = self.beta_net(batch.observations[mask], batch.actions[mask]).view(-1).mean().item()
             else:
                 beta_bar = 0.0
 
-        grad = beta_bar + 2 * self.alpha * (self.epsilon - self.eps_budget)
+        grad = beta_bar + 2.0 * self.alpha * (self.epsilon - self.eps_budget)
         self.epsilon = float(np.clip(self.epsilon - self.lr_curr * grad, 0.0, self.eps_budget))
 
         # logging
         self.logger.record("train/epsilon", self.epsilon)
         self.logger.record("train/beta_bar", beta_bar)
-        self.logger.record("train/value_loss", np.mean(value_losses) if value_losses else 0.0)
-        self.logger.record("train/policy_loss", np.mean(pg_losses) if pg_losses else 0.0)
-        self.logger.record("train/entropy_loss", np.mean(entropy_losses) if entropy_losses else 0.0)
+        self.logger.record("train/value_loss", float(np.mean(value_losses)) if value_losses else 0.0)
+        self.logger.record("train/policy_loss", float(np.mean(pg_losses)) if pg_losses else 0.0)
+        self.logger.record("train/entropy_loss", float(np.mean(entropy_losses)) if entropy_losses else 0.0)
+        self.logger.record("train/clip_fraction", float(np.mean(clip_fractions)) if clip_fractions else 0.0)
 
         try:
             ev = explained_variance(
                 self.rollout_buffer.returns.flatten(),
                 self.rollout_buffer.values.flatten(),
             )
-            self.logger.record("train/explained_variance", ev)
+            self.logger.record("train/explained_variance", float(ev))
         except Exception:
             pass
