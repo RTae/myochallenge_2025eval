@@ -20,7 +20,7 @@ def main():
     # # Train worker
     cfg = copy.deepcopy(cfg)
     cfg.logdir = os.path.join(cfg.logdir)
-    env = build_env(cfg, env_type="pain")
+    env = build_env(cfg, env_type="plain")
 
     model = DRSPCRLRecurrentPPO(
         policy=LatticeRecurrentActorCriticPolicy,
@@ -30,14 +30,15 @@ def main():
         device="auto",
         batch_size=cfg.ppo_batch_size,
         n_steps=cfg.ppo_n_steps,
-        n_epochs=cfg.ppo_epochs,
-        learning_rate=cfg.ppo_lr,
-        clip_range=cfg.ppo_clip,
+        n_epochs=5,
+        learning_rate=5e-5,
         gamma=cfg.ppo_gamma,
         gae_lambda=cfg.ppo_lambda,
-        ent_coef=3.62109e-06,
-        max_grad_norm=0.7,
-        vf_coef=0.835671,
+        max_grad_norm=0.5,
+        clip_range = 0.2,
+        ent_coef = 3e-6,
+        vf_coef=0.25,
+        clip_range_vf=0.2,
         policy_kwargs=dict(
             use_lattice=True,
             use_expln=True,
@@ -59,7 +60,7 @@ def main():
     eval_cfg.num_envs = 1
     
     # Callback Worker
-    eval_env = build_env(eval_cfg, env_type="pain")
+    eval_env = build_env(eval_cfg, env_type="plain")
     eval_cb = EvalCallback(
         eval_env,
         best_model_save_path=os.path.join(cfg.logdir, "best_model"),

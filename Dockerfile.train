@@ -10,6 +10,7 @@ COPY env_factory.py ./
 COPY worker_env.py ./
 COPY manager_env.py ./
 COPY custom_env.py ./
+COPY curriculum_env.py ./
 COPY dr_spcrl.py ./
 COPY lattice ./lattice
 
