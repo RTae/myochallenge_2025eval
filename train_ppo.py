@@ -72,7 +72,7 @@ def main():
         render=False,
     )
     
-    video_env = create_env(cfg, num_envs=1)
+    video_env = CustomEnv(cfg)
     video_cb = VideoCallback(video_env, cfg, make_predict_fn(model))
     
     model.learn(
