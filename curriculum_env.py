@@ -9,9 +9,11 @@ class CurriculumEnv(gym.Env):
     """
     MyoSuite wrapper with:
       - default reward
-      - minimal shaping (training only)
+      - minimal reward shaping (training only)
       - automatic annealing
-      - shaping fully disabled for evaluation
+      - shaping fully disabled in eval mode
+
+    Uses ONLY keys present in info['obs_dict'].
     """
 
     metadata = {"render_modes": []}
@@ -28,7 +30,7 @@ class CurriculumEnv(gym.Env):
         w_timing: float = 0.03,
 
         # annealing
-        anneal_steps: int = 5_000_000,   # steps to decay shaping → 0
+        anneal_steps: int = 5_000_000,
 
         # timing
         ttc_threshold: float = 0.6,
@@ -58,20 +60,18 @@ class CurriculumEnv(gym.Env):
         self.max_pelvis_speed = max_pelvis_speed
         self.max_paddle_speed = max_paddle_speed
 
+        # state for finite differences
+        self._prev_pelvis_xy = None
+        self._prev_time = None
         self._prev_paddle_ball_dist = None
         self._global_step = 0
 
     # -------------------------------------------------
     # Utilities
     # -------------------------------------------------
-    def _anneal(self) -> float:
-        """
-        Linear annealing factor in [0, 1].
-        1.0 at step 0 → 0.0 after anneal_steps.
-        """
+    def _anneal_factor(self) -> float:
         if self.eval_mode:
             return 0.0
-
         return max(0.0, 1.0 - self._global_step / self.anneal_steps)
 
     # -------------------------------------------------
@@ -79,33 +79,46 @@ class CurriculumEnv(gym.Env):
     # -------------------------------------------------
     def reset(self, seed: Optional[int] = None) -> Tuple[np.ndarray, Dict]:
         obs, info = self.env.reset(seed=seed)
+
+        self._prev_pelvis_xy = None
+        self._prev_time = None
         self._prev_paddle_ball_dist = None
+
         return obs, info
 
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         obs, reward, terminated, truncated, info = self.env.step(action)
 
         info = dict(info)
-        info["is_success"] = bool(info.get("solved", False))
+        info["is_success"] = info.get("solved")
 
-        # -------------------------------------------------
-        # Annealing
-        # -------------------------------------------------
         self._global_step += 1
-        a = self._anneal()
+        a = self._anneal_factor()
 
         if a > 0.0:
             obs_dict = info["obs_dict"]
 
             pelvis_xy = obs_dict["pelvis_pos"][:2]
-            pelvis_vel_xy = obs_dict["pelvis_vel"][:2]
-
             ball_pos = obs_dict["ball_pos"]
             ball_xy = ball_pos[:2]
             ball_vel = obs_dict["ball_vel"]
 
             paddle_pos = obs_dict["paddle_pos"]
             paddle_vel = obs_dict["paddle_vel"]
+
+            t = float(obs_dict["time"])
+
+            # -------------------------------------------------
+            # Pelvis velocity via finite difference
+            # -------------------------------------------------
+            if self._prev_pelvis_xy is None:
+                pelvis_vel_xy = np.zeros(2, dtype=np.float32)
+            else:
+                dt = max(1e-6, t - self._prev_time)
+                pelvis_vel_xy = (pelvis_xy - self._prev_pelvis_xy) / dt
+
+            self._prev_pelvis_xy = pelvis_xy.copy()
+            self._prev_time = t
 
             shaping_reward = 0.0
 
