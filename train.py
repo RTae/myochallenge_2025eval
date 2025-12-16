@@ -21,7 +21,7 @@ def main():
     # # Train worker
     cfg = copy.deepcopy(cfg)
     cfg.logdir = os.path.join(cfg.logdir)
-    env = build_env(cfg, env_type="curriculum")
+    env = build_env(cfg, env_type="curriculum", eval_mode=False)
 
     model = DRSPCRLRecurrentPPO(
         policy=LatticeRecurrentActorCriticPolicy,
@@ -61,7 +61,7 @@ def main():
     eval_cfg.num_envs = 1
     
     # Callback Worker
-    eval_env = build_env(eval_cfg, env_type="curriculum")
+    eval_env = build_env(eval_cfg, env_type="curriculum", eval_mode=True)
     eval_cb = EvalCallback(
         eval_env,
         best_model_save_path=os.path.join(cfg.logdir, "best_model"),

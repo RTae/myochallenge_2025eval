@@ -128,10 +128,10 @@ def create_plain_vector_env(cfg: Config, num_envs: int) -> VecNormalize:
     
     return env
 
-def create_curriculum_vector_env(cfg: Config, num_envs: int):
+def create_curriculum_vector_env(cfg: Config, num_envs: int, eval_mode: bool = False) -> VecNormalize:
     def make_env(rank):
         def _init():
-            env = CurriculumEnv(cfg)
+            env = CurriculumEnv(cfg, eval_mode=eval_mode)
             return Monitor(env, info_keywords=("is_success",))
         return _init
 
@@ -146,9 +146,12 @@ def create_curriculum_vector_env(cfg: Config, num_envs: int):
     )
     return env
 
-def build_env(cfg: Config, 
-              env_type: str,
-              worker_model: Optional[RecurrentPPO] = None) -> VecNormalize:
+def build_env(
+    cfg: Config, 
+    env_type: str,
+    worker_model: Optional[RecurrentPPO] = None,
+    eval_mode: bool = False
+    ) -> VecNormalize:
     """
     Main factory function to create environments.
     
@@ -161,7 +164,7 @@ def build_env(cfg: Config,
         Vectorized environment ready for training
     """
     if env_type == "worker":
-        logger.info("Building Worker environments...")
+        logger.info(f"Building Worker environments... with num_envs={cfg.num_envs}")
         return create_worker_vector_env(cfg, num_envs=cfg.num_envs)
     if env_type == "manager":
         if worker_model is None:
@@ -170,7 +173,7 @@ def build_env(cfg: Config,
                 "Please provide a trained Worker model."
             )
         
-        logger.info("Building Manager environments with trained Workers...")
+        logger.info(f"Building Manager environments... with num_envs={cfg.num_envs}")
         return create_manager_vector_env(
             cfg=cfg,
             worker_model=worker_model,
@@ -180,6 +183,7 @@ def build_env(cfg: Config,
         return create_plain_vector_env(cfg, num_envs=cfg.num_envs)
 
     if env_type == "curriculum":
-        return create_curriculum_vector_env(cfg, num_envs=cfg.num_envs)
+        logger.info(f"Building Curriculum environments... with eval_mode={eval_mode} with num_envs={cfg.num_envs}")
+        return create_curriculum_vector_env(cfg, num_envs=cfg.num_envs, eval_mode=eval_mode)
     
     raise ValueError(f"Unknown env_type: {env_type}")
