@@ -73,21 +73,22 @@ def main():
     )
     video_env = CurriculumEnv(cfg)
     video_cb = VideoCallback(video_env, cfg, make_predict_fn(model))
-    curriculum_cb = CurriculumCallback(
-        cfg,
-        total_steps=cfg.worker_total_timesteps,
-        freeze_patience=5,
-        freeze_threshold=0.05,
-        verbose=1,
-    )
+    # curriculum_cb = CurriculumCallback(
+    #     cfg,
+    #     total_steps=cfg.worker_total_timesteps,
+    #     freeze_patience=5,
+    #     freeze_threshold=0.05,
+    #     verbose=1,
+    # )
 
     model.learn(
         total_timesteps=cfg.worker_total_timesteps,
-        callback=CallbackList([info_cb, eval_cb, video_cb, curriculum_cb]),
+        callback=CallbackList([info_cb, eval_cb, video_cb]),
     )
 
     model_path = os.path.join(cfg.logdir, "model.pkl")
     model.save(model_path)
+    
     eval_env.close()
     video_env.close()
     env.close()
