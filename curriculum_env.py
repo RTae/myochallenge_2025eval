@@ -1,6 +1,7 @@
 from typing import Tuple, Dict, Optional
 import numpy as np
 
+import mujoco
 from myosuite.utils import gym
 from config import Config
 
@@ -27,8 +28,8 @@ class CurriculumEnv(gym.Env):
         self.np_random = np.random.default_rng()
 
         # Cache ball joint indices
-        self._ball_qpos_id = self._find_ball_qpos_id()
-        self._ball_qvel_id = self._find_ball_qvel_id()
+        self._ball_body_id = self._find_pingpong_body_id()
+        self._ball_qpos_id, self._ball_qvel_id = self._get_free_joint_slices_for_body(self._ball_body_id)
 
         # Canonical reset cache
         self._base_ball_qpos = None
@@ -36,25 +37,37 @@ class CurriculumEnv(gym.Env):
     # -------------------------------------------------
     # Helpers
     # -------------------------------------------------
-    def _find_ball_qpos_id(self) -> slice:
-        model = self.env.unwrapped.sim.model
-        for j in range(model.njnt):
-            name = model.joint_id2name(j)
-            if name and "ball" in name.lower():
-                adr = model.jnt_qposadr[j]
-                dim = model.jnt_dofnum[j]
-                return slice(adr, adr + dim)
-        raise RuntimeError("❌ Ball qpos not found")
 
-    def _find_ball_qvel_id(self) -> slice:
-        model = self.env.unwrapped.sim.model
-        for j in range(model.njnt):
-            name = model.joint_id2name(j)
-            if name and "ball" in name.lower():
-                adr = model.jnt_dofadr[j]
-                dim = model.jnt_dofnum[j]
-                return slice(adr, adr + dim)
-        raise RuntimeError("❌ Ball qvel not found")
+    def _find_pingpong_body_id(self) -> int:
+        mj_model = self.env.unwrapped.sim.model.ptr
+
+        for b in range(mj_model.nbody):
+            name = mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_BODY, b)
+            if name is not None and name.lower() == "pingpong":
+                return b
+
+        raise RuntimeError("❌ Could not find body named 'pingpong'.")
+
+
+
+
+    def _get_free_joint_slices_for_body(self, body_id: int) -> tuple[slice, slice]:
+        mj_model = self.env.unwrapped.sim.model.ptr
+
+        jnt_adr = int(mj_model.body_jntadr[body_id])
+        if jnt_adr < 0:
+            raise RuntimeError(f"Body {body_id} has no joint.")
+
+        jnt_type = int(mj_model.jnt_type[jnt_adr])
+        if jnt_type != int(mujoco.mjtJoint.mjJNT_FREE):
+            raise RuntimeError("pingpong body is not a FREE joint body (unexpected).")
+
+        qpos_adr = int(mj_model.jnt_qposadr[jnt_adr])
+        qvel_adr = int(mj_model.jnt_dofadr[jnt_adr])
+
+        qpos_slice = slice(qpos_adr, qpos_adr + 7)  # (x,y,z, qw,qx,qy,qz)
+        qvel_slice = slice(qvel_adr, qvel_adr + 6)  # (vx,vy,vz, wx,wy,wz)
+        return qpos_slice, qvel_slice
 
     # -------------------------------------------------
     # Gym API
