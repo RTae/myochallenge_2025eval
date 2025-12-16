@@ -5,7 +5,7 @@ import numpy as np
 class CurriculumCallback(BaseCallback):
     """
     - Linearly increases curriculum_level
-    - Freezes curriculum when reward plateaus/improves
+    - Freezes curriculum when reward plateaus
     """
 
     def __init__(
@@ -14,7 +14,7 @@ class CurriculumCallback(BaseCallback):
         total_steps,
         freeze_patience: int = 5,
         freeze_threshold: float = 0.05,
-        window: int = 5,
+        window: int = 10,
         verbose: int = 0,
     ):
         super().__init__(verbose)
@@ -25,7 +25,7 @@ class CurriculumCallback(BaseCallback):
         self.freeze_threshold = freeze_threshold
         self.window = window
 
-        self.recent_rewards = []
+        self.recent_ep_rewards = []
         self.best_mean_reward = -np.inf
         self.freeze_counter = 0
         self.frozen = False
@@ -38,33 +38,37 @@ class CurriculumCallback(BaseCallback):
                 self.model.num_timesteps / (0.6 * self.total_steps)
             )
 
-        # ---------------- Reward tracking ----------------
-        if "rollout/ep_rew_mean" in self.logger.name_to_value:
-            r = self.logger.name_to_value["rollout/ep_rew_mean"]
-            self.recent_rewards.append(r)
+        # ---------------- Collect episode rewards ----------------
+        infos = self.locals["infos"]
+        for info in infos:
+            if "episode" in info:
+                ep_rew = info["episode"]["r"]
+                self.recent_ep_rewards.append(ep_rew)
 
-            if len(self.recent_rewards) > self.window:
-                self.recent_rewards.pop(0)
+                if len(self.recent_ep_rewards) > self.window:
+                    self.recent_ep_rewards.pop(0)
 
-            mean_r = np.mean(self.recent_rewards)
+        # ---------------- Freeze logic ----------------
+        if len(self.recent_ep_rewards) == self.window:
+            mean_r = float(np.mean(self.recent_ep_rewards))
 
-            # Check improvement
             if mean_r > self.best_mean_reward * (1 + self.freeze_threshold):
                 self.best_mean_reward = mean_r
                 self.freeze_counter = 0
             else:
                 self.freeze_counter += 1
 
-            # Freeze curriculum
-            if (
-                self.freeze_counter >= self.freeze_patience
-                and not self.frozen
-            ):
+            if self.freeze_counter >= self.freeze_patience and not self.frozen:
                 self.frozen = True
                 if self.verbose:
                     print(
                         f"🧊 Curriculum frozen at level "
-                        f"{self.cfg.curriculum_level:.3f}"
+                        f"{self.cfg.curriculum_level:.3f} "
+                        f"(mean reward={mean_r:.2f})"
                     )
+
+        # Optional logging
+        self.logger.record("train/curriculum_level", self.cfg.curriculum_level)
+        self.logger.record("train/curriculum_frozen", float(self.frozen))
 
         return True
