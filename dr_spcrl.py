@@ -193,7 +193,7 @@ class DRSPCRLRecurrentPPO(RecurrentPPO):
                 value_losses.append(value_loss.item())
 
                 entropy_loss = -th.mean(entropy[mask]) if entropy is not None else 0.0
-                entropy_losses.append(float(entropy_loss))
+                entropy_losses.append(entropy_loss.detach().item())
 
                 loss = pg_loss + self.vf_coef * value_loss + self.ent_coef * entropy_loss
 

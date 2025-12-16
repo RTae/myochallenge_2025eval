@@ -50,7 +50,6 @@ class CurriculumEnv(gym.Env):
 
 
 
-
     def _get_free_joint_slices_for_body(self, body_id: int) -> tuple[slice, slice]:
         mj_model = self.env.unwrapped.sim.model.ptr
 

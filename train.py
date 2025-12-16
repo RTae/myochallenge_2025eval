@@ -10,7 +10,7 @@ from callbacks.infologger_callback import InfoLoggerCallback
 from callbacks.video_callback import VideoCallback
 from callbacks.curriculum_callback import CurriculumCallback
 
-from custom_env import CustomEnv
+from curriculum_env import CurriculumEnv
 from dr_spcrl import DRSPCRLRecurrentPPO
 
 
@@ -71,7 +71,7 @@ def main():
         deterministic=True,
         render=False,
     )
-    video_env = CustomEnv(cfg)
+    video_env = CurriculumEnv(cfg)
     video_cb = VideoCallback(video_env, cfg, make_predict_fn(model))
     curriculum_cb = CurriculumCallback(
         cfg,
