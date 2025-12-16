@@ -128,7 +128,7 @@ def create_plain_vector_env(cfg: Config, num_envs: int) -> VecNormalize:
     
     return env
 
-def create_plain_vector_env(cfg: Config, num_envs: int):
+def create_curriculum_vector_env(cfg: Config, num_envs: int):
     def make_env(rank):
         def _init():
             env = CurriculumEnv(cfg)
