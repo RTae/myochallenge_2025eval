@@ -26,12 +26,12 @@ class CurriculumEnv(gym.Env):
 
         self.np_random = np.random.default_rng()
 
-        # Cache indices
+        # Cache ball joint indices
         self._ball_qpos_id = self._find_ball_qpos_id()
         self._ball_qvel_id = self._find_ball_qvel_id()
 
+        # Canonical reset cache
         self._base_ball_qpos = None
-        self._base_ball_qvel = None
 
     # -------------------------------------------------
     # Helpers
@@ -73,15 +73,16 @@ class CurriculumEnv(gym.Env):
         qpos = sim.data.qpos
         qvel = sim.data.qvel
 
-        # Cache canonical reset state
+        # Cache canonical ball position ONCE
         if self._base_ball_qpos is None:
             self._base_ball_qpos = qpos[self._ball_qpos_id].copy()
-        if self._base_ball_qvel is None:
-            self._base_ball_qvel = qvel[self._ball_qvel_id].copy()
 
-        # ---------------- Stage 1: Ball position ----------------
+        # =================================================
+        # Stage 1: Ball position curriculum
+        # =================================================
         # XY offset: ±0.05 → ±0.50
         max_xy_offset = 0.05 + 0.45 * level
+
         offset_xy = self.np_random.uniform(
             low=-max_xy_offset,
             high=max_xy_offset,
@@ -92,21 +93,30 @@ class CurriculumEnv(gym.Env):
             self._base_ball_qpos[0:2] + offset_xy
         )
 
-        # ---------------- Stage 2: Ball speed ----------------
-        # Speed magnitude: small → full
-        # Early: ~0.2 m/s, Late: ~2.5 m/s
-        max_speed = 0.2 + 2.3 * level
+        # =================================================
+        # Stage 2: Ball speed curriculum (FIXED)
+        # =================================================
+        # Speed: 0.3 m/s → 2.5 m/s
+        min_speed = 0.3
+        max_speed = 0.3 + 2.2 * level
+        speed = self.np_random.uniform(min_speed, max_speed)
 
-        # Random direction (mostly towards paddle)
+        # Direction: mostly towards player
         direction = np.array([
-            -1.0,                              # towards player
-            self.np_random.uniform(-0.3, 0.3),
-            self.np_random.uniform(0.2, 0.6)
+            -1.0,
+            self.np_random.uniform(-0.25, 0.25),
+            self.np_random.uniform(0.05, 0.25 + 0.35 * level),
         ])
         direction /= np.linalg.norm(direction) + 1e-8
+        vel = direction * speed
 
-        speed = self.np_random.uniform(0.1, max_speed)
-        qvel[self._ball_qvel_id][:3] = direction * speed
+        # 🔑 IMPORTANT: reset all DoFs first
+        qvel_slice = qvel[self._ball_qvel_id]
+        qvel_slice[:] = 0.0
+
+        # Apply translational velocity safely
+        n = min(len(qvel_slice), 3)
+        qvel_slice[:n] = vel[:n]
 
         return obs, info
 
@@ -116,7 +126,21 @@ class CurriculumEnv(gym.Env):
         info = dict(info)
         info["is_success"] = bool(info.get("solved", False))
 
+        # Curriculum logging
+        info.update(self._get_curriculum_info())
+
         return obs, reward, terminated, truncated, info
+
+    # -------------------------------------------------
+    # Curriculum logging
+    # -------------------------------------------------
+    def _get_curriculum_info(self) -> Dict:
+        level = float(getattr(self.config, "curriculum_level", 1.0))
+        return {
+            "curriculum_level": level,
+            "max_offset_xy": 0.05 + 0.45 * level,
+            "max_ball_speed": 0.3 + 2.2 * level,
+        }
 
     # -------------------------------------------------
     # Passthrough
