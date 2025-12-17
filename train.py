@@ -47,6 +47,7 @@ def main():
             log_std_init=0.0,
             std_clip=(1e-3, 10),
         ),
+        target_beta=5,
         eps_start=0.0,
         eps_budget=1.0,
         lr_beta=5e-4,
@@ -62,6 +63,10 @@ def main():
     
     # Callback Worker
     eval_env = build_env(eval_cfg, env_type="curriculum", eval_mode=True)
+    eval_env.obs_rms = env.obs_rms
+    eval_env.training = False
+    eval_env.norm_reward = False
+    
     eval_cb = EvalCallback(
         eval_env,
         best_model_save_path=os.path.join(cfg.logdir, "best_model"),
@@ -71,7 +76,7 @@ def main():
         deterministic=True,
         render=False,
     )
-    video_env = CurriculumEnv(cfg)
+    video_env = CurriculumEnv(cfg, eval_mode=True)
     video_cb = VideoCallback(video_env, cfg, make_predict_fn(model))
     # curriculum_cb = CurriculumCallback(
     #     cfg,

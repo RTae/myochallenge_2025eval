@@ -128,7 +128,7 @@ def create_plain_vector_env(cfg: Config, num_envs: int) -> VecNormalize:
     
     return env
 
-def create_curriculum_vector_env(cfg: Config, num_envs: int, eval_mode: bool = False) -> VecNormalize:
+def create_curriculum_vector_env(cfg: Config, num_envs: int, eval_mode: bool = False):
     def make_env(rank):
         def _init():
             env = CurriculumEnv(cfg, eval_mode=eval_mode)
@@ -136,12 +136,12 @@ def create_curriculum_vector_env(cfg: Config, num_envs: int, eval_mode: bool = F
         return _init
 
     env = SubprocVecEnv([make_env(i) for i in range(num_envs)])
+
     env = VecNormalize(
         env,
         norm_obs=True,
-        norm_reward=True,
+        norm_reward=False,
         clip_obs=10.0,
-        clip_reward=10.0,
         gamma=cfg.ppo_gamma,
     )
     return env
