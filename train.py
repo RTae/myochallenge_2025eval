@@ -48,13 +48,13 @@ def main():
             log_std_init=0.0,
             std_clip=(1e-3, 10),
         ),
+        lr_beta = 1e-4,
+        beta_updates = 1
         eps_start = 0.2,
         eps_budget = 0.5,
         lr_curr = 5e-4,
         alpha = 0.5,
         target_beta=5,
-        lr_beta = 1e-4,
-        beta_updates = 1
     )
 
     # # Callback Share
