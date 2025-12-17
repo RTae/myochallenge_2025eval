@@ -53,7 +53,6 @@ def main():
         eps_start = 0.2,
         eps_budget = 0.5,
         lr_curr = 5e-4,
-        alpha = 0.5,
         target_beta=5,
     )
 
