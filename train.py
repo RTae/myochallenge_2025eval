@@ -38,7 +38,7 @@ def main():
         gae_lambda=cfg.ppo_lambda,
         max_grad_norm=0.5,
         clip_range = 0.2,
-        ent_coef = 3e-6,
+        ent_coef = 1e-4,
         vf_coef=0.25,
         clip_range_vf=0.2,
         policy_kwargs=dict(
@@ -48,13 +48,13 @@ def main():
             log_std_init=0.0,
             std_clip=(1e-3, 10),
         ),
+        eps_start = 0.2,
+        eps_budget = 0.5,
+        lr_curr = 5e-4,
+        alpha = 0.5,
         target_beta=5,
-        eps_start=0.0,
-        eps_budget=1.0,
-        lr_beta=5e-4,
-        beta_updates=5,
-        lr_curr=1e-3,
-        alpha=0.1,
+        lr_beta = 1e-4,
+        beta_updates = 1
     )
 
     # # Callback Share

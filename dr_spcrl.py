@@ -22,8 +22,8 @@ class BetaNet(nn.Module):
 
     def forward(self, obs: th.Tensor, act: th.Tensor) -> th.Tensor:
         x = th.cat([obs, act], dim=1)
-        # cap to avoid runaway beta
-        return th.clamp(F.softplus(self.net(x)), max=50.0) + 1e-4
+        beta = F.softplus(self.net(x))
+        return th.clamp(beta, min=1e-3, max=10.0)
 
 
 class DRSPCRLRecurrentPPO(RecurrentPPO):
@@ -90,12 +90,13 @@ class DRSPCRLRecurrentPPO(RecurrentPPO):
             obs = rollout.observations[mask]
             act = rollout.actions[mask]
 
-            # Use critic's old value predictions (not returns)
             with th.no_grad():
-                v_old = rollout.old_values[mask].view(-1)  # (B,)
+                v_old = rollout.old_values[mask].view(-1)
 
-            beta = self.beta_net(obs, act).view(-1)        # (B,)
-            v_rob = self.robustify(v_old, beta)            # (B,)
+            beta = self.beta_net(obs, act).view(-1)
+            beta = th.clamp(beta, 1e-3, 10.0)
+
+            v_rob = self.robustify(v_old, beta)
             loss_beta = -v_rob.mean()
 
             self.beta_opt.zero_grad()
@@ -121,24 +122,26 @@ class DRSPCRLRecurrentPPO(RecurrentPPO):
                     rollout.episode_starts,
                 )
 
-                # mask + flatten
                 obs = rollout.observations[mask]
                 act = rollout.actions[mask]
 
-                values = values[mask].view(-1)                  # (B,)
-                old_values = rollout.old_values[mask].view(-1)  # (B,)
-                returns = rollout.returns[mask].view(-1)        # (B,)
+                values = values[mask].view(-1)
+                old_values = rollout.old_values[mask].view(-1)
+                returns = rollout.returns[mask].view(-1)
 
                 log_prob = log_prob[mask].view(-1)
                 old_log_prob = rollout.old_log_prob[mask].view(-1)
 
-                # robust advantage + robust value target
+                # --------------------------------------------------
+                # (1) STANDARD PPO ADVANTAGE
+                # --------------------------------------------------
                 with th.no_grad():
-                    beta = self.beta_net(obs, act).view(-1)
-                    v_rob_old = self.robustify(old_values, beta)      # (B,)
-                    adv = (v_rob_old - values)
+                    adv = returns - values
                     adv = (adv - adv.mean()) / (adv.std() + 1e-8)
 
+                # --------------------------------------------------
+                # (2) POLICY LOSS
+                # --------------------------------------------------
                 ratio = th.exp(log_prob - old_log_prob)
                 pg_loss = -th.mean(
                     th.min(
@@ -147,61 +150,96 @@ class DRSPCRLRecurrentPPO(RecurrentPPO):
                     )
                 )
                 pg_losses.append(pg_loss.item())
-                clip_fracs.append(th.mean((th.abs(ratio - 1) > clip_range).float()).item())
+                clip_fracs.append(
+                    th.mean((th.abs(ratio - 1) > clip_range).float()).item()
+                )
 
-                # critic: train towards ROBUST target (not plain returns)
+                # --------------------------------------------------
+                # (3) ROBUST CRITIC TARGET
+                # --------------------------------------------------
+                with th.no_grad():
+                    beta = self.beta_net(obs, act).view(-1)
+                    beta = th.clamp(beta, 1e-3, 10.0)
+                    v_rob_old = self.robustify(old_values, beta)
+
                 if clip_range_vf is None:
                     values_pred = values
                 else:
-                    values_pred = old_values + th.clamp(values - old_values, -clip_range_vf, clip_range_vf)
+                    values_pred = old_values + th.clamp(
+                        values - old_values,
+                        -clip_range_vf,
+                        clip_range_vf,
+                    )
 
-                v_target = v_rob_old.detach()  # robust target
-                value_loss = F.mse_loss(values_pred, v_target)
+                value_loss = F.mse_loss(values_pred, v_rob_old.detach())
                 value_losses.append(value_loss.item())
 
+                # --------------------------------------------------
+                # (4) ENTROPY
+                # --------------------------------------------------
                 if entropy is None:
                     entropy_loss = -th.mean(-log_prob)
                 else:
                     entropy_loss = -th.mean(entropy[mask].view(-1))
                 entropy_losses.append(float(entropy_loss.item()))
 
-                loss = pg_loss + self.vf_coef * value_loss + self.ent_coef * entropy_loss
+                loss = (
+                    pg_loss
+                    + self.vf_coef * value_loss
+                    + self.ent_coef * entropy_loss
+                )
 
                 self.policy.optimizer.zero_grad()
                 loss.backward()
-                th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+                th.nn.utils.clip_grad_norm_(
+                    self.policy.parameters(), self.max_grad_norm
+                )
                 self.policy.optimizer.step()
 
-        # -------------------------
-        # (C) epsilon update (stable)
-        # -------------------------
+        # ============================================================
+        # (C) EPSILON UPDATE
+        # ============================================================
         with th.no_grad():
             batch = next(self.rollout_buffer.get(self.batch_size))
             m = batch.mask.view(-1) > 0.5
             if m.sum().item() > 0:
-                beta_bar = self.beta_net(batch.observations[m], batch.actions[m]).mean().item()
+                beta_bar = (
+                    self.beta_net(batch.observations[m], batch.actions[m])
+                    .mean()
+                    .item()
+                )
             else:
                 beta_bar = 0.0
 
-        # Increase epsilon when beta_bar is above target -> keeps beta bounded
         self.epsilon += self.lr_curr * (beta_bar - self.target_beta)
-        # optional soft regularization towards eps_budget:
         self.epsilon -= self.lr_curr * self.alpha * (self.epsilon - self.eps_budget)
-
         self.epsilon = float(np.clip(self.epsilon, 0.0, self.eps_budget))
 
-        # -------------------------
-        # logging
-        # -------------------------
+        # ============================================================
+        # (D) LOGGING
+        # ============================================================
         self.logger.record("train/epsilon", self.epsilon)
         self.logger.record("train/beta_bar", beta_bar)
-        self.logger.record("train/policy_loss", float(np.mean(pg_losses)) if pg_losses else 0.0)
-        self.logger.record("train/value_loss", float(np.mean(value_losses)) if value_losses else 0.0)
-        self.logger.record("train/entropy_loss", float(np.mean(entropy_losses)) if entropy_losses else 0.0)
-        self.logger.record("train/clip_fraction", float(np.mean(clip_fracs)) if clip_fracs else 0.0)
+        self.logger.record(
+            "train/policy_loss", float(np.mean(pg_losses)) if pg_losses else 0.0
+        )
+        self.logger.record(
+            "train/value_loss", float(np.mean(value_losses)) if value_losses else 0.0
+        )
+        self.logger.record(
+            "train/entropy_loss",
+            float(np.mean(entropy_losses)) if entropy_losses else 0.0,
+        )
+        self.logger.record(
+            "train/clip_fraction",
+            float(np.mean(clip_fracs)) if clip_fracs else 0.0,
+        )
 
         try:
-            ev = explained_variance(self.rollout_buffer.returns.flatten(), self.rollout_buffer.values.flatten())
+            ev = explained_variance(
+                self.rollout_buffer.returns.flatten(),
+                self.rollout_buffer.values.flatten(),
+            )
             self.logger.record("train/explained_variance", float(ev))
         except Exception:
             pass

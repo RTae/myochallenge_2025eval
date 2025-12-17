@@ -151,6 +151,9 @@ class CurriculumEnv(gym.Env):
             )
             timing_weight = (self.ttc_threshold - ttc) / self.ttc_threshold
             shaping_reward += a * self.w0_timing * timing_weight * paddle_forward
+            
+        if info["is_success"]:
+            reward += 0.2 * a
 
         reward += shaping_reward
         info["reward_shaping"] = shaping_reward
