@@ -9,6 +9,7 @@ from utils import prepare_experiment_directory, make_predict_fn
 from callbacks.infologger_callback import InfoLoggerCallback
 from callbacks.video_callback import VideoCallback
 from callbacks.curriculum_callback import CurriculumCallback
+from loguru import logger
 
 from curriculum_env import CurriculumEnv
 from dr_spcrl import DRSPCRLRecurrentPPO
@@ -85,7 +86,8 @@ def main():
     #     freeze_threshold=0.05,
     #     verbose=1,
     # )
-
+    logger.info("Starting Worker training... with total_timesteps="
+                f"{cfg.worker_total_timesteps}")
     model.learn(
         total_timesteps=cfg.worker_total_timesteps,
         callback=CallbackList([info_cb, eval_cb, video_cb]),
@@ -93,6 +95,7 @@ def main():
 
     model_path = os.path.join(cfg.logdir, "model.pkl")
     model.save(model_path)
+    logger.info(f"Worker model saved to {model_path}, closing environments...")
     
     eval_env.close()
     video_env.close()
