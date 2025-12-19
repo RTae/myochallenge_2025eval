@@ -1,8 +1,6 @@
-from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize
 from stable_baselines3.common.callbacks import CallbackList, EvalCallback
 from callbacks.infologger_callback import InfoLoggerCallback
 from callbacks.video_callback import VideoCallback
-from stable_baselines3.common.monitor import Monitor
 from sb3_contrib import RecurrentPPO
 from lattice.ppo.policies import LatticeRecurrentActorCriticPolicy
 from config import Config
@@ -10,39 +8,14 @@ from loguru import logger
 import os
 
 from utils import prepare_experiment_directory, make_predict_fn
+from env_factory import create_default_env
 from custom_env import CustomEnv
-
-
-def create_env(cfg: Config, num_envs: int) -> VecNormalize:    
-    def make_env(rank: int):
-        def _init():
-            # Create plain environment
-            env = CustomEnv(cfg)
-            return Monitor(env, info_keywords=("is_success",))
-        return _init
-    
-    logger.info(f"Creating {num_envs} parallel plain environments")
-    
-    # Create vectorized environment
-    env = SubprocVecEnv([make_env(i) for i in range(num_envs)])
-    
-    # Add normalization
-    env = VecNormalize(
-        env, 
-        norm_obs=True, 
-        norm_reward=False,
-        clip_obs=10.0,
-        clip_reward=10.0,
-        gamma=cfg.ppo_gamma,
-    )
-    
-    return env
 
 def main():
     cfg = Config()
     prepare_experiment_directory(cfg)
             
-    env = create_env(cfg, num_envs=cfg.num_envs)
+    env = create_default_env(cfg, num_envs=cfg.num_envs)
     model = RecurrentPPO(policy=LatticeRecurrentActorCriticPolicy, 
         env=env,
         verbose=1,
@@ -77,7 +50,7 @@ def main():
     
     info_cb = InfoLoggerCallback(prefix="train/info")
     
-    eval_env = create_env(cfg, num_envs=1)
+    eval_env = create_default_env(cfg, num_envs=1)
     eval_cb = EvalCallback(
         eval_env,
         best_model_save_path=os.path.join(cfg.logdir, "best_model"),

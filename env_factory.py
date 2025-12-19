@@ -93,18 +93,24 @@ def create_manager_vector_env(cfg: Config,
     
     return env
 
-def create_plain_vector_env(cfg: Config, num_envs: int) -> VecNormalize:
-    """
-    Create vectorized plain environments for training.
-    
-    Args:
-        cfg: Configuration
-        num_envs: Number of parallel environments
-    
-    Returns:
-        Vectorized and normalized plain environment
-    """ 
-    
+def create_curriculum_vector_env(cfg: Config, num_envs: int, eval_mode: bool = False):
+    def make_env(rank):
+        def _init():
+            env = CurriculumEnv(cfg, eval_mode=eval_mode)
+            return Monitor(env, info_keywords=("is_success",))
+        return _init
+
+    env = SubprocVecEnv([make_env(i) for i in range(num_envs)])
+
+    env = VecNormalize(
+        env,
+        norm_obs=True,
+        norm_reward=False,
+        clip_obs=10.0,
+    )
+    return env
+
+def create_default_env(cfg: Config, num_envs: int) -> VecNormalize:    
     def make_env(rank: int):
         def _init():
             # Create plain environment
@@ -123,27 +129,12 @@ def create_plain_vector_env(cfg: Config, num_envs: int) -> VecNormalize:
         norm_obs=True, 
         norm_reward=False,
         clip_obs=10.0,
-        clip_reward=10.0
+        clip_reward=10.0,
+        gamma=cfg.ppo_gamma,
     )
     
     return env
 
-def create_curriculum_vector_env(cfg: Config, num_envs: int, eval_mode: bool = False):
-    def make_env(rank):
-        def _init():
-            env = CurriculumEnv(cfg, eval_mode=eval_mode)
-            return Monitor(env, info_keywords=("is_success",))
-        return _init
-
-    env = SubprocVecEnv([make_env(i) for i in range(num_envs)])
-
-    env = VecNormalize(
-        env,
-        norm_obs=True,
-        norm_reward=False,
-        clip_obs=10.0,
-    )
-    return env
 
 def build_env(
     cfg: Config, 
@@ -178,11 +169,7 @@ def build_env(
             worker_model=worker_model,
             num_envs=cfg.num_envs
         )
-    if env_type == "plain":
-        return create_plain_vector_env(cfg, num_envs=cfg.num_envs)
 
     if env_type == "curriculum":
         logger.info(f"Building Curriculum environments... with eval_mode={eval_mode} with num_envs={cfg.num_envs}")
         return create_curriculum_vector_env(cfg, num_envs=cfg.num_envs, eval_mode=eval_mode)
-    
-    raise ValueError(f"Unknown env_type: {env_type}")
