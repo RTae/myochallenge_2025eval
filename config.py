@@ -39,7 +39,7 @@ class Config:
     # ==================================================
     # PPO
     # ==================================================
-    ppo_total_timesteps: int = getenv("PPO_TOTAL_TIMESTEPS", 20_000, int)
+    ppo_total_timesteps: int = getenv("PPO_TOTAL_TIMESTEPS", 30_000_000, int)
     ppo_batch_size: int = getenv("PPO_BATCH_SIZE", 64, int)
     ppo_n_steps: int = getenv("PPO_N_STEPS", 2048, int)
     ppo_epochs: int = getenv("PPO_EPOCHS", 10, int)
@@ -55,10 +55,10 @@ class Config:
     # ==================================================
     # Evaluation & Video
     # ==================================================
-    eval_freq: int = getenv("EVAL_FREQ", 10_000, int)
+    eval_freq: int = getenv("EVAL_FREQ", 50_000, int)
     eval_episodes: int = getenv("EVAL_EPISODES", 150, int)
 
-    video_freq: int = getenv("VIDEO_FREQ", 15_000, int)
+    video_freq: int = getenv("VIDEO_FREQ", 1_000_000, int)
     video_w: int = getenv("VIDEO_W", 640, int)
     video_h: int = getenv("VIDEO_H", 480, int)
     camera_id: int = getenv("CAMERA_ID", 1, int)
