@@ -32,14 +32,14 @@ class Config:
     # ==================================================
     # Training
     # ==================================================
-    worker_total_timesteps: int = getenv("WORKER_TOTAL_TIMESTEPS", 10_000, int)
+    worker_total_timesteps: int = getenv("WORKER_TOTAL_TIMESTEPS", 20_000, int)
     manager_total_timesteps: int = getenv("MANAGER_TOTAL_TIMESTEPS", 5_000_000, int)
     logdir: str = getenv("LOGDIR", "./logs", str)
 
     # ==================================================
     # PPO
     # ==================================================
-    ppo_total_timesteps: int = getenv("PPO_TOTAL_TIMESTEPS", 1_000_000, int)
+    ppo_total_timesteps: int = getenv("PPO_TOTAL_TIMESTEPS", 20_000, int)
     ppo_n_steps: int = getenv("PPO_N_STEPS", 2048, int)
     ppo_epochs: int = getenv("PPO_EPOCHS", 10, int)
     ppo_lr: float = getenv("PPO_LR", 3e-4, float)
@@ -57,7 +57,7 @@ class Config:
     eval_freq: int = getenv("EVAL_FREQ", 5_000, int)
     eval_episodes: int = getenv("EVAL_EPISODES", 150, int)
 
-    video_freq: int = getenv("VIDEO_FREQ", 1_000_000, int)
+    video_freq: int = getenv("VIDEO_FREQ", 10_000, int)
     video_w: int = getenv("VIDEO_W", 640, int)
     video_h: int = getenv("VIDEO_H", 480, int)
     camera_id: int = getenv("CAMERA_ID", 1, int)

@@ -52,7 +52,6 @@ def main():
         gamma=cfg.ppo_gamma,
         learning_rate=cfg.ppo_lr,
         gae_lambda=cfg.ppo_lambda,
-        clip_range=cfg.ppo_clip,
         n_epochs=cfg.ppo_epochs,
         max_grad_norm=cfg.ppo_max_grad_norm,
         clip_range=cfg.ppo_clip_range,
