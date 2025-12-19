@@ -1,214 +1,233 @@
-# worker_env.py
-import gymnasium as gym
+from typing import Tuple, Dict, Optional
 import numpy as np
-from gymnasium import spaces
-
-from config import Config
-from utils import build_worker_obs, WorkerReward, HitDetector
 from loguru import logger
 
+from myosuite.utils import gym as myo_gym
+from config import Config
+from utils import quat_to_paddle_normal
 
-class WorkerEnv(gym.Env):
-    """Low-level worker (contact-conditioned) with automatic curriculum."""
+
+class TableTennisWorker(myo_gym.Env):
+    """
+    Goal-conditioned Worker (motor primitive)
+
+    Observation (18D):
+      [ paddle_pos_rel(3),
+        paddle_vel(3),
+        paddle_ori_normal(3),
+        pelvis_xy_rel(2),
+        time(1),
+        goal(6) ]
+
+    Goal:
+      [ dx, dy, dz, dpx, dpy, dt ]
+    """
 
     metadata = {"render_modes": []}
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, device: str = "cpu"):
         super().__init__()
-        from myosuite.utils import gym as myo_gym
+        self.config = config
+        self.device = device
 
-        self.cfg = config
-        self.base_env = myo_gym.make(config.env_id)
+        self.env = myo_gym.make(config.env_id)
 
-        # -----------------------------
-        # Curriculum state
-        # -----------------------------
-        self.curriculum_stage = 0
-        self.curriculum_window = 200
-        self.curriculum_stats = {
-            "hit": [],
-            "dv": [],
+        # ---------------- Goal bounds ----------------
+        self.goal_low = np.array(
+            [-1.2, -0.6, -0.4, -0.8, -0.5, 0.15], dtype=np.float32
+        )
+        self.goal_high = np.array(
+            [ 0.6,  0.6,  0.6,  0.8,  0.5, 1.00], dtype=np.float32
+        )
+
+        self.goal_dim = 6
+        self.observation_dim = 18
+
+        self.observation_space = myo_gym.spaces.Box(
+            low=-np.inf, high=np.inf,
+            shape=(self.observation_dim,), dtype=np.float32
+        )
+
+        self.action_space = self.env.action_space
+
+        # ---------------- Episode state ----------------
+        self.current_goal: Optional[np.ndarray] = None
+        self.goal_start_time: Optional[float] = None
+        self._episode_goal_achieved = False
+
+        # ---------------- Curriculum ----------------
+        self.training_stage = 0
+        self.recent_successes = []
+
+        # ---------------- Success thresholds ----------------
+        self.success_pos_thr = 0.12
+        self.success_vel_thr = 1.2
+        self.success_time_thr = 0.35
+        self.success_bonus = 15.0
+
+        # ---------------- Stage reward weights ----------------
+        self.stage_cfg = [
+            dict(W_POS=2.5, W_PELV=1.5, W_TIME=0.5, W_VEL=0.1),  # stage 0
+            dict(W_POS=2.5, W_PELV=1.5, W_TIME=1.2, W_VEL=0.25), # stage 1
+            dict(W_POS=3.0, W_PELV=2.0, W_TIME=2.0, W_VEL=0.45), # stage 2
+        ]
+
+    # ============================================================
+    # Reset / Step
+    # ============================================================
+
+    def reset(self, seed: Optional[int] = None) -> Tuple[np.ndarray, Dict]:
+        _, info = self.env.reset(seed=seed)
+        self._episode_goal_achieved = False
+        self.current_goal = None
+        self.goal_start_time = None
+        return self._augment_observation(), info
+
+    def step(self, action: np.ndarray):
+        _, base_reward, terminated, truncated, info = self.env.step(action)
+
+        reward, rinfo = self._compute_reward()
+        total_reward = float(reward + 0.05 * base_reward)
+
+        if rinfo["goal_achieved"]:
+            self._episode_goal_achieved = True
+
+        if terminated or truncated:
+            self._update_curriculum()
+            self.current_goal = None
+            self.goal_start_time = None
+
+        return (
+            self._augment_observation(),
+            total_reward,
+            terminated,
+            truncated,
+            {**info, **rinfo,
+             "episode_goal_achieved": self._episode_goal_achieved,
+             "is_success": bool(info.get("solved", False))}
+        )
+
+    # ============================================================
+    # Observation
+    # ============================================================
+
+    def _augment_observation(self) -> np.ndarray:
+        obs = self.env.obs_dict
+
+        ball_pos = np.asarray(obs["ball_pos"], dtype=np.float32)
+        paddle_pos = np.asarray(obs["paddle_pos"], dtype=np.float32)
+        paddle_vel = np.asarray(obs["paddle_vel"], dtype=np.float32)
+
+        paddle_ori = quat_to_paddle_normal(
+            np.asarray(obs["paddle_ori"], dtype=np.float32)
+        )
+
+        pelvis_xy = np.asarray(obs["pelvis_pos"][:2], dtype=np.float32)
+
+        paddle_rel = paddle_pos - ball_pos
+        pelvis_rel = pelvis_xy - ball_pos[:2]
+        time = np.array([float(obs["time"])], dtype=np.float32)
+
+        if self.current_goal is None:
+            self.current_goal = self._sample_goal()
+            self.goal_start_time = float(obs["time"])
+
+        state = np.hstack([
+            paddle_rel,
+            paddle_vel,
+            paddle_ori,
+            pelvis_rel,
+            time,
+        ])
+
+        return np.hstack([state, self.current_goal]).astype(np.float32)
+
+    # ============================================================
+    # Goal sampling
+    # ============================================================
+
+    def _sample_goal(self) -> np.ndarray:
+        scale = [0.4, 0.7, 1.0][self.training_stage]
+        return (
+            self.goal_low +
+            scale * (self.goal_high - self.goal_low) *
+            np.random.rand(self.goal_dim)
+        ).astype(np.float32)
+
+    # ============================================================
+    # Reward
+    # ============================================================
+
+    def _compute_reward(self) -> Tuple[float, Dict]:
+        obs = self.env.obs_dict
+        cfg = self.stage_cfg[self.training_stage]
+
+        ball_pos = np.asarray(obs["ball_pos"], dtype=np.float32)
+        paddle_pos = np.asarray(obs["paddle_pos"], dtype=np.float32)
+        paddle_vel = np.asarray(obs["paddle_vel"], dtype=np.float32)
+        pelvis_xy = np.asarray(obs["pelvis_pos"][:2], dtype=np.float32)
+        time = float(obs["time"])
+
+        dx, dy, dz, dpx, dpy, dt = self.current_goal
+        target_time = self.goal_start_time + dt
+        target_paddle = ball_pos + np.array([dx, dy, dz])
+        target_pelvis = ball_pos[:2] + np.array([dpx, dpy])
+
+        pos_error = np.linalg.norm(paddle_pos - target_paddle)
+        pelvis_error = np.linalg.norm(pelvis_xy - target_pelvis)
+        vel_norm = np.linalg.norm(paddle_vel)
+        time_error = abs(time - target_time)
+
+        reward = 0.0
+        goal_achieved = False
+
+        if time < target_time:
+            reward += cfg["W_POS"] * np.exp(-4.0 * pos_error)
+            reward += cfg["W_PELV"] * np.exp(-3.0 * pelvis_error)
+            reward -= cfg["W_VEL"] * vel_norm
+        else:
+            reward += cfg["W_POS"] * np.exp(-8.0 * pos_error)
+            reward += cfg["W_TIME"] * np.exp(-2.0 * time_error)
+            reward -= cfg["W_VEL"] * vel_norm
+
+            if (
+                pos_error < self.success_pos_thr and
+                vel_norm < self.success_vel_thr and
+                time_error < self.success_time_thr
+            ):
+                reward += self.success_bonus
+                goal_achieved = True
+
+        return reward, {
+            "goal_achieved": goal_achieved,
+            "position_error": float(pos_error),
+            "pelvis_error": float(pelvis_error),
+            "velocity_norm": float(vel_norm),
+            "time_error": float(time_error),
         }
 
-        # -----------------------------
-        # Hit detection (initially easy)
-        # -----------------------------
-        self.hit_detector = HitDetector(dv_thr=0.5)
+    # ============================================================
+    # Curriculum
+    # ============================================================
 
-        # -----------------------------
-        # Reward function
-        # -----------------------------
-        self.reward_fn = WorkerReward(
-            hit_bonus=6.0,
-            sweet_spot_bonus=2.0,
-            approach_scale=0.2,
-            inactivity_penalty=-0.05,
-            energy_penalty_coef=0.001,
-        )
-
-        self.warmup_steps = 500_000
-
-        # -----------------------------
-        # Episode horizon
-        # -----------------------------
-        self.max_worker_steps = self.cfg.worker_episode_len
-        self.worker_step_count = 0
-
-        self.goal = np.zeros(3, dtype=np.float32)
-        self.t_in_macro = 0
-        self.hit_count = 0
-        self.step_count = 0
-
-        # Infer obs shape
-        self.base_env.reset()
-        obs_dict = self.base_env.obs_dict
-        self.goal = self._sample_goal()
-
-        worker_obs = build_worker_obs(
-            obs_dict, self.goal, self.t_in_macro, self.cfg
-        )
-
-        self.observation_space = spaces.Box(
-            low=-np.inf,
-            high=np.inf,
-            shape=worker_obs.shape,
-            dtype=np.float32,
-        )
-
-        self.action_space = self.base_env.action_space
-
-    # --------------------------------------------------
-    def _sample_goal(self):
-        g = np.random.normal(
-            loc=0.0,
-            scale=self.cfg.goal_std,
-            size=(3,),
-        ).astype(np.float32)
-        return np.clip(g, -self.cfg.goal_bound, self.cfg.goal_bound)
-
-    # --------------------------------------------------
-    def reset(self, *, seed=None, options=None):
-        obs, info = self.base_env.reset(seed=seed)
-        obs_dict = info.get("obs_dict", {}) if info else self.base_env.obs_dict
-
-        self.hit_detector.reset(obs_dict)
-        self.reward_fn.reset()
-
-        self.worker_step_count = 0
-        self.t_in_macro = 0
-        self.hit_count = 0
-        self.step_count = 0
-
-        self.curriculum_stats = {"hit": [], "dv": []}
-
-        if getattr(self.cfg, "eval_mode", False):
-            self.goal = np.zeros(self.cfg.goal_dim, dtype=np.float32)
-        else:
-            self.goal = self._sample_goal()
-
-        return build_worker_obs(
-            obs_dict, self.goal, self.t_in_macro, self.cfg
-        ), {}
-
-    # --------------------------------------------------
     def _update_curriculum(self):
-        if len(self.curriculum_stats["hit"]) < self.curriculum_window:
-            return
+        self.recent_successes.append(int(self._episode_goal_achieved))
+        if len(self.recent_successes) > 100:
+            self.recent_successes.pop(0)
 
-        hit_rate = np.mean(self.curriculum_stats["hit"])
-        dv_mean = np.mean(self.curriculum_stats["dv"])
+        if len(self.recent_successes) == 100 and np.mean(self.recent_successes) > 0.6:
+            if self.training_stage < 2:
+                self.training_stage += 1
+                self.recent_successes.clear()
+                logger.info(f"[Worker] Curriculum → stage {self.training_stage}")
 
-        # Stage 0 → 1
-        if self.curriculum_stage == 0 and hit_rate > 0.02:
-            self.curriculum_stage = 1
-            logger.info("[CURRICULUM] → Stage 1 (commitment)")
-            self.hit_detector.dv_thr = 1.0
-            self.reward_fn.hit_bonus = 10.0
+    # ============================================================
 
-        # Stage 1 → 2
-        elif self.curriculum_stage == 1 and hit_rate > 0.05 and dv_mean > 0.8:
-            self.curriculum_stage = 2
-            logger.info("[CURRICULUM] → Stage 2 (strong hits)")
-            self.hit_detector.dv_thr = 1.5
-            self.reward_fn.hit_bonus = 15.0
+    def render(self):
+        return self.env.render()
 
-    # --------------------------------------------------
-    def step(self, action):
-        obs, _, terminated, truncated, info = self.base_env.step(action)
-        obs_dict = info.get("obs_dict", {}) if info else self.base_env.obs_dict
+    def close(self):
+        return self.env.close()
 
-        self.t_in_macro += 1
-        self.step_count += 1
-        self.worker_step_count += 1
-
-        # -----------------------------
-        # Hit detection
-        # -----------------------------
-        hit, contact_force, dv = self.hit_detector.step(obs_dict)
-
-        self.curriculum_stats["hit"].append(float(hit))
-        self.curriculum_stats["dv"].append(dv)
-
-        if len(self.curriculum_stats["hit"]) > self.curriculum_window:
-            self.curriculum_stats["hit"].pop(0)
-            self.curriculum_stats["dv"].pop(0)
-
-        self._update_curriculum()
-
-        if hit:
-            self.hit_count += 1
-            if self.step_count % 1000 == 0:
-                logger.info(
-                    f"[WORKER] HIT dv={dv:.2f} m/s, force={contact_force:.2f} N"
-                )
-
-        # -----------------------------
-        # Energy warmup
-        # -----------------------------
-        warmup_factor = 0.2 if self.step_count < self.warmup_steps else 1.0
-        original_energy_coef = self.reward_fn.energy_penalty_coef
-        self.reward_fn.energy_penalty_coef = original_energy_coef * warmup_factor
-
-        # -----------------------------
-        # Reward
-        # -----------------------------
-        r_int, reward_components = self.reward_fn(
-            obs_dict=obs_dict,
-            hit=hit,
-            goal=self.goal,
-            external_dv=dv,
-            external_contact_force=contact_force,
-        )
-
-        self.reward_fn.energy_penalty_coef = original_energy_coef
-
-        # -----------------------------
-        # Macro-goal transition
-        # -----------------------------
-        if self.t_in_macro >= self.cfg.high_level_period or terminated or truncated:
-            if not getattr(self.cfg, "eval_mode", False):
-                self.goal = self._sample_goal()
-            self.t_in_macro = 0
-
-        # -----------------------------
-        # Force episode end
-        # -----------------------------
-        if self.worker_step_count >= self.max_worker_steps:
-            truncated = True
-
-        obs = build_worker_obs(
-            obs_dict, self.goal, self.t_in_macro, self.cfg
-        )
-
-        info = info or {}
-        info.update({
-            "hit": hit,
-            "hit_rate": self.hit_count / max(1, self.step_count),
-            "contact_force": contact_force,
-            "dv": dv,
-            "intrinsic_reward": r_int,
-            "curriculum_stage": self.curriculum_stage,
-        })
-        info.update(reward_components)
-
-        return obs, r_int, terminated, truncated, info
+    def __getattr__(self, name):
+        return getattr(self.env, name)

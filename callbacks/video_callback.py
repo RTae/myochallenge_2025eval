@@ -12,10 +12,11 @@ class VideoCallback(BaseCallback):
     Uses a DEDICATED raw MyoSuite env.
     """
 
-    def __init__(self, env_func: callable, cfg: Config, predict_fn, verbose: int = 0):
+    def __init__(self, env_func: callable, env_args: dict, cfg: Config, predict_fn, verbose: int = 0):
         super().__init__(verbose)
         self.cfg = cfg
         self.env_func = env_func
+        self.env_args = env_args
         self.predict_fn = predict_fn
 
         self.video_dir = os.path.join(cfg.logdir, "videos")
@@ -33,7 +34,7 @@ class VideoCallback(BaseCallback):
         return True
 
     def _record(self, video_path: str):
-        env = self.env_func(self.cfg)
+        env = self.env_func(**self.env_args)
         obs, _ = env.reset(seed=self.cfg.seed + 123)
 
         # warmup renderer

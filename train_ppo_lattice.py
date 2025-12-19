@@ -60,8 +60,13 @@ def main():
         deterministic=True,
         render=False,
     )
-    
-    video_cb = VideoCallback(CustomEnv, cfg, make_predict_fn(model))
+        
+    video_cb = VideoCallback(
+        env_func=CustomEnv,
+        env_args={"config": cfg},
+        cfg=cfg,
+        predict_fn=make_predict_fn(model)
+    )
     
     model.learn(
         total_timesteps=cfg.ppo_total_timesteps,
