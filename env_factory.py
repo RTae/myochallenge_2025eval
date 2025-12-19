@@ -121,7 +121,7 @@ def create_plain_vector_env(cfg: Config, num_envs: int) -> VecNormalize:
     env = VecNormalize(
         env, 
         norm_obs=True, 
-        norm_reward=True, 
+        norm_reward=False,
         clip_obs=10.0,
         clip_reward=10.0
     )
@@ -142,7 +142,6 @@ def create_curriculum_vector_env(cfg: Config, num_envs: int, eval_mode: bool = F
         norm_obs=True,
         norm_reward=False,
         clip_obs=10.0,
-        gamma=cfg.ppo_gamma,
     )
     return env
 

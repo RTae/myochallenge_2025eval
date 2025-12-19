@@ -12,7 +12,7 @@ from callbacks.video_callback import VideoCallback
 
 from worker_env import TableTennisWorker
 from manager_env import TableTennisManager
-from dr_spcrl import DRSPCRLRecurrentPPO
+from dr_spcrl.dr_spcrl import DRSPCRLRecurrentPPO
 from loguru import logger
 
 

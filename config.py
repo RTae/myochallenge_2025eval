@@ -32,22 +32,24 @@ class Config:
     # ==================================================
     # Training
     # ==================================================
-    worker_total_timesteps: int = getenv("WORKER_TOTAL_TIMESTEPS", 20_000_000, int)
+    worker_total_timesteps: int = getenv("WORKER_TOTAL_TIMESTEPS", 1_000_000, int)
     manager_total_timesteps: int = getenv("MANAGER_TOTAL_TIMESTEPS", 5_000_000, int)
     logdir: str = getenv("LOGDIR", "./logs", str)
 
     # ==================================================
-    # PPO (FAST FEEDBACK)
+    # PPO
     # ==================================================
     ppo_n_steps: int = getenv("PPO_N_STEPS", 128, int)
     ppo_batch_size: int = getenv("PPO_BATCH_SIZE", 32, int)
-    ppo_epochs: int = getenv("PPO_EPOCHS", 5, int)
-
-    ppo_lr: float = getenv("PPO_LR", 2.5e-5, float)
-
+    ppo_epochs: int = getenv("PPO_EPOCHS", 10, int)
+    ppo_lr: float = getenv("PPO_LR", 3e-4, float)
+    ppo_clip_range: float = getenv("PPO_CLIP_RANGE", 0.2, float)
     ppo_gamma: float = getenv("PPO_GAMMA", 0.99, float)
     ppo_lambda: float = getenv("PPO_LAMBDA", 0.95, float)
     ppo_clip: float = getenv("PPO_CLIP", 0.2, float)
+    ppo_max_grad_norm: float = getenv("PPO_MAX_GRAD_NORM", 0.5, float)
+    ppo_clip_range: float = getenv("PPO_CLIP_RANGE", 0.2, float)
+    ppo_hidden_dim: int = getenv("PPO_HIDDEN_DIM", 64, int)
 
     # ==================================================
     # Evaluation & Video

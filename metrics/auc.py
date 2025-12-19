@@ -19,6 +19,15 @@ def load_tb_scalar(logdir, tag):
     values = np.array([e.value for e in events])
     return steps, values
 
+def smooth_values(values, window=10):
+    """Apply moving average smoothing"""
+    if window <= 1:
+        return values
+    return np.convolve(values, np.ones(window)/window, mode='same')
+
+def normalize_auc(auc, optimal_reward=1.0, max_steps=1e6):
+    """Normalize AUC by optimal performance and time"""
+    return auc / (optimal_reward * max_steps)
 
 def compute_auc(steps, values):
     """
@@ -30,7 +39,17 @@ def compute_auc(steps, values):
 if __name__ == "__main__":
     logdir = "./logs/exp"
     tag = "rollout/ep_rew_mean"
-
+    
     steps, values = load_tb_scalar(logdir, tag)
-    auc = compute_auc(steps, values)
-    print(f"AUC for tag '{tag}': {auc}")
+    
+    # Apply smoothing
+    values_smooth = smooth_values(values, window=10)
+    
+    # Compute AUC
+    auc = compute_auc(steps, values_smooth)
+    
+    # Optional normalization
+    # norm_auc = normalize_auc(auc, optimal_reward=1000, max_steps=steps[-1])
+    
+    print(f"AUC for tag '{tag}': {auc:.2f}")
+    # print(f"Normalized AUC: {norm_auc:.4f}")
