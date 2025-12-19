@@ -82,7 +82,7 @@ def main():
     
     model_path = os.path.join(cfg.logdir, "model.pkl")
     model.save(model_path)
-    logger.info(f"Worker model saved to {model_path}, closing environments...")
+    logger.info(f"Model saved to {model_path}, closing environments...")
     
     eval_env.close()
     env.close()
