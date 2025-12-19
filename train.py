@@ -11,7 +11,7 @@ from callbacks.video_callback import VideoCallback
 from callbacks.curriculum_callback import CurriculumCallback
 from loguru import logger
 
-from curriculum_env import CurriculumEnv
+from dr_spcrl.curriculum_env import CurriculumEnv
 from dr_spcrl.dr_spcrl import DRSPCRLRecurrentPPO
 
 

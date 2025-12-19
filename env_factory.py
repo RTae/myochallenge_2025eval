@@ -6,10 +6,10 @@ from stable_baselines3.common.monitor import Monitor
 from sb3_contrib import RecurrentPPO
 from config import Config
 
-from worker_env import TableTennisWorker
-from manager_env import TableTennisManager
+from hrl.worker_env import TableTennisWorker
+from hrl.manager_env import TableTennisManager
+from dr_spcrl.curriculum_env import CurriculumEnv
 from custom_env import CustomEnv
-from curriculum_env import CurriculumEnv
 
 
 def create_worker_vector_env(cfg: Config, num_envs: int) -> VecNormalize:
