@@ -32,15 +32,15 @@ class Config:
     # ==================================================
     # Training
     # ==================================================
-    worker_total_timesteps: int = getenv("WORKER_TOTAL_TIMESTEPS", 1_000_000, int)
+    worker_total_timesteps: int = getenv("WORKER_TOTAL_TIMESTEPS", 10_000, int)
     manager_total_timesteps: int = getenv("MANAGER_TOTAL_TIMESTEPS", 5_000_000, int)
     logdir: str = getenv("LOGDIR", "./logs", str)
 
     # ==================================================
     # PPO
     # ==================================================
-    ppo_n_steps: int = getenv("PPO_N_STEPS", 128, int)
-    ppo_batch_size: int = getenv("PPO_BATCH_SIZE", 32, int)
+    ppo_total_timesteps: int = getenv("PPO_TOTAL_TIMESTEPS", 1_000_000, int)
+    ppo_n_steps: int = getenv("PPO_N_STEPS", 2048, int)
     ppo_epochs: int = getenv("PPO_EPOCHS", 10, int)
     ppo_lr: float = getenv("PPO_LR", 3e-4, float)
     ppo_clip_range: float = getenv("PPO_CLIP_RANGE", 0.2, float)

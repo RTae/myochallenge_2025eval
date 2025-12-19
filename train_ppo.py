@@ -42,14 +42,13 @@ def main():
     prepare_experiment_directory(cfg)
     
     env = create_env(cfg, num_envs=1)
-    n_steps = 2048
     model = PPO(
         "MlpPolicy",
         env,
         verbose=1,
         tensorboard_log=os.path.join(cfg.logdir),
-        n_steps=n_steps,
-        batch_size=n_steps//cfg.ppo_batch_size,
+        n_steps=cfg.ppo_n_steps,
+        batch_size=cfg.ppo_n_steps//cfg.ppo_batch_size,
         gamma=cfg.ppo_gamma,
         learning_rate=cfg.ppo_lr,
         gae_lambda=cfg.ppo_lambda,
@@ -79,7 +78,7 @@ def main():
     video_cb = VideoCallback(video_env, cfg, make_predict_fn(model))
     
     model.learn(
-        total_timesteps=cfg.worker_total_timesteps,
+        total_timesteps=cfg.ppo_total_timesteps,
         callback=CallbackList([info_cb, eval_cb, video_cb]),
     )
 
