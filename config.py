@@ -55,7 +55,7 @@ class Config:
     # ==================================================
     # Evaluation & Video
     # ==================================================
-    eval_freq: int = getenv("EVAL_FREQ", 4_000, int)
+    eval_freq: int = getenv("EVAL_FREQ", 100_000, int)
     eval_episodes: int = getenv("EVAL_EPISODES", 150, int)
 
     video_freq: int = getenv("VIDEO_FREQ", 150_000, int)
