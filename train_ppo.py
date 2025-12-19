@@ -41,7 +41,7 @@ def main():
     cfg = Config()
     prepare_experiment_directory(cfg)
     
-    env = create_env(cfg, num_envs=1)
+    env = create_env(cfg, num_envs=cfg.num_envs)
     model = PPO(
         "MlpPolicy",
         env,
@@ -73,13 +73,19 @@ def main():
         render=False,
     )
     
-    video_env = CustomEnv(cfg)
-    video_cb = VideoCallback(video_env, cfg, make_predict_fn(model))
+    video_cb = VideoCallback(CustomEnv, cfg, make_predict_fn(model))
     
     model.learn(
         total_timesteps=cfg.ppo_total_timesteps,
         callback=CallbackList([info_cb, eval_cb, video_cb]),
     )
+    
+    model_path = os.path.join(cfg.logdir, "model.pkl")
+    model.save(model_path)
+    logger.info(f"Worker model saved to {model_path}, closing environments...")
+    
+    eval_env.close()
+    env.close()
 
 if __name__ == "__main__":
     main()

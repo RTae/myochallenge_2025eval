@@ -12,10 +12,10 @@ class VideoCallback(BaseCallback):
     Uses a DEDICATED raw MyoSuite env.
     """
 
-    def __init__(self, env, cfg: Config, predict_fn, verbose: int = 0):
+    def __init__(self, env_func: callable, cfg: Config, predict_fn, verbose: int = 0):
         super().__init__(verbose)
         self.cfg = cfg
-        self.env = env
+        self.env_func = env_func
         self.predict_fn = predict_fn
 
         self.video_dir = os.path.join(cfg.logdir, "videos")
@@ -33,10 +33,11 @@ class VideoCallback(BaseCallback):
         return True
 
     def _record(self, video_path: str):
-        obs, _ = self.env.reset(seed=self.cfg.seed + 123)
+        env = self.env_func(self.cfg)
+        obs, _ = env.reset(seed=self.cfg.seed + 123)
 
         # warmup renderer
-        self.env.sim.renderer.render_offscreen(
+        env.sim.renderer.render_offscreen(
             width=self.cfg.video_w,
             height=self.cfg.video_h,
             camera_id=self.cfg.camera_id,
@@ -45,26 +46,25 @@ class VideoCallback(BaseCallback):
         frames = []
 
         for _ in range(self.cfg.video_frames):
-            frame = self.env.sim.renderer.render_offscreen(
+            frame = env.sim.renderer.render_offscreen(
                 width=self.cfg.video_w,
                 height=self.cfg.video_h,
                 camera_id=self.cfg.camera_id,
             )
             frames.append(frame)
 
-            if self.predict_fn is not None:
-                action = self.predict_fn(obs, self.env)
-            else:
-                action = np.zeros(self.env.action_space.shape[0], dtype=np.float32)
+            action = self.predict_fn(obs, env)
 
-            obs, _, terminated, truncated, _ = self.env.step(action)
+            obs, _, terminated, truncated, _ = env.step(action)
             if terminated or truncated:
-                obs, _ = self.env.reset(seed=self.cfg.seed + 123)
+                obs, _ = env.reset(seed=self.cfg.seed + 123)
 
         skvideo.io.vwrite(
             video_path,
             np.asarray(frames),
             outputdict={"-pix_fmt": "yuv420p"},
         )
+        
+        env.close()
 
         logger.info(f"✅ Saved video: {video_path}")
