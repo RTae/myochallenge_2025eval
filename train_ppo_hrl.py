@@ -44,11 +44,72 @@ def main():
 
     info_cb = InfoLoggerCallback()
 
-    # ----------------------------
-    # paths (assume worker already trained)
-    # ----------------------------
-    worker_model_path = os.path.join(WORKER_DIR, "worker_model.pkl")
-    worker_env_path = os.path.join(WORKER_DIR, "vecnormalize.pkl")
+    # ==================================================
+    # 1) Train WORKER
+    # ==================================================
+    cfg.logdir = WORKER_DIR
+    # worker_env = build_worker_vec(
+    #     cfg=cfg,
+    #     num_envs=cfg.num_envs,
+    # )
+
+    # worker_model = PPO(
+    #     "MlpPolicy",
+    #     worker_env,
+    #     verbose=1,
+    #     tensorboard_log=cfg.logdir,
+    #     n_steps=1024,
+    #     batch_size=256,
+    #     learning_rate=3e-4,
+    #     gamma=0.97,
+    #     gae_lambda=cfg.ppo_lambda,
+    #     clip_range=cfg.ppo_clip_range,
+    #     n_epochs=cfg.ppo_epochs,
+    #     max_grad_norm=cfg.ppo_max_grad_norm,
+    #     policy_kwargs=dict(net_arch=[128, 128]),
+    #     seed=cfg.seed,
+    # )
+
+    # # ---- Worker evaluation ----
+    # eval_worker_env = build_worker_vec(cfg=cfg, num_envs=1)
+    # eval_worker_env.training = False
+    # eval_worker_env.norm_reward = False
+
+    # eval_worker_cb = EvalCallback(
+    #     eval_worker_env,
+    #     best_model_save_path=os.path.join(cfg.logdir, "best"),
+    #     log_path=os.path.join(cfg.logdir, "eval"),
+    #     eval_freq=int(cfg.eval_freq//cfg.num_envs),
+    #     n_eval_episodes=cfg.eval_episodes,
+    #     deterministic=True,
+    #     render=False,
+    # )
+
+    # # # ---- Worker video ----
+    # video_worker_cb = VideoCallback(
+    #     env_func=TableTennisWorker,
+    #     env_args={"config": cfg},
+    #     cfg=cfg,
+    #     predict_fn=make_predict_fn(worker_model),
+    # )
+
+    # worker_model.learn(
+    #     total_timesteps=100_000,
+    #     callback=CallbackList([
+    #         eval_worker_cb,
+    #         info_cb,
+    #         video_worker_cb,
+    #     ]),
+    # )
+
+    # # # ---- Save WORKER (.pkl) ----
+    worker_model_path = os.path.join(cfg.logdir, "worker_model.pkl")
+    worker_env_path = os.path.join(cfg.logdir, "vecnormalize.pkl")
+    # worker_model.save(worker_model_path)
+    # worker_env.save(os.path.join(cfg.logdir, "vecnormalize.pkl"))
+
+    # worker_env.close()
+    # eval_worker_env.close()
 
     # ==================================================
     # 2) Train MANAGER
