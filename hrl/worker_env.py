@@ -1,3 +1,4 @@
+# hrl/worker_env.py
 from typing import Tuple, Dict, Optional, Any
 import numpy as np
 from myosuite.utils import gym
@@ -9,177 +10,167 @@ from utils import quat_to_paddle_normal
 
 class TableTennisWorker(CustomEnv):
     """
-    Low-level controller (Worker).
+    Low-level worker (muscle controller).
 
-    Observation (18):
-      - state (12)
-      - goal  (6)
-
-    state =
-      paddle - ball        (3)
-      paddle velocity      (3)
-      paddle normal        (3)
-      pelvis_xy - ball_xy  (2)
-      time                 (1)
-
-    goal =
-      [dx, dy, dz, dpx, dpy, dt]
+    Observation = state (15) + goal (6) = 21
     """
 
     def __init__(self, config: Config):
         super().__init__(config)
 
-        # -----------------------------
-        # Goal bounds (RELATIVE TO BALL)
-        # -----------------------------
+        # ------------------------------------------------
+        # Goal bounds (RELATIVE offsets, physically sane)
+        # ------------------------------------------------
         self.goal_low = np.array(
-            [-0.6, -0.6, -0.4, -0.8, -0.5, 0.15], np.float32
+            [-0.6, -0.6, -0.4, -0.8, -0.5, 0.15],
+            dtype=np.float32,
         )
         self.goal_high = np.array(
-            [ 0.6,  0.6,  0.6,  0.8,  0.5, 0.8], np.float32
+            [ 0.6,  0.6,  0.6,  0.8,  0.5, 0.8],
+            dtype=np.float32,
         )
 
         self.goal_dim = 6
-        self.state_dim = 12
-        self.obs_dim = 18
+        self.state_dim = 15
+        self.observation_dim = 21
 
         self.observation_space = gym.spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(self.obs_dim,),
+            shape=(self.observation_dim,),
             dtype=np.float32,
         )
 
-        # HRL state
-        self.current_goal = None
-        self.goal_start_time = None
-        self.goal_start_ball = None
-        self._prev_paddle_contact = False
+        self.current_goal: Optional[np.ndarray] = None
 
         # Success thresholds
-        self.pos_thr = 0.12
+        self.reach_thr = 0.12
         self.vel_thr = 1.2
         self.time_thr = 0.35
+        self.success_bonus = 15.0
 
-    # =====================================================
-    # HRL API
-    # =====================================================
+    # ------------------------------------------------
+    # Goal API (called by manager)
+    # ------------------------------------------------
     def set_goal(self, goal: np.ndarray):
-        goal = np.asarray(goal, np.float32)
+        goal = np.asarray(goal, dtype=np.float32)
+        assert goal.shape == (6,)
         self.current_goal = goal
-        obs = self.env.unwrapped.obs_dict
-        self.goal_start_time = float(obs["time"])
-        self.goal_start_ball = np.asarray(obs["ball_pos"], np.float32)
 
-    # =====================================================
+    def _sample_goal(self):
+        return np.random.uniform(self.goal_low, self.goal_high)
+
+    # ------------------------------------------------
     # Gym API
-    # =====================================================
-    def reset(self, seed=None, options=None):
-        _, info = super().reset(seed=seed)
-
-        self._prev_paddle_contact = False
+    # ------------------------------------------------
+    def reset(self, seed: Optional[int] = None, options: Optional[Dict] = None):
+        obs, info = super().reset(seed=seed)
 
         if self.current_goal is None:
             self.set_goal(self._sample_goal())
 
         return self._build_obs(), info
 
-    def step(self, action):
-        _, base_reward, terminated, truncated, info = super().step(action)
+    def step(self, action: np.ndarray):
+        obs, base_reward, terminated, truncated, info = super().step(action)
 
-        reward, success = self._compute_reward()
+        if self.current_goal is None:
+            self.set_goal(self._sample_goal())
+
+        shaped_reward, goal_success = self._compute_reward()
+
+        # Paddle hit signal (rising edge)
         hit = self._detect_paddle_hit()
 
-        total_reward = reward + 0.05 * base_reward
+        total_reward = shaped_reward + 0.05 * float(base_reward)
 
         info.update({
-            "is_success": success,
-            "is_paddle_hit": hit,
+            "is_goal_success": bool(goal_success),
+            "is_paddle_hit": bool(hit),
         })
-
-        if terminated or truncated:
-            self.current_goal = None
 
         return self._build_obs(), total_reward, terminated, truncated, info
 
-    # =====================================================
-    # Observation
-    # =====================================================
-    def _build_obs(self):
+    # ------------------------------------------------
+    # Observation builder (STRICT SHAPES)
+    # ------------------------------------------------
+    def _build_obs(self) -> np.ndarray:
         obs = self.env.unwrapped.obs_dict
 
-        ball = np.asarray(obs["ball_pos"], np.float32).reshape(3)
-        paddle = np.asarray(obs["paddle_pos"], np.float32).reshape(3)
-        paddle_vel = np.asarray(obs["paddle_vel"], np.float32).reshape(3)
-        paddle_n = quat_to_paddle_normal(
-            np.asarray(obs["paddle_ori"], np.float32)
-        ).reshape(3)
+        reach_err = np.asarray(obs["reach_err"], dtype=np.float32)      # (3,)
+        ball_vel  = np.asarray(obs["ball_vel"], dtype=np.float32)       # (3,)
+        paddle_n  = quat_to_paddle_normal(
+            np.asarray(obs["paddle_ori"], dtype=np.float32)
+        )                                                                # (3,)
+        ball_xy   = np.asarray(obs["ball_pos"][:2], dtype=np.float32)   # (2,)
+        t         = np.asarray([obs["time"]], dtype=np.float32)         # (1,)
 
-        pelvis_xy = np.asarray(obs["pelvis_pos"][:2], np.float32).reshape(2)
-        t = np.array([float(obs["time"])], np.float32)
+        # ---- HARD ASSERTS (catch bugs early) ----
+        assert reach_err.shape == (3,)
+        assert ball_vel.shape == (3,)
+        assert paddle_n.shape == (3,)
+        assert ball_xy.shape == (2,)
+        assert t.shape == (1,)
+        assert self.current_goal.shape == (6,)
 
-        state = np.concatenate([
-            paddle - ball,
-            paddle_vel,
-            paddle_n,
-            pelvis_xy - ball[:2],
-            t,
-        ])
+        state = np.hstack([
+            reach_err,    # 3
+            ball_vel,     # 3
+            paddle_n,     # 3
+            ball_xy,      # 2
+            t,            # 1
+        ])                 # = 15
 
-        return np.concatenate([state, self.current_goal])
+        obs_out = np.hstack([state, self.current_goal])  # 21
 
-    # =====================================================
-    # Reward
-    # =====================================================
-    def _compute_reward(self):
+        assert obs_out.shape == (21,)
+        return obs_out
+
+    # ------------------------------------------------
+    # Reward + success logic
+    # ------------------------------------------------
+    def _compute_reward(self) -> Tuple[float, bool]:
         obs = self.env.unwrapped.obs_dict
 
-        paddle = np.asarray(obs["paddle_pos"], np.float32)
-        paddle_vel = np.asarray(obs["paddle_vel"], np.float32)
-        ball = np.asarray(obs["ball_pos"], np.float32)
-        t = float(obs["time"])
-
-        dx, dy, dz, dpx, dpy, dt = self.current_goal
-        target_time = self.goal_start_time + dt
-
-        target_paddle = self.goal_start_ball + np.array([dx, dy, dz])
-        pos_err = np.linalg.norm(paddle - target_paddle)
-
-        # Explicit Myo reach error (low weight)
-        reach_err = np.linalg.norm(paddle - ball)
-        vel_norm = np.linalg.norm(paddle_vel)
-        time_err = abs(t - target_time)
+        reach_err = np.linalg.norm(obs["reach_err"])
+        vel_norm  = np.linalg.norm(obs["paddle_vel"])
+        time_err  = abs(obs["time"] - self.current_goal[5])
 
         reward = (
-            2.5 * np.exp(-4.0 * pos_err)
-            - 0.2 * reach_err
+            2.5 * np.exp(-4.0 * reach_err)
             - 0.1 * vel_norm
         )
 
         success = (
-            pos_err < self.pos_thr
+            reach_err < self.reach_thr
             and vel_norm < self.vel_thr
             and time_err < self.time_thr
         )
 
         if success:
-            reward += 15.0
+            reward += self.success_bonus
 
         return float(reward), bool(success)
 
-    # =====================================================
+    # ------------------------------------------------
     # Paddle hit detection
-    # =====================================================
-    def _detect_paddle_hit(self):
+    # ------------------------------------------------
+    def _detect_paddle_hit(self) -> bool:
         touching = np.asarray(
             self.env.unwrapped.obs_dict.get("touching_info", []),
-            np.float32,
+            dtype=np.float32,
         )
 
-        ball_paddle = touching[2] if touching.size > 2 else 0.0
-        hit = ball_paddle > 0.5 and not self._prev_paddle_contact
-        self._prev_paddle_contact = ball_paddle > 0.5
-        return bool(hit)
+        if touching.size < 3:
+            return False
 
-    def _sample_goal(self):
-        return self.goal_low + np.random.rand(6) * (self.goal_high - self.goal_low)
+        # Common MyoSuite convention
+        ball_table = touching[0]
+        ball_net   = touching[1]
+        ball_paddle = touching[2]
+
+        return bool(
+            ball_paddle > 0.5 and
+            ball_table < 0.1 and
+            ball_net < 0.1
+        )
