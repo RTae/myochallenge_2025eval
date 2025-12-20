@@ -152,7 +152,7 @@ class TableTennisManager(CustomEnv):
 
         info = {
             "is_success": is_success,
-            "paddle_hit": paddle_hit,
+            "is_paddle_hit": paddle_hit,
             "curriculum_stage": self.curriculum_stage,
         }
 
