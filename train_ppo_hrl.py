@@ -34,10 +34,9 @@ def load_worker_vecnormalize(path: str, env_fn: Callable[[], TableTennisWorker])
 
 def main():
     cfg = Config()
-    #prepare_experiment_directory(cfg)
-    cfg.logdir = "./logs/exp9"
-    worker_total_timesteps = 10_000_000
-    manager_total_timesteps = 15_000_000
+    prepare_experiment_directory(cfg)
+    worker_total_timesteps = 20_000
+    manager_total_timesteps = 20_000
 
     WORKER_DIR = os.path.join(cfg.logdir, "worker")
     MANAGER_DIR = os.path.join(cfg.logdir, "manager")
@@ -117,8 +116,6 @@ def main():
     # 2) Train MANAGER
     # ==================================================
     cfg.logdir = MANAGER_DIR
-    cfg.video_freq = 30_000
-    cfg.eval_freq = 20_000
     cfg.num_envs = 4
 
     # env loader that returns VecNormalize(DummyVecEnv([TableTennisWorker(cfg)]))

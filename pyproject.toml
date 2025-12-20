@@ -29,6 +29,7 @@ dependencies = [
     "tensorboardx>=2.6.4",
     "torch>=2.8.0",
     "typer>=0.19.2",
+    "deprl>=0.3.2",
 ]
 
 [[tool.uv.index]] 

@@ -1,4 +1,4 @@
-from typing import Tuple, Dict, Optional, Any
+from typing import Tuple, Dict, Optional
 import numpy as np
 from myosuite.utils import gym
 from stable_baselines3.common.vec_env import VecEnv
@@ -9,17 +9,22 @@ from custom_env import CustomEnv
 
 class TableTennisManager(CustomEnv):
     """
-    High-level controller.
-    Learns WHICH goal to give to the worker.
+    Manager issues goals to a frozen Worker.
+
+    Observation (19):
+      worker_obs (18) + time_progress (1)
+
+    Action:
+      goal (6)
     """
 
     def __init__(
         self,
         worker_env: VecEnv,
-        worker_model: Any,
+        worker_model,
         config: Config,
-        decision_interval: int = 10,
-        max_episode_steps: int = 800,
+        decision_interval=10,
+        max_episode_steps=800,
     ):
         super().__init__(config)
 
@@ -28,16 +33,9 @@ class TableTennisManager(CustomEnv):
         self.decision_interval = decision_interval
         self.max_episode_steps = max_episode_steps
 
-        # ===============================
-        # Observation: worker obs + ball_vel + time
-        # ===============================
-        self.observation_dim = 18 + 3 + 1
-
+        self.obs_dim = 19
         self.observation_space = gym.spaces.Box(
-            low=-np.inf,
-            high=np.inf,
-            shape=(self.observation_dim,),
-            dtype=np.float32,
+            -np.inf, np.inf, (self.obs_dim,), np.float32
         )
 
         base_worker = self.worker_env.envs[0]
@@ -45,67 +43,57 @@ class TableTennisManager(CustomEnv):
         self.goal_high = base_worker.goal_high
 
         self.action_space = gym.spaces.Box(
-            low=self.goal_low,
-            high=self.goal_high,
-            shape=(6,),
-            dtype=np.float32,
+            self.goal_low, self.goal_high, dtype=np.float32
         )
 
         self.current_step = 0
-        self._worker_obs = None
+        self.worker_obs = None
 
     @property
     def sim(self):
         return self.worker_env.envs[0].sim
 
-    # ------------------------------------------------
-    def reset(self, seed=None, options=None):
-        self._worker_obs = self.worker_env.reset()
+    def reset(self, *, seed=None, options=None):
+        self.worker_obs = self.worker_env.reset()
         self.current_step = 0
-        return self._build_obs(), {}
+        return self._build_obs(), {"is_success": False}
 
     def step(self, action):
         goal = np.clip(action, self.goal_low, self.goal_high)
-        self.worker_env.env_method("set_goal", goal, indices=0)
+        self.worker_env.env_method("set_goal", goal)
 
         hit = False
         success = False
 
         for _ in range(self.decision_interval):
-            obs_1d = self._worker_obs[0]
-            worker_action, _ = self.worker_model.predict(obs_1d, deterministic=True)
+            obs = self.worker_obs[0]
+            act, _ = self.worker_model.predict(obs, deterministic=True)
 
-            obs, _, dones, infos = self.worker_env.step([worker_action])
-            self._worker_obs = obs
+            self.worker_obs, _, dones, infos = self.worker_env.step([act])
             self.current_step += 1
 
             info = infos[0]
-            hit |= info.get("hit", False)
+            hit |= info.get("is_paddle_hit", False)
             success |= info.get("is_success", False)
 
-            if dones[0]:
+            if dones[0] or self.current_step >= self.max_episode_steps:
                 break
 
         reward = self._reward(hit, success)
+
         return self._build_obs(), reward, False, False, {
             "is_success": success,
             "is_paddle_hit": hit,
         }
 
-    # ------------------------------------------------
     def _build_obs(self):
-        worker_obs = self._worker_obs[0]
-
-        obs = self.worker_env.envs[0].env.unwrapped.obs_dict
-        ball_vel = np.asarray(obs["ball_vel"], np.float32)
+        w = self.worker_obs[0]
         t = np.array([self.current_step / self.max_episode_steps], np.float32)
+        return np.concatenate([w, t])
 
-        return np.concatenate([worker_obs, ball_vel, t])
-
-    def _reward(self, hit: bool, success: bool) -> float:
-        reward = -0.1
-        if hit:
-            reward += 5.0
+    def _reward(self, hit, success):
         if success:
-            reward += 50.0
-        return reward
+            return 50.0
+        if hit:
+            return 5.0
+        return -0.1
