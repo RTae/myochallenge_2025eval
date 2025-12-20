@@ -5,12 +5,13 @@ from myosuite.utils import gym
 from config import Config
 from custom_env import CustomEnv
 from utils import quat_to_paddle_normal
+from hrl.worker_env import TableTennisWorker
 
 
 class TableTennisManager(CustomEnv):
     def __init__(
         self,
-        worker_env: Any,
+        worker_env: TableTennisWorker,
         worker_model: Any,
         config: Config,
         decision_interval: int = 10,
@@ -41,7 +42,8 @@ class TableTennisManager(CustomEnv):
         self.total_hits = 0
 
     def reset(self, seed: Optional[int] = None) -> Tuple[np.ndarray, Dict]:
-        self.worker_env.reset(seed)
+        self.worker_env.reset(seed=seed)
+        self.worker_env.reset_hrl_state()
         self.current_step = 0
         self.total_hits = 0
         return self._augment_observation(), {"is_success": False}
@@ -55,7 +57,7 @@ class TableTennisManager(CustomEnv):
         truncated = False
 
         for _ in range(self.decision_interval):
-            worker_obs = self.worker_env.get_observation()
+            worker_obs = self.worker_env._augment_observation()
             a, _ = self.worker_model.predict(worker_obs, deterministic=True)
 
             _, _, term, trunc, _ = self.worker_env.step(a)
@@ -84,15 +86,22 @@ class TableTennisManager(CustomEnv):
 
         return obs, float(reward), terminated, truncated, {"is_success": hit}
 
-    def _augment_observation(self):
-        obs = self.worker_env.env.obs_dict
-        return np.hstack([
-            obs["ball_pos"], obs["ball_vel"],
-            obs["paddle_pos"], obs["paddle_vel"],
-            quat_to_paddle_normal(obs["paddle_ori"]),
-            obs["reach_err"], obs["touching_info"],
-            [obs["time"]],
-        ]).astype(np.float32)
+    def _augment_observation(self) -> np.ndarray:
+        obs = self.worker_env.env.unwrapped.obs_dict
+
+        def flat(x):
+            return np.asarray(x, dtype=np.float32).reshape(-1)
+
+        return np.concatenate([
+            flat(obs["ball_pos"]),            # 3
+            flat(obs["ball_vel"]),            # 3
+            flat(obs["paddle_pos"]),          # 3
+            flat(obs["paddle_vel"]),          # 3
+            flat(quat_to_paddle_normal(obs["paddle_ori"])),  # 3
+            flat(obs["reach_err"]),           # 3
+            flat(obs["touching_info"]),       # 6
+            np.array([float(obs["time"])], dtype=np.float32),  # 1
+        ], axis=0)
 
     def _calculate_reward(self, hit: bool) -> float:
         return 30.0 if hit else -1.0

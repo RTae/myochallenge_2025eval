@@ -59,7 +59,6 @@ class TableTennisWorker(CustomEnv):
         self.goal_start_time = float(obs["time"])
         self.goal_start_ball_pos = np.asarray(obs["ball_pos"], np.float32).copy()
 
-    # ✅ PUBLIC name (no leading underscore)
     def update_curriculum(self):
         self.recent_successes.append(int(self._episode_goal_achieved))
         if len(self.recent_successes) > 100:
@@ -87,7 +86,6 @@ class TableTennisWorker(CustomEnv):
             self._episode_goal_achieved = True
 
         if terminated or truncated:
-            # ✅ call public method
             self.update_curriculum()
             self.reset_hrl_state()
 
