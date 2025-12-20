@@ -1,5 +1,6 @@
 # hrl/manager_env.py
 from typing import Tuple, Dict, Optional, Any
+from collections import deque
 import numpy as np
 from myosuite.utils import gym
 from stable_baselines3.common.vec_env import VecEnv
@@ -12,7 +13,10 @@ class TableTennisManager(CustomEnv):
     """
     High-level HRL manager.
 
-    Issues goals to a frozen worker.
+    - Observes worker obs (21) + time proxy (1) = 22
+    - Action is a 6D goal for worker
+    - Executes frozen worker for decision_interval steps per manager step
+    - Reward is SMOOTHED (low variance) using moving average of success
     """
 
     def __init__(
@@ -27,10 +31,11 @@ class TableTennisManager(CustomEnv):
 
         self.worker_env = worker_env
         self.worker_model = worker_model
-        self.decision_interval = decision_interval
-        self.max_episode_steps = max_episode_steps
+        self.decision_interval = int(decision_interval)
+        self.max_episode_steps = int(max_episode_steps)
 
         # Worker obs = 21, + time proxy = 22
+        self.worker_obs_dim = 21
         self.observation_dim = 22
 
         self.observation_space = gym.spaces.Box(
@@ -40,9 +45,10 @@ class TableTennisManager(CustomEnv):
             dtype=np.float32,
         )
 
+        # Goal bounds from worker
         base_worker = self.worker_env.envs[0]
-        self.goal_low = base_worker.goal_low
-        self.goal_high = base_worker.goal_high
+        self.goal_low = np.asarray(base_worker.goal_low, dtype=np.float32).reshape(6,)
+        self.goal_high = np.asarray(base_worker.goal_high, dtype=np.float32).reshape(6,)
 
         self.action_space = gym.spaces.Box(
             low=self.goal_low,
@@ -54,30 +60,36 @@ class TableTennisManager(CustomEnv):
         self.current_step = 0
         self._worker_obs = None
 
-    # ------------------------------------------------
-    # Expose sim for video callback
-    # ------------------------------------------------
+        # ---- reward smoothing ----
+        self.success_buffer = deque(maxlen=20)
+
     @property
     def sim(self):
+        # so your generic video callback can do env.sim.renderer.render_offscreen(...)
         return self.worker_env.envs[0].sim
 
-    # ------------------------------------------------
-    # Gym API
-    # ------------------------------------------------
-    def reset(self, *, seed=None, options=None):
+    def reset(
+        self,
+        *,
+        seed: Optional[int] = None,
+        options: Optional[Dict] = None,
+    ) -> Tuple[np.ndarray, Dict]:
         self._worker_obs = self.worker_env.reset()
         self.current_step = 0
-        return self._build_obs(), {}
+        self.success_buffer.clear()
+        obs = self._build_obs()
+        return obs, {"is_success": False, "is_paddle_hit": False}
 
     def step(self, action: np.ndarray):
-        goal = np.clip(action, self.goal_low, self.goal_high)
+        goal = np.clip(np.asarray(action, dtype=np.float32).reshape(6,), self.goal_low, self.goal_high)
         self.worker_env.env_method("set_goal", goal, indices=0)
 
         hit = False
         success = False
 
         for _ in range(self.decision_interval):
-            obs_1d = self._worker_obs[0]
+            obs_1d = np.asarray(self._worker_obs[0], dtype=np.float32)
+
             worker_action, _ = self.worker_model.predict(obs_1d, deterministic=True)
 
             obs, _, dones, infos = self.worker_env.step([worker_action])
@@ -85,39 +97,52 @@ class TableTennisManager(CustomEnv):
             self.current_step += 1
 
             info = infos[0]
-            hit |= info.get("is_paddle_hit", False)
-            success |= info.get("is_success", False)
+            hit |= bool(info.get("is_paddle_hit", False))
 
-            if dones[0] or self.current_step >= self.max_episode_steps:
+            # IMPORTANT: success is from worker's env success (solved)
+            success |= bool(info.get("is_success", False))
+
+            if bool(dones[0]):
+                break
+            if self.current_step >= self.max_episode_steps:
                 break
 
-        reward = self._reward(hit, success)
+        # ---- reward smoothing ----
+        self.success_buffer.append(1.0 if success else 0.0)
+        reward = self._reward_smoothed(hit, success)
 
-        return self._build_obs(), reward, False, False, {
+        return self._build_obs(), float(reward), False, False, {
             "is_success": success,
             "is_paddle_hit": hit,
         }
 
-    # ------------------------------------------------
-    # Observation
-    # ------------------------------------------------
     def _build_obs(self) -> np.ndarray:
-        worker_obs = np.asarray(self._worker_obs[0], dtype=np.float32)
-        t = np.asarray(
+        worker_obs = np.asarray(self._worker_obs[0], dtype=np.float32).reshape(self.worker_obs_dim,)
+
+        t = np.array(
             [self.current_step / max(1, self.max_episode_steps)],
             dtype=np.float32,
-        )
+        ).reshape(1,)
 
-        obs = np.hstack([worker_obs, t])
-        assert obs.shape == (22,)
+        obs = np.hstack([worker_obs, t]).astype(np.float32)
+        assert obs.shape == (self.observation_dim,), f"manager obs shape mismatch: {obs.shape}"
         return obs
 
-    # ------------------------------------------------
-    # Manager reward (LOW VARIANCE)
-    # ------------------------------------------------
-    def _reward(self, hit: bool, success: bool) -> float:
-        if success:
-            return 10.0
+    def _reward_smoothed(self, hit: bool, success: bool) -> float:
+        """
+        Low-variance + smoothed reward:
+        - small living cost
+        - small hit bonus
+        - terminal success bonus
+        - PLUS smooth success-rate shaping
+        """
+        success_rate = float(np.mean(self.success_buffer)) if len(self.success_buffer) > 0 else 0.0
+
+        r = -0.1                # living cost
+        r += 0.5 * success_rate # smooth dense signal
         if hit:
-            return 1.0
-        return -0.1
+            r += 0.5            # small immediate encouragement
+        if success:
+            r += 5.0            # terminal bonus
+
+        return float(r)
