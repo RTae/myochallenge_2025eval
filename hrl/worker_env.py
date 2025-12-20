@@ -39,8 +39,8 @@ class TableTennisWorker(CustomEnv):
         )
 
         self.goal_dim = 6
-        self.state_dim = 15
-        self.observation_dim = 21
+        self.state_dim = 12
+        self.observation_dim = self.goal_dim + self.state_dim
 
         self.observation_space = gym.spaces.Box(
             low=-np.inf,
@@ -110,27 +110,23 @@ class TableTennisWorker(CustomEnv):
     def _build_obs(self) -> np.ndarray:
         obs = self.env.unwrapped.obs_dict
 
-        reach_err = np.asarray(obs["reach_err"], dtype=np.float32).reshape(3,)    # (3,)
-        ball_vel  = np.asarray(obs["ball_vel"], dtype=np.float32).reshape(3,)     # (3,)
+        reach_err = np.asarray(obs["reach_err"], dtype=np.float32).reshape(3,)
+        ball_vel  = np.asarray(obs["ball_vel"], dtype=np.float32).reshape(3,)
         paddle_n  = quat_to_paddle_normal(
             np.asarray(obs["paddle_ori"], dtype=np.float32).reshape(4,)
-        ).reshape(3,)                                                             # (3,)
+        ).reshape(3,)
 
-        ball_pos = np.asarray(obs["ball_pos"], dtype=np.float32).reshape(3,)
-        ball_xy  = ball_pos[:2].reshape(2,)                                       # (2,)
+        ball_xy = np.asarray(obs["ball_pos"][:2], dtype=np.float32).reshape(2,)
+        t = np.array([float(obs["time"])], dtype=np.float32).reshape(1,)
 
-        # FIX: obs["time"] might be array(0.01) or array([0.01]) -> always make (1,)
-        t_scalar = float(np.asarray(obs["time"]).reshape(-1)[0])
-        t = np.array([t_scalar], dtype=np.float32).reshape(1,)                    # (1,)
+        goal = np.asarray(self.current_goal, dtype=np.float32).reshape(6,)
 
-        assert self.current_goal is not None
-        goal = np.asarray(self.current_goal, dtype=np.float32).reshape(6,)        # (6,)
+        state = np.hstack([reach_err, ball_vel, paddle_n, ball_xy, t])
+        assert state.shape == (self.state_dim,), f"state.shape={state.shape}"
 
-        state = np.hstack([reach_err, ball_vel, paddle_n, ball_xy, t]).astype(np.float32)
-        assert state.shape == (15,), f"state.shape={state.shape}"
+        obs_out = np.hstack([state, goal])
+        assert obs_out.shape == (self.observation_dim,), f"obs_out.shape={obs_out.shape}"
 
-        obs_out = np.hstack([state, goal]).astype(np.float32)
-        assert obs_out.shape == (21,), f"obs_out.shape={obs_out.shape}"
         return obs_out
 
     # ------------------------------------------------

@@ -34,9 +34,8 @@ class TableTennisManager(CustomEnv):
         self.decision_interval = int(decision_interval)
         self.max_episode_steps = int(max_episode_steps)
 
-        # Worker obs = 21, + time proxy = 22
-        self.worker_obs_dim = 21
-        self.observation_dim = 22
+        self.worker_obs_dim = 18
+        self.observation_dim = 19
 
         self.observation_space = gym.spaces.Box(
             low=-np.inf,
@@ -117,15 +116,15 @@ class TableTennisManager(CustomEnv):
         }
 
     def _build_obs(self) -> np.ndarray:
-        worker_obs = np.asarray(self._worker_obs[0], dtype=np.float32).reshape(self.worker_obs_dim,)
+        worker_obs = np.asarray(self._worker_obs[0], dtype=np.float32).reshape(18,)
 
         t = np.array(
             [self.current_step / max(1, self.max_episode_steps)],
             dtype=np.float32,
         ).reshape(1,)
 
-        obs = np.hstack([worker_obs, t]).astype(np.float32)
-        assert obs.shape == (self.observation_dim,), f"manager obs shape mismatch: {obs.shape}"
+        obs = np.hstack([worker_obs, t])
+        assert obs.shape == (self.observation_dim,), f"obs.shape={obs.shape}"
         return obs
 
     def _reward_smoothed(self, hit: bool, success: bool) -> float:
