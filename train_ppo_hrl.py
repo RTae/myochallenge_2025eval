@@ -1,6 +1,7 @@
 import os
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import EvalCallback, CallbackList
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from config import Config
 from env_factory import build_worker_vec, build_manager_vec
@@ -19,8 +20,8 @@ def load_worker_model(path: str):
     return PPO.load(path, device="cpu")
 
 def load_worker_vecnormalize(path: str, env: TableTennisWorker):
-    from stable_baselines3.common.vec_env import VecNormalize
-    vecnorm = VecNormalize.load(path, env)
+    venv = DummyVecEnv([lambda: env])
+    vecnorm = VecNormalize.load(path, venv)
     vecnorm.training = False
     vecnorm.norm_reward = False
     return vecnorm
@@ -164,7 +165,10 @@ def main():
     )
 
     # ---- Manager video ----
-    video_worker_env = TableTennisWorker(cfg)
+    video_worker_env = load_worker_vecnormalize(
+        worker_env_path,
+        TableTennisWorker(cfg),
+    )
     frozen_worker_model = load_worker_model(worker_model_path)
 
     video_manager_cb = VideoCallback(
