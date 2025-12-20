@@ -12,6 +12,7 @@ from callbacks.video_callback import VideoCallback
 from hrl.worker_env import TableTennisWorker
 from hrl.manager_env import TableTennisManager
 from utils import make_predict_fn, prepare_experiment_directory
+from loguru import logger
 
 # ==================================================
 # Worker loaders
@@ -35,8 +36,8 @@ def load_worker_vecnormalize(path: str, env_fn: Callable[[], TableTennisWorker])
 def main():
     cfg = Config()
     prepare_experiment_directory(cfg)
-    worker_total_timesteps = 20_000
-    manager_total_timesteps = 20_000
+    worker_total_timesteps = 10_000_000
+    manager_total_timesteps = 15_00_000
 
     WORKER_DIR = os.path.join(cfg.logdir, "worker")
     MANAGER_DIR = os.path.join(cfg.logdir, "manager")
@@ -94,6 +95,8 @@ def main():
         predict_fn=make_predict_fn(worker_model),
     )
 
+    logger.info("Starting WORKER training...")
+    logger.info(f"Worker total timesteps: {worker_total_timesteps}")
     worker_model.learn(
         total_timesteps=worker_total_timesteps,
         callback=CallbackList([
@@ -108,6 +111,9 @@ def main():
     worker_env_path = os.path.join(cfg.logdir, "vecnormalize.pkl")
     worker_model.save(worker_model_path)
     worker_env.save(os.path.join(cfg.logdir, "vecnormalize.pkl"))
+    
+    logger.info(f"Saved WORKER model to: {worker_model_path}")
+    logger.info(f"Saved WORKER VecNormalize to: {worker_env_path}")
 
     worker_env.close()
     eval_worker_env.close()
@@ -190,7 +196,9 @@ def main():
         cfg=cfg,
         predict_fn=make_predict_fn(manager_model),
     )
-
+    
+    logger.info("Starting MANAGER training...")
+    logger.info(f"Manager total timesteps: {manager_total_timesteps}")
     manager_model.learn(
         total_timesteps=manager_total_timesteps,
         callback=CallbackList([eval_manager_cb, info_cb, video_manager_cb]),
@@ -198,6 +206,7 @@ def main():
 
     # ---- Save MANAGER ----
     manager_model.save(os.path.join(cfg.logdir, "manager_model.pkl"))
+    logger.info(f"Saved MANAGER model to: {os.path.join(cfg.logdir, 'manager_model.pkl')}")
 
     # ---- Close ----
     manager_env.close()
