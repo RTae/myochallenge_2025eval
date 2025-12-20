@@ -12,7 +12,7 @@ from utils import prepare_experiment_directory, make_predict_fn
 
 
 # ==================================================
-# Worker loader (IMPORTANT: must match save format)
+# Worker loader
 # ==================================================
 def load_worker_model(path: str):
     # SB3 supports .pkl filenames
