@@ -1,5 +1,6 @@
 from typing import Callable
 from loguru import logger
+import os
 
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize
 from stable_baselines3.common.monitor import Monitor
@@ -32,16 +33,24 @@ def build_manager_vec(
     cfg: Config,
     num_envs: int,
     worker_model_path: str,
+    worker_env_path: str,
     decision_interval: int,
     max_episode_steps: int,
     worker_model_loader,
+    worker_env_loader,
 ) -> VecNormalize:
     def make_env(rank: int):
         def _init():
+            # --- Base worker env ---
             worker_env = TableTennisWorker(cfg)
 
+            # --- Wrap worker in VecNormalize and LOAD stats ---
+            worker_env = worker_env_loader(worker_env_path, worker_env)
+
+            # --- Load frozen worker policy ---
             worker_model = worker_model_loader(worker_model_path)
 
+            # --- Manager ---
             env = TableTennisManager(
                 worker_env=worker_env,
                 worker_model=worker_model,
@@ -49,11 +58,14 @@ def build_manager_vec(
                 decision_interval=decision_interval,
                 max_episode_steps=max_episode_steps,
             )
+
             return Monitor(env, info_keywords=("is_success",))
+
         return _init
 
     venv = make_subproc_env(num_envs, make_env)
 
+    # Manager itself should NOT normalize
     venv = VecNormalize(venv, norm_obs=False, norm_reward=False)
     return venv
 

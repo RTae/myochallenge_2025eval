@@ -18,6 +18,13 @@ def load_worker_model(path: str):
     # SB3 supports .pkl filenames
     return PPO.load(path, device="cpu")
 
+def load_worker_vecnormalize(path: str, env: TableTennisWorker):
+    from stable_baselines3.common.vec_env import VecNormalize
+    vecnorm = VecNormalize.load(path, env)
+    vecnorm.training = False
+    vecnorm.norm_reward = False
+    return vecnorm
+
 
 def main():
     # ==================================================
@@ -95,6 +102,7 @@ def main():
 
     # # ---- Save WORKER (.pkl) ----
     worker_model_path = os.path.join(cfg.logdir, "worker_model.pkl")
+    worker_env_path = os.path.join(cfg.logdir, "vecnormalize.pkl")
     # worker_model.save(worker_model_path)
     # worker_env.save(os.path.join(cfg.logdir, "vecnormalize.pkl"))
 
@@ -109,9 +117,11 @@ def main():
         cfg=cfg,
         num_envs=cfg.num_envs,
         worker_model_path=worker_model_path,
+        worker_env_path=worker_env_path,
         decision_interval=cfg.episode_len // 10,
         max_episode_steps=cfg.episode_len,
         worker_model_loader=load_worker_model,
+        worker_env_loader=load_worker_vecnormalize,
     )
 
     manager_model = PPO(
@@ -136,9 +146,11 @@ def main():
         cfg=cfg,
         num_envs=1,
         worker_model_path=worker_model_path,
+        worker_env_path=worker_env_path,
         decision_interval=cfg.episode_len // 10,
         max_episode_steps=cfg.episode_len,
         worker_model_loader=load_worker_model,
+        worker_env_loader=load_worker_vecnormalize,
     )
 
     eval_manager_cb = EvalCallback(
