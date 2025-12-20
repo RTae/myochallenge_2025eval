@@ -39,7 +39,7 @@ def main():
     # 1) Train WORKER
     # ==================================================
     worker_env = build_worker_vec(
-        env_id=env_id,
+        cfg=cfg,
         num_envs=cfg.num_envs,
     )
 
@@ -61,7 +61,7 @@ def main():
     )
 
     # ---- Worker evaluation ----
-    eval_worker_env = build_worker_vec(env_id=env_id, num_envs=1)
+    eval_worker_env = build_worker_vec(cfg=cfg, num_envs=1)
     eval_worker_env.training = False
     eval_worker_env.norm_reward = False
 
@@ -69,7 +69,7 @@ def main():
         eval_worker_env,
         best_model_save_path=os.path.join(WORKER_DIR, "best"),
         log_path=os.path.join(WORKER_DIR, "eval"),
-        eval_freq=cfg.eval_freq,
+        eval_freq=int(cfg.eval_freq//cfg.num_envs),
         n_eval_episodes=cfg.eval_episodes,
         deterministic=True,
         render=False,
@@ -84,7 +84,7 @@ def main():
     )
 
     worker_model.learn(
-        total_timesteps=cfg.worker_total_timesteps,
+        total_timesteps=100_000,
         callback=CallbackList([
             eval_worker_cb,
             info_cb,
@@ -104,7 +104,7 @@ def main():
     # 2) Train MANAGER (frozen worker)
     # ==================================================
     manager_env = build_manager_vec(
-        env_id=env_id,
+        cfg=cfg,
         num_envs=cfg.num_envs,
         worker_model_path=worker_model_path,
         decision_interval=cfg.episode_len // 10,
@@ -131,7 +131,7 @@ def main():
 
     # ---- Manager evaluation ----
     eval_manager_env = build_manager_vec(
-        env_id=env_id,
+        cfg=cfg,
         num_envs=1,
         worker_model_path=worker_model_path,
         decision_interval=cfg.episode_len // 10,
@@ -165,7 +165,7 @@ def main():
     )
 
     manager_model.learn(
-        total_timesteps=cfg.manager_total_timesteps,
+        total_timesteps=100_000,
         callback=CallbackList([
             eval_manager_cb,
             info_cb,
