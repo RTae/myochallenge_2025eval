@@ -1,20 +1,28 @@
 from typing import Tuple, Dict, Optional
 import numpy as np
-
 from myosuite.utils import gym
 from config import Config
 
 
 class CustomEnv(gym.Env):
+    """
+    Thin wrapper around MyoSuite env:
+    - Standardizes reset/step signature
+    - Injects `is_success`
+    - Forwards everything else
+    """
 
     metadata = {"render_modes": []}
 
-    def __init__(self, config: Config, device: str = "cpu"):
+    def __init__(self, config: Config):
         super().__init__()
         self.config = config
-        self.device = device
         self.env = gym.make(config.env_id)
-        
+
+        # expose spaces
+        self.observation_space = self.env.observation_space
+        self.action_space = self.env.action_space
+
     def reset(self, seed: Optional[int] = None) -> Tuple[np.ndarray, Dict]:
         obs, info = self.env.reset(seed=seed)
         return obs, info
@@ -23,11 +31,10 @@ class CustomEnv(gym.Env):
         obs, reward, terminated, truncated, info = self.env.step(action)
 
         info = dict(info)
-        info.update({
-            "is_success": info['solved'],
-        })
+        info["is_success"] = bool(info.get("solved", False))
+
         return obs, reward, terminated, truncated, info
-    
+
     def render(self):
         return self.env.render()
 
