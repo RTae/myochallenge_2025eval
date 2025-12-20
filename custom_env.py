@@ -10,7 +10,7 @@ class CustomEnv(gym.Env):
     def __init__(self, config: Config):
         super().__init__()
         self.config = config
-        self.env = gym.make(config.env_id)
+        self.env = gym.make(config.env_id, max_episode_steps=config.episode_len)
 
         self.observation_space = self.env.observation_space
         self.action_space = self.env.action_space
