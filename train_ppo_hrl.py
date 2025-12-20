@@ -32,7 +32,8 @@ def main():
     # Config & directories
     # ==================================================
     cfg = Config()
-    prepare_experiment_directory(cfg)
+    # prepare_experiment_directory(cfg)
+    cfg.logdir = "./logs/exp9"
     
     WORKER_DIR = os.path.join(cfg.logdir, "worker")
     MANAGER_DIR = os.path.join(cfg.logdir, "manager")
@@ -112,6 +113,8 @@ def main():
     # 2) Train MANAGER
     # ==================================================
     cfg.logdir = MANAGER_DIR
+    cfg.video_freq = 30_000
+    cfg.eval_freq = 20_000
     manager_env = build_manager_vec(
         cfg=cfg,
         num_envs=cfg.num_envs,
