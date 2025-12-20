@@ -11,8 +11,7 @@ from callbacks.infologger_callback import InfoLoggerCallback
 from callbacks.video_callback import VideoCallback
 from hrl.worker_env import TableTennisWorker
 from hrl.manager_env import TableTennisManager
-from utils import make_predict_fn
-
+from utils import make_predict_fn, prepare_experiment_directory
 
 # ==================================================
 # Worker loaders
@@ -35,7 +34,10 @@ def load_worker_vecnormalize(path: str, env_fn: Callable[[], TableTennisWorker])
 
 def main():
     cfg = Config()
+    #prepare_experiment_directory(cfg)
     cfg.logdir = "./logs/exp9"
+    worker_total_timesteps = 100_000
+    manager_total_timesteps = 100_000
 
     WORKER_DIR = os.path.join(cfg.logdir, "worker")
     MANAGER_DIR = os.path.join(cfg.logdir, "manager")
@@ -94,7 +96,7 @@ def main():
     )
 
     worker_model.learn(
-        total_timesteps=100_000,
+        total_timesteps=worker_total_timesteps,
         callback=CallbackList([
             eval_worker_cb,
             info_cb,
@@ -193,7 +195,7 @@ def main():
     )
 
     manager_model.learn(
-        total_timesteps=100_000,
+        total_timesteps=manager_total_timesteps,
         callback=CallbackList([eval_manager_cb, info_cb, video_manager_cb]),
     )
 
