@@ -38,6 +38,7 @@ def main():
     # ==================================================
     # 1) Train WORKER
     # ==================================================
+    cfg.logdir = WORKER_DIR
     worker_env = build_worker_vec(
         cfg=cfg,
         num_envs=cfg.num_envs,
@@ -47,7 +48,7 @@ def main():
         "MlpPolicy",
         worker_env,
         verbose=1,
-        tensorboard_log=WORKER_DIR,
+        tensorboard_log=cfg.logdir,
         n_steps=1024,
         batch_size=256,
         learning_rate=3e-4,
@@ -67,8 +68,8 @@ def main():
 
     eval_worker_cb = EvalCallback(
         eval_worker_env,
-        best_model_save_path=os.path.join(WORKER_DIR, "best"),
-        log_path=os.path.join(WORKER_DIR, "eval"),
+        best_model_save_path=os.path.join(cfg.logdir, "best"),
+        log_path=os.path.join(cfg.logdir, "eval"),
         eval_freq=int(cfg.eval_freq//cfg.num_envs),
         n_eval_episodes=cfg.eval_episodes,
         deterministic=True,
@@ -93,16 +94,17 @@ def main():
     )
 
     # ---- Save WORKER (.pkl) ----
-    worker_model_path = os.path.join(WORKER_DIR, "worker_model.pkl")
+    worker_model_path = os.path.join(cfg.logdir, "worker_model.pkl")
     worker_model.save(worker_model_path)
-    worker_env.save(os.path.join(WORKER_DIR, "vecnormalize.pkl"))
+    worker_env.save(os.path.join(cfg.logdir, "vecnormalize.pkl"))
 
     worker_env.close()
     eval_worker_env.close()
 
     # ==================================================
-    # 2) Train MANAGER (frozen worker)
+    # 2) Train MANAGER
     # ==================================================
+    cfg.logdir = MANAGER_DIR
     manager_env = build_manager_vec(
         cfg=cfg,
         num_envs=cfg.num_envs,
@@ -116,7 +118,7 @@ def main():
         "MlpPolicy",
         manager_env,
         verbose=1,
-        tensorboard_log=MANAGER_DIR,
+        tensorboard_log=cfg.logdir,
         n_steps=4096,
         batch_size=512,
         learning_rate=1e-4,
@@ -141,8 +143,8 @@ def main():
 
     eval_manager_cb = EvalCallback(
         eval_manager_env,
-        best_model_save_path=os.path.join(MANAGER_DIR, "best"),
-        log_path=os.path.join(MANAGER_DIR, "eval"),
+        best_model_save_path=os.path.join(cfg.logdir, "best"),
+        log_path=os.path.join(cfg.logdir, "eval"),
         eval_freq=int(cfg.eval_freq//cfg.num_envs),
         n_eval_episodes=cfg.eval_episodes,
         deterministic=True,
@@ -174,7 +176,7 @@ def main():
     )
 
     # ---- Save MANAGER (.pkl) ----
-    manager_model.save(os.path.join(MANAGER_DIR, "manager_model.pkl"))
+    manager_model.save(os.path.join(cfg.logdir, "manager_model.pkl"))
 
     manager_env.close()
     eval_manager_env.close()
