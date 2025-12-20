@@ -70,6 +70,13 @@ class TableTennisManager(CustomEnv):
         self.success_window = []
         self.window_size = 50
         self.advance_threshold = 0.7
+        
+    @property
+    def sim(self):
+        """
+        Expose worker sim so generic callbacks can render.
+        """
+        return self.worker_env.envs[0].sim
 
     # ============================================================
     # Reset
