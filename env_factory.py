@@ -29,45 +29,39 @@ def build_worker_vec(cfg: Config, num_envs: int) -> VecNormalize:
     return venv
 
 
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+from stable_baselines3.common.monitor import Monitor
+from hrl.worker_env import TableTennisWorker
+from hrl.manager_env import TableTennisManager
+
+
 def build_manager_vec(
-    cfg: Config,
-    num_envs: int,
-    worker_model_path: str,
-    worker_env_path: str,
-    decision_interval: int,
-    max_episode_steps: int,
+    cfg,
+    num_envs,
     worker_model_loader,
     worker_env_loader,
-) -> VecNormalize:
-    def make_env(rank: int):
-        def _init():
-            # --- Base worker env ---
-            worker_env = TableTennisWorker(cfg)
-
-            # --- Wrap worker in VecNormalize and LOAD stats ---
-            worker_env = worker_env_loader(worker_env_path, worker_env)
-
-            # --- Load frozen worker policy ---
-            worker_model = worker_model_loader(worker_model_path)
-
-            # --- Manager ---
-            env = TableTennisManager(
-                worker_env=worker_env,
+    worker_model_path,
+    worker_env_path,
+    decision_interval,
+    max_episode_steps,
+):
+    def make_env():
+        worker = TableTennisWorker(cfg)
+        worker_vec = worker_env_loader(worker_env_path, worker)
+        worker_model = worker_model_loader(worker_model_path)
+        return Monitor(
+            TableTennisManager(
+                worker_env=worker_vec,
                 worker_model=worker_model,
                 config=cfg,
                 decision_interval=decision_interval,
                 max_episode_steps=max_episode_steps,
-            )
+            ),
+            info_keywords=("is_success",),
+        )
 
-            return Monitor(env, info_keywords=("is_success",))
-
-        return _init
-
-    venv = make_subproc_env(num_envs, make_env)
-
-    # Manager itself should NOT normalize
-    venv = VecNormalize(venv, norm_obs=False, norm_reward=False)
-    return venv
+    venv = DummyVecEnv([make_env])
+    return VecNormalize(venv, norm_obs=False, norm_reward=False)
 
 def build_curriculum_vec(cfg: Config, num_envs: int, eval_mode: bool = False):
     def make_env(rank):
