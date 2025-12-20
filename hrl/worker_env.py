@@ -94,14 +94,18 @@ class TableTennisWorker(CustomEnv):
 
         total_reward = float(shaped_reward + 0.05 * float(base_reward))
 
-        # IMPORTANT:
-        # - keep info["is_success"] from CustomEnv (solved) as-is
-        # - add is_goal_success separately
+        obs_dict  = info['obs_dict']
+        reach_err = float(np.linalg.norm(obs_dict["reach_err"]))
+        vel_norm  = float(np.linalg.norm(obs_dict["paddle_vel"]))
+        time_err  = abs(float(obs_dict["time"]) - float(self.current_goal[5]))
+
         info.update({
             "is_goal_success": bool(goal_success),
             "is_paddle_hit": bool(hit),
+            "reach_err": reach_err,
+            "paddle_vel_norm": vel_norm,
+            "goal_time_err": time_err,
         })
-
         return self._build_obs(), total_reward, terminated, truncated, info
 
     # ------------------------------------------------

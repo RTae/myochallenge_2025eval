@@ -109,10 +109,15 @@ class TableTennisManager(CustomEnv):
         # ---- reward smoothing ----
         self.success_buffer.append(1.0 if success else 0.0)
         reward = self._reward_smoothed(hit, success)
+        success_rate = float(np.mean(self.success_buffer)) if len(self.success_buffer) > 0 else 0.0
 
         return self._build_obs(), float(reward), False, False, {
             "is_success": success,
             "is_paddle_hit": hit,
+            "success_rate_smooth": success_rate,
+            "goal_dx": float(goal[0]),
+            "goal_dy": float(goal[1]),
+            "goal_dz": float(goal[2]),
         }
 
     def _build_obs(self) -> np.ndarray:
