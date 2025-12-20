@@ -15,7 +15,6 @@ from utils import prepare_experiment_directory, make_predict_fn
 # Worker loader
 # ==================================================
 def load_worker_model(path: str):
-    # SB3 supports .pkl filenames
     return PPO.load(path, device="cpu")
 
 
@@ -106,7 +105,7 @@ def main():
     manager_env = build_manager_vec(
         env_id=env_id,
         num_envs=cfg.num_envs,
-        worker_model_path=worker_model_path,  # 👈 .pkl
+        worker_model_path=worker_model_path,
         decision_interval=cfg.episode_len // 10,
         max_episode_steps=cfg.episode_len,
         worker_model_loader=load_worker_model,
