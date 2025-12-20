@@ -74,8 +74,8 @@ class TableTennisManager(CustomEnv):
     # ============================================================
     # Reset
     # ============================================================
-    def reset(self) -> Tuple[np.ndarray, Dict]:
-        self._worker_obs = self.worker_env.reset()
+    def reset(self, seed:int) -> Tuple[np.ndarray, Dict]:
+        self._worker_obs = self.worker_env.reset(seed=seed)
         self.current_step = 0
         self.success_window.clear()
 

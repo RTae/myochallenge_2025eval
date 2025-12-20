@@ -38,7 +38,7 @@ class Config:
     # ==================================================
     # PPO
     # ==================================================
-    ppo_total_timesteps: int = getenv("PPO_TOTAL_TIMESTEPS", 200_000, int)
+    ppo_total_timesteps: int = getenv("PPO_TOTAL_TIMESTEPS", 30_000_000, int)
     ppo_batch_size: int = getenv("PPO_BATCH_SIZE", 64, int)
     ppo_n_steps: int = getenv("PPO_N_STEPS", 2048, int)
     ppo_epochs: int = getenv("PPO_EPOCHS", 10, int)
