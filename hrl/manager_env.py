@@ -1,4 +1,4 @@
-from typing import Tuple, Dict, Any
+from typing import Tuple, Dict, Any, Optional
 import numpy as np
 from myosuite.utils import gym
 from stable_baselines3.common.vec_env import VecEnv
@@ -74,15 +74,20 @@ class TableTennisManager(CustomEnv):
     # ============================================================
     # Reset
     # ============================================================
-    def reset(self, seed:int) -> Tuple[np.ndarray, Dict]:
+    def reset(
+        self,
+        *,
+        seed: Optional[int] = None,
+        options: Optional[Dict] = None,
+    ) -> Tuple[np.ndarray, Dict]:
         self._worker_obs = self.worker_env.reset()
         self.current_step = 0
-        self.success_window.clear()
+        self.total_hits = 0
 
-        return self._build_manager_obs(), {
-            "is_success": False,
-            "curriculum_stage": self.curriculum_stage,
-        }
+        return (
+            self._build_manager_obs(self._worker_obs),
+            {"is_success": False},
+        )
 
     # ============================================================
     # Step
@@ -140,7 +145,7 @@ class TableTennisManager(CustomEnv):
         )
 
         obs_out = (
-            self._build_manager_obs()
+            self._build_manager_obs(self._worker_obs)
             if not (terminated or truncated)
             else np.zeros(self.observation_dim, dtype=np.float32)
         )
@@ -156,20 +161,29 @@ class TableTennisManager(CustomEnv):
     # ============================================================
     # Observation builder
     # ============================================================
-    def _build_manager_obs(self) -> np.ndarray:
-        w = np.asarray(self._worker_obs[0], np.float32)
+    def _build_manager_obs(self, worker_obs_vec: np.ndarray) -> np.ndarray:
+        """
+        Worker obs shape: (1, 18)
+        Manager obs: [worker_obs (18), time_proxy (1)] = 19 dims
+        """
+        w = np.asarray(worker_obs_vec[0], dtype=np.float32)
 
-        if w.shape[0] != self.worker_obs_dim:
-            ww = np.zeros(self.worker_obs_dim, np.float32)
-            ww[: min(len(w), self.worker_obs_dim)] = w[: min(len(w), self.worker_obs_dim)]
+        # Safety check
+        if w.shape[0] != 18:
+            ww = np.zeros(18, dtype=np.float32)
+            ww[: min(18, w.shape[0])] = w[: min(18, w.shape[0])]
             w = ww
 
+        # Normalized time proxy
         t = np.array(
             [self.current_step / max(1, self.max_episode_steps)],
             dtype=np.float32,
         )
 
-        return np.concatenate([w, t], axis=0)
+        out = np.concatenate([w, t], axis=0)
+
+        assert out.shape == (self.observation_dim,), f"Manager obs shape mismatch: {out.shape}"
+        return out
 
     # ============================================================
     # Curriculum logic
