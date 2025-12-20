@@ -2,7 +2,7 @@ from typing import Callable
 from loguru import logger
 import os
 
-from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize, DummyVecEnv
 from stable_baselines3.common.monitor import Monitor
 from config import Config
 
@@ -10,6 +10,7 @@ from hrl.worker_env import TableTennisWorker
 from hrl.manager_env import TableTennisManager
 from dr_spcrl.curriculum_env import CurriculumEnv
 from custom_env import CustomEnv
+
 
 def make_subproc_env(num_envs: int, thunk_fn: Callable):
     return SubprocVecEnv([thunk_fn(i) for i in range(num_envs)])
@@ -28,40 +29,56 @@ def build_worker_vec(cfg: Config, num_envs: int) -> VecNormalize:
     venv = VecNormalize(venv, norm_obs=True, norm_reward=False, clip_obs=10.0)
     return venv
 
-
-from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
-from stable_baselines3.common.monitor import Monitor
-from hrl.worker_env import TableTennisWorker
-from hrl.manager_env import TableTennisManager
-
-
 def build_manager_vec(
     cfg,
-    num_envs,
+    num_envs: int,
     worker_model_loader,
     worker_env_loader,
-    worker_model_path,
-    worker_env_path,
-    decision_interval,
-    max_episode_steps,
+    worker_model_path: str,
+    worker_env_path: str,
+    decision_interval: int,
+    max_episode_steps: int,
 ):
-    def make_env():
-        worker = TableTennisWorker(cfg)
-        worker_vec = worker_env_loader(worker_env_path, worker)
-        worker_model = worker_model_loader(worker_model_path)
-        return Monitor(
-            TableTennisManager(
+    """
+    Vectorized manager environment using SubprocVecEnv.
+
+    Each manager env owns:
+      - its own worker env (VecNormalize-wrapped)
+      - its own frozen worker policy
+    """
+
+    def make_env(rank: int):
+        def _init():
+            worker = TableTennisWorker(cfg)
+
+            worker_vec = worker_env_loader(worker_env_path, lambda: worker)
+            worker_model = worker_model_loader(worker_model_path)
+            manager_env = TableTennisManager(
                 worker_env=worker_vec,
                 worker_model=worker_model,
                 config=cfg,
                 decision_interval=decision_interval,
                 max_episode_steps=max_episode_steps,
-            ),
-            info_keywords=("is_success",),
-        )
+            )
 
-    venv = DummyVecEnv([make_env])
-    return VecNormalize(venv, norm_obs=False, norm_reward=False)
+            return Monitor(
+                manager_env,
+                info_keywords=(
+                    "is_success",
+                    "is_paddle_hit",
+                ),
+            )
+
+        return _init
+
+    venv = make_subproc_env(num_envs, make_env)
+    venv = VecNormalize(
+        venv,
+        norm_obs=False,
+        norm_reward=False,
+    )
+
+    return venv
 
 def build_curriculum_vec(cfg: Config, num_envs: int, eval_mode: bool = False):
     def make_env(rank):
