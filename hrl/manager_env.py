@@ -1,40 +1,37 @@
 from typing import Tuple, Dict, Optional, Any
 import numpy as np
 from myosuite.utils import gym
+from stable_baselines3.common.vec_env import VecEnv
 
 from config import Config
 from custom_env import CustomEnv
-from utils import quat_to_paddle_normal
 
-class TableTennisWorker(CustomEnv):
+
+class TableTennisManager(CustomEnv):
     """
-    Worker that incorporates reach_err into the observation.
-    - Observation: rel paddle, paddle_vel, paddle_normal, pelvis rel, ball_vel, reach_err, time + goal6 => (21 dims).
+    High-level controller.
+    Learns WHICH goal to give to the worker.
     """
 
-    def __init__(self, config: Config, training_stage: int = 0):
+    def __init__(
+        self,
+        worker_env: VecEnv,
+        worker_model: Any,
+        config: Config,
+        decision_interval: int = 10,
+        max_episode_steps: int = 800,
+    ):
         super().__init__(config)
 
-        # -----------------------------------------
-        # Bound for goals (manager action space)
-        # -----------------------------------------
-        self.goal_low = np.array([-0.6, -0.6, -0.4, -0.8, -0.5, 0.15], np.float32)
-        self.goal_high = np.array([ 0.6,  0.6,  0.6,  0.8,  0.5, 0.8], np.float32)
-        self.goal_dim = 6
+        self.worker_env = worker_env
+        self.worker_model = worker_model
+        self.decision_interval = decision_interval
+        self.max_episode_steps = max_episode_steps
 
-        # -----------------------------------------
-        # Observation dims:
-        #   rel paddle pos (3)
-        #   paddle vel    (3)
-        #   paddle normal (3)
-        #   pelvis rel (2)
-        #   ball vel      (3)
-        #   reach_err     (3)
-        #   time          (1)
-        # = 18 for state
-        # + 6 for goal = 24
-        self.state_dim = 18
-        self.observation_dim = self.state_dim + self.goal_dim
+        # ===============================
+        # Observation: worker obs + ball_vel + time
+        # ===============================
+        self.observation_dim = 18 + 3 + 1
 
         self.observation_space = gym.spaces.Box(
             low=-np.inf,
@@ -43,95 +40,72 @@ class TableTennisWorker(CustomEnv):
             dtype=np.float32,
         )
 
-        # HRL internals
-        self.current_goal: Optional[np.ndarray] = None
-        self.goal_start_time: Optional[float] = None
-        self.goal_start_ball_pos: Optional[np.ndarray] = None
-        self._prev_paddle_contact: bool = False
+        base_worker = self.worker_env.envs[0]
+        self.goal_low = base_worker.goal_low
+        self.goal_high = base_worker.goal_high
 
-    def reset_hrl_state(self):
-        self.current_goal = None
-        self.goal_start_time = None
-        self.goal_start_ball_pos = None
-        self._prev_paddle_contact = False
+        self.action_space = gym.spaces.Box(
+            low=self.goal_low,
+            high=self.goal_high,
+            shape=(6,),
+            dtype=np.float32,
+        )
 
-    def set_goal(self, goal6: np.ndarray):
-        goal6 = np.asarray(goal6, dtype=np.float32).reshape(-1)
-        assert goal6.shape == (6,)
-        obs = self.env.unwrapped.obs_dict
-        self.current_goal = goal6
-        self.goal_start_time = float(obs["time"])
-        self.goal_start_ball_pos = np.asarray(obs["ball_pos"], dtype=np.float32).copy()
+        self.current_step = 0
+        self._worker_obs = None
 
-    def reset(self, seed: Optional[int] = None, options: Optional[Dict] = None) -> Tuple[np.ndarray, Dict]:
-        obs, info = super().reset(seed=seed)
-        self.reset_hrl_state()
+    @property
+    def sim(self):
+        return self.worker_env.envs[0].sim
 
-        # Standalone, sample initial goal
-        if self.current_goal is None:
-            self.set_goal(self._sample_goal())
+    # ------------------------------------------------
+    def reset(self, seed=None, options=None):
+        self._worker_obs = self.worker_env.reset()
+        self.current_step = 0
+        return self._build_obs(), {}
 
-        return self._augment_obs(), info
+    def step(self, action):
+        goal = np.clip(action, self.goal_low, self.goal_high)
+        self.worker_env.env_method("set_goal", goal, indices=0)
 
-    def step(self, action: np.ndarray):
-        obs, base_reward, terminated, truncated, info = super().step(action)
+        hit = False
+        success = False
 
-        # Goal-conditioned reward can be added if desired
-        # (optional — manager will handle higher level)
-        total_reward = float(base_reward)
+        for _ in range(self.decision_interval):
+            obs_1d = self._worker_obs[0]
+            worker_action, _ = self.worker_model.predict(obs_1d, deterministic=True)
 
-        # Add HRL signals
-        touching = np.asarray(self.env.unwrapped.obs_dict.get("touching_info", []), np.float32)
-        ball_paddle = touching[0] if touching.size > 0 else 0.0
-        paddle_contact = bool(ball_paddle > 0.5)
+            obs, _, dones, infos = self.worker_env.step([worker_action])
+            self._worker_obs = obs
+            self.current_step += 1
 
-        hit = paddle_contact and not self._prev_paddle_contact
-        self._prev_paddle_contact = paddle_contact
+            info = infos[0]
+            hit |= info.get("hit", False)
+            success |= info.get("is_success", False)
 
-        info.update({
-            "hit": bool(hit),
-            "is_success": bool(info.get("is_success", False)),
-        })
+            if dones[0]:
+                break
 
-        if terminated or truncated:
-            self.reset_hrl_state()
+        reward = self._reward(hit, success)
+        return self._build_obs(), reward, False, False, {
+            "is_success": success,
+            "is_paddle_hit": hit,
+        }
 
-        return self._augment_obs(), total_reward, terminated, truncated, info
+    # ------------------------------------------------
+    def _build_obs(self):
+        worker_obs = self._worker_obs[0]
 
-    def _augment_obs(self) -> np.ndarray:
-        obs = self.env.unwrapped.obs_dict
-
-        # ensure goal exists
-        if self.current_goal is None:
-            self.set_goal(self._sample_goal())
-
-        ball_pos = np.asarray(obs["ball_pos"], np.float32)
+        obs = self.worker_env.envs[0].env.unwrapped.obs_dict
         ball_vel = np.asarray(obs["ball_vel"], np.float32)
-        paddle_pos = np.asarray(obs["paddle_pos"], np.float32)
-        paddle_vel = np.asarray(obs["paddle_vel"], np.float32)
-        paddle_n = quat_to_paddle_normal(np.asarray(obs["paddle_ori"], np.float32))
-        pelvis_xy = np.asarray(obs["pelvis_pos"][:2], np.float32)
+        t = np.array([self.current_step / self.max_episode_steps], np.float32)
 
-        reach_err = np.asarray(obs["reach_err"], np.float32)  # 3 dims
+        return np.concatenate([worker_obs, ball_vel, t])
 
-        t = np.array([float(obs["time"])], np.float32)
-
-        rel_pad = paddle_pos - ball_pos
-        rel_pelvis = pelvis_xy - ball_pos[:2]
-
-        state = np.hstack([
-            rel_pad,          # 3
-            paddle_vel,       # 3
-            paddle_n,         # 3
-            rel_pelvis,       # 2
-            ball_vel,         # 3
-            reach_err,        # 3
-            t,                # 1
-        ]).astype(np.float32)  # 18 dims
-
-        return np.hstack([state, self.current_goal]).astype(np.float32)
-
-    def _sample_goal(self) -> np.ndarray:
-        return (
-            self.goal_low + (self.goal_high - self.goal_low) * np.random.rand(self.goal_dim)
-        ).astype(np.float32)
+    def _reward(self, hit: bool, success: bool) -> float:
+        reward = -0.1
+        if hit:
+            reward += 5.0
+        if success:
+            reward += 50.0
+        return reward
