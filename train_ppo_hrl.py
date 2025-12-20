@@ -83,7 +83,7 @@ def main():
     )
 
     worker_model.learn(
-        total_timesteps=cfg.worker_total_timesteps,
+        total_timesteps=5_000_000,
         callback=CallbackList([
             eval_worker_cb,
             info_cb,
@@ -164,7 +164,7 @@ def main():
     )
 
     manager_model.learn(
-        total_timesteps=cfg.manager_total_timesteps,
+        total_timesteps=15_000_000,
         callback=CallbackList([
             eval_manager_cb,
             info_cb,
