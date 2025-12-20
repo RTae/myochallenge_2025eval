@@ -12,9 +12,10 @@ from utils import prepare_experiment_directory, make_predict_fn
 
 
 # ==================================================
-# Worker loader
+# Worker loader (IMPORTANT: must match save format)
 # ==================================================
 def load_worker_model(path: str):
+    # SB3 supports .pkl filenames
     return PPO.load(path, device="cpu")
 
 
@@ -47,15 +48,15 @@ def main():
         worker_env,
         verbose=1,
         tensorboard_log=WORKER_DIR,
-        n_steps=cfg.ppo_n_steps,
-        batch_size=cfg.ppo_batch_size,
-        learning_rate=cfg.ppo_lr,
-        gamma=cfg.ppo_gamma,
+        n_steps=1024,
+        batch_size=256,
+        learning_rate=3e-4,
+        gamma=0.97,
         gae_lambda=cfg.ppo_lambda,
         clip_range=cfg.ppo_clip_range,
         n_epochs=cfg.ppo_epochs,
         max_grad_norm=cfg.ppo_max_grad_norm,
-        policy_kwargs=dict(net_arch=[cfg.ppo_hidden_dim]),
+        policy_kwargs=dict(net_arch=[128, 128]),
         seed=cfg.seed,
     )
 
@@ -68,7 +69,7 @@ def main():
         eval_worker_env,
         best_model_save_path=os.path.join(WORKER_DIR, "best"),
         log_path=os.path.join(WORKER_DIR, "eval"),
-        eval_freq=int(cfg.eval_freq // cfg.num_envs),
+        eval_freq=cfg.eval_freq,
         n_eval_episodes=cfg.eval_episodes,
         deterministic=True,
         render=False,
@@ -83,7 +84,7 @@ def main():
     )
 
     worker_model.learn(
-        total_timesteps=5_000_000,
+        total_timesteps=cfg.worker_total_timesteps,
         callback=CallbackList([
             eval_worker_cb,
             info_cb,
@@ -116,15 +117,15 @@ def main():
         manager_env,
         verbose=1,
         tensorboard_log=MANAGER_DIR,
-        n_steps=cfg.ppo_n_steps,
-        batch_size=cfg.ppo_batch_size,
-        learning_rate=cfg.ppo_lr,
-        gamma=cfg.ppo_gamma,
-        gae_lambda=cfg.ppo_lambda,
+        n_steps=4096,
+        batch_size=512,
+        learning_rate=1e-4,
+        gamma=0.995,
+        gae_lambda=0.97,
         clip_range=cfg.ppo_clip_range,
         n_epochs=cfg.ppo_epochs,
         max_grad_norm=cfg.ppo_max_grad_norm,
-        policy_kwargs=dict(net_arch=[cfg.ppo_hidden_dim]),
+        policy_kwargs=dict(net_arch=[256, 256]),
         seed=cfg.seed,
     )
 
@@ -142,7 +143,7 @@ def main():
         eval_manager_env,
         best_model_save_path=os.path.join(MANAGER_DIR, "best"),
         log_path=os.path.join(MANAGER_DIR, "eval"),
-        eval_freq=int(cfg.eval_freq // cfg.num_envs),
+        eval_freq=int(cfg.eval_freq//cfg.num_envs),
         n_eval_episodes=cfg.eval_episodes,
         deterministic=True,
         render=False,
@@ -164,7 +165,7 @@ def main():
     )
 
     manager_model.learn(
-        total_timesteps=15_000_000,
+        total_timesteps=cfg.manager_total_timesteps,
         callback=CallbackList([
             eval_manager_cb,
             info_cb,

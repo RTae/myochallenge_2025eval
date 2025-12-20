@@ -5,7 +5,7 @@ FROM ghcr.io/rtae/myochallenge/myochallenge-base:latest
 
 WORKDIR /app
 
-COPY train.py ./train.py
+COPY train_ppo_hrl.py ./train.py
 COPY env_factory.py ./
 COPY custom_env.py ./
 COPY hrl ./hrl
