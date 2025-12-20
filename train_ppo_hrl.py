@@ -117,6 +117,7 @@ def main():
     cfg.logdir = MANAGER_DIR
     cfg.video_freq = 30_000
     cfg.eval_freq = 20_000
+    cfg.num_envs = 4
 
     # env loader that returns VecNormalize(DummyVecEnv([TableTennisWorker(cfg)]))
     def worker_env_loader(path: str):
@@ -124,7 +125,7 @@ def main():
 
     manager_env = build_manager_vec(
         cfg=cfg,
-        num_envs=4,
+        num_envs=cfg.num_envs,
         worker_model_loader=load_worker_model,
         worker_env_loader=worker_env_loader,
         worker_model_path=worker_model_path,
@@ -168,7 +169,7 @@ def main():
         eval_manager_env,
         best_model_save_path=os.path.join(cfg.logdir, "best"),
         log_path=os.path.join(cfg.logdir, "eval"),
-        eval_freq=cfg.eval_freq,
+        eval_freq=int(cfg.eval_freq//cfg.num_envs),
         n_eval_episodes=cfg.eval_episodes,
         deterministic=True,
         render=False,
