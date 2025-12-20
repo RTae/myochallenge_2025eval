@@ -24,9 +24,8 @@ class CustomEnv(gym.Env):
 
         info = dict(info)
         info.update({
-            "is_success": bool(info.get("solved", False)),
+            "is_success": info['solved'],
         })
-
         return obs, reward, terminated, truncated, info
     
     def render(self):
