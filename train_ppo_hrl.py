@@ -36,8 +36,8 @@ def main():
     cfg = Config()
     #prepare_experiment_directory(cfg)
     cfg.logdir = "./logs/exp9"
-    worker_total_timesteps = 100_000
-    manager_total_timesteps = 100_000
+    worker_total_timesteps = 10_000_000
+    manager_total_timesteps = 15_000_000
 
     WORKER_DIR = os.path.join(cfg.logdir, "worker")
     MANAGER_DIR = os.path.join(cfg.logdir, "manager")
