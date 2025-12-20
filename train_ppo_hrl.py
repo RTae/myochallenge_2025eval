@@ -1,148 +1,122 @@
-import copy
 import os
-from stable_baselines3.common.callbacks import CallbackList, EvalCallback
+from sb3_contrib import RecurrentPPO
 from stable_baselines3 import PPO
+from stable_baselines3.common.callbacks import EvalCallback, CallbackList
 
-from config import Config
-from env_factory import build_env
-from utils import prepare_experiment_directory, make_predict_fn
-from callbacks.infologger_callback import InfoLoggerCallback
-from callbacks.video_callback import VideoCallback
+from env_factory import build_worker_vec, build_manager_vec
 
-from hrl.worker_env import TableTennisWorker
-from hrl.manager_env import TableTennisManager
-from dr_spcrl.dr_spcrl import DRSPCRLRecurrentPPO
-from loguru import logger
+
+ENV_ID = "myoChallengeTableTennisP2-v0"
+
+LOGDIR = "./runs/hrl"
+WORKER_DIR = os.path.join(LOGDIR, "worker")
+MANAGER_DIR = os.path.join(LOGDIR, "manager")
+os.makedirs(WORKER_DIR, exist_ok=True)
+os.makedirs(MANAGER_DIR, exist_ok=True)
+
+
+def load_worker_model(path: str):
+    # If worker was trained with RecurrentPPO:
+    return RecurrentPPO.load(path, device="cpu")
+    # If worker was trained with PPO instead:
+    # return PPO.load(path, device="cpu")
 
 
 def main():
-    cfg = Config()
-    prepare_experiment_directory(cfg)
+    # -------------------------
+    # 1) Train Worker
+    # -------------------------
+    worker_env = build_worker_vec(env_id=ENV_ID, num_envs=8)
 
-    # # Train worker
-    worker_cfg = copy.deepcopy(cfg)
-    worker_cfg.logdir = os.path.join(cfg.logdir, "worker")
-    env_worker = build_env(worker_cfg, env_type="worker")
-
-    worker_model = PPO(
-        "MlpPolicy",
-        env_worker,
+    worker_model = RecurrentPPO(
+        "MlpLstmPolicy",
+        worker_env,
         verbose=1,
-        tensorboard_log=os.path.join(cfg.logdir),
-        n_steps=cfg.ppo_n_steps,
-        batch_size=cfg.ppo_n_steps//cfg.ppo_batch_size,
-        gamma=cfg.ppo_gamma,
-        learning_rate=cfg.ppo_lr,
-        gae_lambda=cfg.ppo_lambda,
-        n_epochs=cfg.ppo_epochs,
-        max_grad_norm=cfg.ppo_max_grad_norm,
-        clip_range=cfg.ppo_clip_range,
-        seed=cfg.seed,
-        clip_range_vf=cfg.ppo_clip_range,
-        policy_kwargs=dict(net_arch=[cfg.ppo_hidden_dim]),
+        tensorboard_log=WORKER_DIR,
+        n_steps=256,
+        batch_size=256,
+        learning_rate=3e-4,
+        gamma=0.99,
     )
 
-    # # Callback Share
-    info_cb = InfoLoggerCallback(prefix="train/info")
-    eval_cfg = Config()
-    eval_cfg.num_envs = 1
-    
-    # Callback Worker
-    eval_worker_env = build_env(eval_cfg, env_type="worker")
+    eval_env = build_worker_vec(env_id=ENV_ID, num_envs=1)
+    eval_env.training = False
+    eval_env.norm_reward = False
+
     eval_cb = EvalCallback(
-        eval_worker_env,
-        best_model_save_path=os.path.join(worker_cfg.logdir, "best_model"),
-        log_path=os.path.join(worker_cfg.logdir, "eval"),
-        eval_freq=worker_cfg.eval_freq,
-        n_eval_episodes=worker_cfg.eval_episodes,
+        eval_env,
+        best_model_save_path=os.path.join(WORKER_DIR, "best"),
+        log_path=os.path.join(WORKER_DIR, "eval"),
+        eval_freq=20_000,
+        n_eval_episodes=5,
         deterministic=True,
-        render=False,
     )
-    video_cb = VideoCallback(TableTennisWorker, worker_cfg, make_predict_fn(worker_model))
 
-    # Learn
-    logger.info("🚧 Training Worker Policy 🚧")
     worker_model.learn(
-        total_timesteps=worker_cfg.worker_total_timesteps,
-        callback=CallbackList([info_cb, eval_cb, video_cb]),
+        total_timesteps=2_000_000,
+        callback=CallbackList([eval_cb]),
     )
 
-    worker_model_path = os.path.join(worker_cfg.logdir, "model.pkl")
-    worker_model.save(worker_model_path)
-    eval_worker_env.close()
-    video_worker_env.close()
-    env_worker.close()
-    
-    # Train Manager
-    manager_cfg = copy.deepcopy(cfg)
-    
-    manager_cfg.ppo_lr = 3e-4
-    manager_cfg.ppo_gamma = 0.995
-    manager_cfg.ppo_n_steps = 512
-    manager_cfg.ppo_batch_size = 256
-    manager_cfg.logdir = os.path.join(cfg.logdir, "manager")
-    
-    worker_model = DRSPCRLRecurrentPPO.load(
-        worker_model_path,
-    )
-    
-    env_manager = build_env(
-        manager_cfg, 
-        env_type="manager",
-        worker_model=worker_model
+    worker_path = os.path.join(WORKER_DIR, "worker_model.zip")
+    worker_model.save(worker_path)
+    worker_env.save(os.path.join(WORKER_DIR, "vecnormalize.pkl"))
+
+    worker_env.close()
+    eval_env.close()
+
+    # -------------------------
+    # 2) Train Manager (frozen worker)
+    # -------------------------
+    # NOTE: manager env loads the worker model inside each subprocess
+    manager_env = build_manager_vec(
+        env_id=ENV_ID,
+        num_envs=8,
+        worker_model_path=worker_path,
+        decision_interval=10,
+        max_episode_steps=800,
+        worker_model_loader=load_worker_model,
     )
 
     manager_model = PPO(
         "MlpPolicy",
-        env_manager,
+        manager_env,
         verbose=1,
-        tensorboard_log=os.path.join(cfg.logdir, "manager"),
-        n_steps=manager_cfg.ppo_n_steps,
-        batch_size=manager_cfg.ppo_batch_size,
-        gamma=manager_cfg.ppo_gamma,
-        learning_rate=manager_cfg.ppo_lr,
-        gae_lambda=manager_cfg.ppo_lambda,
-        clip_range=manager_cfg.ppo_clip,
-        n_epochs=manager_cfg.ppo_epochs,
-        seed=manager_cfg.seed,
-    )
-    
-    eval_manager_env = build_env(eval_cfg, env_type="manager", worker_model=worker_model)
-    eval_cb = EvalCallback(
-        eval_manager_env,
-        best_model_save_path=os.path.join(manager_cfg.logdir, "best_model"),
-        log_path=os.path.join(manager_cfg.logdir, "eval"),
-        eval_freq=manager_cfg.eval_freq,
-        n_eval_episodes=manager_cfg.eval_episodes,
-        deterministic=True,
-        render=False,
-    )
-    video_worker_env = TableTennisWorker(worker_cfg)
-    video_cb = VideoCallback(
-        env_func=TableTennisManager,
-        env_args={
-            "worker_env": video_worker_env,
-            "worker_model": worker_model,
-            "config": manager_cfg,
-        },
-        cfg=manager_cfg,
-        predict_fn=make_predict_fn(manager_model)
-    )
-        
-    # Learn
-    logger.info("🚧 Training Manager Policy 🚧")
-    manager_model.learn(
-        total_timesteps=manager_cfg.manager_total_timesteps,
-        callback=CallbackList([info_cb, eval_cb, video_cb]),
+        tensorboard_log=MANAGER_DIR,
+        n_steps=512,
+        batch_size=256,
+        learning_rate=3e-4,
+        gamma=0.995,
     )
 
-    manager_model.save(os.path.join(manager_cfg.logdir, "model.pkl"))
-    
+    # Eval manager
+    eval_manager_env = build_manager_vec(
+        env_id=ENV_ID,
+        num_envs=1,
+        worker_model_path=worker_path,
+        decision_interval=10,
+        max_episode_steps=800,
+        worker_model_loader=load_worker_model,
+    )
+
+    eval_cb2 = EvalCallback(
+        eval_manager_env,
+        best_model_save_path=os.path.join(MANAGER_DIR, "best"),
+        log_path=os.path.join(MANAGER_DIR, "eval"),
+        eval_freq=20_000,
+        n_eval_episodes=5,
+        deterministic=True,
+    )
+
+    manager_model.learn(
+        total_timesteps=2_000_000,
+        callback=CallbackList([eval_cb2]),
+    )
+
+    manager_model.save(os.path.join(MANAGER_DIR, "manager_model.zip"))
+
+    manager_env.close()
     eval_manager_env.close()
-    video_worker_env.close()
-    env_manager.close()
-    
-    logger.info("🏁 Training Complete 🏁")
+
 
 if __name__ == "__main__":
     main()

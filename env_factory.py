@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Callable
 from loguru import logger
 
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize
@@ -11,121 +11,82 @@ from hrl.manager_env import TableTennisManager
 from dr_spcrl.curriculum_env import CurriculumEnv
 from custom_env import CustomEnv
 
+def make_subproc_env(num_envs: int, thunk_fn: Callable):
+    return SubprocVecEnv([thunk_fn(i) for i in range(num_envs)])
 
-def create_worker_vector_env(cfg: Config, num_envs: int) -> VecNormalize:
-    """
-    Create vectorized Worker environments for training.
-    
-    Args:
-        cfg: Configuration
-        num_envs: Number of parallel environments
-    
-    Returns:
-        Vectorized and normalized Worker environment
-    """
+
+def build_worker_vec(env_id: str, num_envs: int) -> VecNormalize:
     def make_env(rank: int):
         def _init():
-            # Create Worker environment
-            env = TableTennisWorker(cfg)
+            env = TableTennisWorker(env_id=env_id)
             return Monitor(env, info_keywords=("is_success",))
         return _init
-    
-    logger.info(f"Creating {num_envs} parallel Worker environments")
-    
-    # Create vectorized environment
-    env = SubprocVecEnv([make_env(i) for i in range(num_envs)])
-    
-    # Add normalization
-    env = VecNormalize(
-        env, 
-        norm_obs=True, 
-        norm_reward=False, 
-        clip_obs=10.0
-    )
-    
-    return env
+
+    venv = make_subproc_env(num_envs, make_env)
+
+    # Worker obs normalization is OK
+    venv = VecNormalize(venv, norm_obs=True, norm_reward=False, clip_obs=10.0)
+    return venv
 
 
-def create_manager_vector_env(cfg: Config, 
-                              worker_model: RecurrentPPO,
-                              num_envs: int) -> VecNormalize:
-    """
-    Create vectorized Manager environments with pre-trained Workers.
-    
-    Args:
-        cfg: Configuration
-        worker_model_path: Path to trained Worker model (.zip)
-        num_envs: Number of parallel environments
-    
-    Returns:
-        Vectorized and normalized Manager environment
-    """
+def build_manager_vec(
+    env_id: str,
+    num_envs: int,
+    worker_model_path: str,
+    decision_interval: int,
+    max_episode_steps: int,
+    worker_model_loader,
+) -> VecNormalize:
     def make_env(rank: int):
         def _init():
+            worker_env = TableTennisWorker(env_id=env_id)
 
-            # Create Worker environment (for physics)
-            worker_env = TableTennisWorker(cfg)
-            
+            worker_model = worker_model_loader(worker_model_path)
 
-            # Load manger
-            manager_env = TableTennisManager(
+            env = TableTennisManager(
                 worker_env=worker_env,
                 worker_model=worker_model,
-                config=cfg
+                decision_interval=decision_interval,
+                max_episode_steps=max_episode_steps,
             )
-            
-            return Monitor(manager_env, info_keywords=("is_success",))
+            return Monitor(env, info_keywords=("is_success",))
         return _init
-    
-    logger.info(f"Creating {num_envs} parallel Manager environments")
-    
-    # Create vectorized environment
-    env = SubprocVecEnv([make_env(i) for i in range(num_envs)])
-    
-    # Add normalization
-    env = VecNormalize(
-        env, 
-        norm_obs=True, 
-        norm_reward=False, 
-        clip_obs=10.0,
-        gamma=cfg.ppo_gamma
-    )
-    
-    return env
 
-def create_curriculum_vector_env(cfg: Config, num_envs: int, eval_mode: bool = False):
+    venv = make_subproc_env(num_envs, make_env)
+
+    venv = VecNormalize(venv, norm_obs=False, norm_reward=False)
+    return venv
+
+def build_curriculum_vec(cfg: Config, num_envs: int, eval_mode: bool = False):
     def make_env(rank):
         def _init():
             env = CurriculumEnv(cfg, eval_mode=eval_mode)
             return Monitor(env, info_keywords=("is_success",))
         return _init
 
-    env = SubprocVecEnv([make_env(i) for i in range(num_envs)])
+    venv = make_subproc_env(num_envs, make_env)
 
-    env = VecNormalize(
-        env,
+    venv = VecNormalize(
+        venv,
         norm_obs=True,
         norm_reward=False,
         clip_obs=10.0,
     )
-    return env
+    return venv
 
 def create_default_env(cfg: Config, num_envs: int) -> VecNormalize:    
     def make_env(rank: int):
         def _init():
-            # Create plain environment
             env = CustomEnv(cfg)
             return Monitor(env, info_keywords=("is_success",))
         return _init
     
     logger.info(f"Creating {num_envs} parallel plain environments")
     
-    # Create vectorized environment
-    env = SubprocVecEnv([make_env(i) for i in range(num_envs)])
+    venv = make_subproc_env(num_envs, make_env)
     
-    # Add normalization
-    env = VecNormalize(
-        env, 
+    venv = VecNormalize(
+        venv, 
         norm_obs=True, 
         norm_reward=False,
         clip_obs=10.0,
@@ -133,43 +94,4 @@ def create_default_env(cfg: Config, num_envs: int) -> VecNormalize:
         gamma=cfg.ppo_gamma,
     )
     
-    return env
-
-
-def build_env(
-    cfg: Config, 
-    env_type: str,
-    worker_model: Optional[RecurrentPPO] = None,
-    eval_mode: bool = False
-    ) -> VecNormalize:
-    """
-    Main factory function to create environments.
-    
-    Args:
-        cfg: Configuration
-        worker: If True, create Worker env; if False, create Manager env
-        worker_model_path: Required if worker=False (path to trained Worker model)
-    
-    Returns:
-        Vectorized environment ready for training
-    """
-    if env_type == "worker":
-        logger.info(f"Building Worker environments... with num_envs={cfg.num_envs}")
-        return create_worker_vector_env(cfg, num_envs=cfg.num_envs)
-    if env_type == "manager":
-        if worker_model is None:
-            raise ValueError(
-                "The worker_model is required for Manager environment. "
-                "Please provide a trained Worker model."
-            )
-        
-        logger.info(f"Building Manager environments... with num_envs={cfg.num_envs}")
-        return create_manager_vector_env(
-            cfg=cfg,
-            worker_model=worker_model,
-            num_envs=cfg.num_envs
-        )
-
-    if env_type == "curriculum":
-        logger.info(f"Building Curriculum environments... with eval_mode={eval_mode} with num_envs={cfg.num_envs}")
-        return create_curriculum_vector_env(cfg, num_envs=cfg.num_envs, eval_mode=eval_mode)
+    return venv

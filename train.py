@@ -4,12 +4,12 @@ from stable_baselines3.common.callbacks import CallbackList, EvalCallback
 from lattice.ppo.policies import LatticeRecurrentActorCriticPolicy
 
 from config import Config
-from env_factory import build_env
 from utils import prepare_experiment_directory, make_predict_fn
 from callbacks.infologger_callback import InfoLoggerCallback
 from callbacks.video_callback import VideoCallback
 from callbacks.curriculum_callback import CurriculumCallback
 from loguru import logger
+from env_factory import build_curriculum_vec
 
 from dr_spcrl.curriculum_env import CurriculumEnv
 from dr_spcrl.dr_spcrl import DRSPCRLRecurrentPPO
@@ -22,7 +22,7 @@ def main():
     # # Train worker
     cfg = copy.deepcopy(cfg)
     cfg.logdir = os.path.join(cfg.logdir)
-    env = build_env(cfg, env_type="curriculum", eval_mode=False)
+    env = build_curriculum_vec(cfg, num_envs=cfg.num_envs, eval_mode=False)
 
     model = DRSPCRLRecurrentPPO(
         policy=LatticeRecurrentActorCriticPolicy,
@@ -62,7 +62,7 @@ def main():
     eval_cfg.num_envs = 1
     
     # Callback Worker
-    eval_env = build_env(eval_cfg, env_type="curriculum", eval_mode=True)
+    eval_env = build_curriculum_vec(eval_cfg, num_envs=1, eval_mode=True)
     eval_env.obs_rms = env.obs_rms
     eval_env.training = False
     eval_env.norm_reward = False
