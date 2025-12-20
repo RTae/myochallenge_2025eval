@@ -124,7 +124,6 @@ def main():
     cfg.logdir = MANAGER_DIR
     cfg.num_envs = 4
 
-    # env loader that returns VecNormalize(DummyVecEnv([TableTennisWorker(cfg)]))
     def worker_env_loader(path: str):
         return load_worker_vecnormalize(path, lambda: TableTennisWorker(cfg))
 
@@ -142,7 +141,7 @@ def main():
     manager_model = PPO(
         "MlpPolicy",
         manager_env,
-        device="cpu",  # IMPORTANT for MLP PPO
+        device="cpu",
         verbose=1,
         tensorboard_log=cfg.logdir,
         # Much more practical defaults for HRL envs:
