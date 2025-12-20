@@ -55,7 +55,7 @@ def main():
         eval_env,
         best_model_save_path=os.path.join(cfg.logdir, "best_model"),
         log_path=os.path.join(cfg.logdir, "eval"),
-        eval_freq=cfg.eval_freq//cfg.num_envs,
+        eval_freq=int(cfg.eval_freq//cfg.num_envs),
         n_eval_episodes=cfg.eval_episodes,
         deterministic=True,
         render=False,
