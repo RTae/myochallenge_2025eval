@@ -76,7 +76,7 @@ def main():
         worker_env,
         LOAD_WORKER_ENV_PATH,
         training=True,
-        norm_reward=True,
+        norm_reward=False,
     )
 
     # ---- Build model: load if provided else create new ----
@@ -108,18 +108,17 @@ def main():
             seed=cfg.seed,
         )
 
-    # ---- Worker evaluation (unchanged pattern) ----
+    # ---- Worker evaluation ----
     eval_worker_env = build_worker_vec(cfg=cfg, num_envs=1)
-    # If you want eval to use the SAME normalization as training, load from LOAD (if available),
-    # otherwise just use the eval env as-is (your original behavior).
-    eval_worker_env = resume_vecnormalize_on_training_env(
-        eval_worker_env,
-        LOAD_WORKER_ENV_PATH,
-        training=False,
-        norm_reward=False,
-    )
 
-    # Make sure eval env does not update stats
+    if LOAD_WORKER_ENV_PATH:
+        eval_worker_env = resume_vecnormalize_on_training_env(
+            eval_worker_env,
+            LOAD_WORKER_ENV_PATH,
+            training=False,
+            norm_reward=False,
+        )
+
     if isinstance(eval_worker_env, VecNormalize):
         eval_worker_env.training = False
         eval_worker_env.norm_reward = False
@@ -169,6 +168,10 @@ def main():
     # ==================================================
     cfg.logdir = MANAGER_DIR
     cfg.num_envs = 4
+    
+    if LOAD_MANAGER_MODEL_PATH:
+        assert os.path.exists(SAVE_WORKER_MODEL_PATH)
+        assert os.path.exists(SAVE_WORKER_ENV_PATH)
 
     def worker_env_loader(path: str):
         # Manager loads a frozen worker env via VecNormalize + fresh env_fn
