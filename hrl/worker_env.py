@@ -60,13 +60,14 @@ class TableTennisWorker(CustomEnv):
         self.success_bonus = 40
 
     # ------------------------------------------------
-    # Goal API (called by manager)
+    # Goal API
     # ------------------------------------------------
     def set_goal(self, goal: np.ndarray):
         goal = np.asarray(goal, dtype=np.float32).reshape(-1)
-        assert goal.shape == (6,), f"goal.shape={goal.shape}"
         self.current_goal = goal
-        self.goal_start_time = float(np.asarray(self.env.unwrapped.obs_dict["time"]).reshape(-1)[0])
+        self.goal_start_time = float(
+            np.asarray(self.env.unwrapped.obs_dict["time"]).reshape(-1)[0]
+        )
 
     def _sample_goal(self) -> np.ndarray:
         return np.random.uniform(self.goal_low, self.goal_high).astype(np.float32)
@@ -76,7 +77,7 @@ class TableTennisWorker(CustomEnv):
     # ------------------------------------------------
     def reset(self, seed: Optional[int] = None, options: Optional[Dict] = None):
         _, info = super().reset(seed=seed)
-
+        obs_dict = info['obs_dict']
             
         if self.current_goal is None:
             self.set_goal(self._sample_goal())
@@ -84,17 +85,16 @@ class TableTennisWorker(CustomEnv):
             self.goal_start_time = float(np.asarray(obs_dict["time"]).reshape(-1)[0])
 
         self._prev_paddle_contact = False
-        obs_dict = info['obs_dict']
         self.prev_reach_err = float(np.linalg.norm(np.asarray(obs_dict["reach_err"], dtype=np.float32)))
         return self._build_obs(obs_dict), info
 
     def step(self, action: np.ndarray):
         _, base_reward, terminated, truncated, info = super().step(action)
+        
+        obs_dict = info['obs_dict']
 
         if self.current_goal is None:
             self.set_goal(self._sample_goal())
-
-        obs_dict = info['obs_dict']
 
         shaped_reward, goal_success, reach_err, vel_norm, time_err = self._compute_reward(obs_dict)
 
