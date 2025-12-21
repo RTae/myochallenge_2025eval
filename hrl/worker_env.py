@@ -79,13 +79,17 @@ class TableTennisWorker(CustomEnv):
     # ------------------------------------------------
     def reset(self, seed: Optional[int] = None, options: Optional[Dict] = None):
         _, info = super().reset(seed=seed)
-        obs_dict = info['obs_dict']
-            
-        if self.current_goal is None:
-            self.set_goal(self._sample_goal())
+        obs_dict = info["obs_dict"]
+
+        # Always reset goal at episode start
+        self.current_goal = None
+        self.set_goal(self._sample_goal())
 
         self._prev_paddle_contact = False
-        self.prev_reach_err = float(np.linalg.norm(np.asarray(obs_dict["reach_err"], dtype=np.float32)))
+        self.prev_reach_err = float(
+            np.linalg.norm(np.asarray(obs_dict["reach_err"], dtype=np.float32))
+        )
+
         return self._build_obs(obs_dict), info
 
     def step(self, action: np.ndarray):
@@ -159,6 +163,8 @@ class TableTennisWorker(CustomEnv):
             - 0.05 * vel_norm
             - 0.3 * time_err
         )
+        
+        time_err = min(time_err, 1.0)
 
         success = (
             reach_err < self.reach_thr
