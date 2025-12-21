@@ -27,7 +27,6 @@ def load_worker_vecnormalize(path: str, env_fn: Callable[[], TableTennisWorker])
     Keep your existing interface for manager/video usage:
     load VecNormalize stats onto a fresh env built by env_fn.
     """
-    # NOTE: We do not change this because your manager factory expects this behavior.
     from stable_baselines3.common.vec_env import DummyVecEnv
     venv = DummyVecEnv([env_fn])
     vecnorm = VecNormalize.load(path, venv)
@@ -39,15 +38,15 @@ def main():
     cfg = Config()
     prepare_experiment_directory(cfg)
 
-    worker_total_timesteps = 10_000_000
-    manager_total_timesteps = 1_500_000
+    worker_total_timesteps = 40_000_000
+    manager_total_timesteps = 15_000_000
 
     # ==================================================
     # LOAD paths (optional, do NOT overwrite these)
     # ==================================================
-    LOAD_WORKER_MODEL_PATH: Optional[str] = None   # e.g. "/path/to/pretrained/worker_model.pkl"
-    LOAD_WORKER_ENV_PATH: Optional[str] = None     # e.g. "/path/to/pretrained/vecnormalize.pkl"
-    LOAD_MANAGER_MODEL_PATH: Optional[str] = None  # e.g. "/path/to/pretrained/manager_model.pkl"
+    LOAD_WORKER_MODEL_PATH: Optional[str] = "./logs/exp4/worker/worker_model.pkl"
+    LOAD_WORKER_ENV_PATH: Optional[str] = "./logs/exp4/worker/vecnormalize.pkl"
+    LOAD_MANAGER_MODEL_PATH: Optional[str] = None
 
     # ==================================================
     # SAVE dirs/paths (always write to your experiment logdir)
