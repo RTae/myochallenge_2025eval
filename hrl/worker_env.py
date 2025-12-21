@@ -147,8 +147,9 @@ class TableTennisWorker(CustomEnv):
 
         # shaping
         reward = (
-            2.5 * np.exp(-4.0 * reach_err)
-            - 0.1 * vel_norm
+            1.5 * np.exp(-2.0 * reach_err)     # usable gradient when far
+            + 0.5 * (1.0 - np.tanh(reach_err)) # linear-ish pull when far
+            - 0.05 * vel_norm                  # keep smoothness
         )
 
         success = (
