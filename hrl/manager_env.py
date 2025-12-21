@@ -4,6 +4,7 @@ from collections import deque
 import numpy as np
 from myosuite.utils import gym
 from stable_baselines3.common.vec_env import VecEnv
+import loguru as logger
 
 from config import Config
 from custom_env import CustomEnv
@@ -99,6 +100,8 @@ class TableTennisManager(CustomEnv):
         )
 
         self.worker_env.env_method("set_goal", goal, indices=0)
+        
+        logger.debug(f"Manager set_goal: {self.worker_env.envs[0].current_goal}")
 
         hit = False
         success = False

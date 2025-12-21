@@ -66,9 +66,6 @@ class TableTennisWorker(CustomEnv):
         goal = np.asarray(goal, dtype=np.float32).reshape(-1)
         assert goal.shape == (6,), f"goal.shape={goal.shape}"
         self.current_goal = goal
-        self.goal_start_time = float(
-            np.asarray(self.env.unwrapped.obs_dict["time"]).reshape(-1)[0]
-        )
 
     def _sample_goal(self) -> np.ndarray:
         return np.random.uniform(self.goal_low, self.goal_high).astype(np.float32)
@@ -80,8 +77,8 @@ class TableTennisWorker(CustomEnv):
     def reset(self, seed: Optional[int] = None, options: Optional[Dict] = None):
         _, info = super().reset(seed=seed)
         obs_dict = info["obs_dict"]
-
-        # Always reset goal at episode start
+        self.goal_start_time = float(obs_dict["time"])
+        
         self.current_goal = None
         self.set_goal(self._sample_goal())
 
@@ -97,8 +94,7 @@ class TableTennisWorker(CustomEnv):
         
         obs_dict = info['obs_dict']
 
-        if self.current_goal is None:
-            self.set_goal(self._sample_goal())
+        assert self.current_goal is not None, "Worker goal missing during step()"
 
         shaped_reward, goal_success, reach_err, vel_norm, time_err = self._compute_reward(obs_dict)
 
@@ -156,6 +152,8 @@ class TableTennisWorker(CustomEnv):
         if getattr(self, "goal_start_time", None) is not None:
             target_time = float(self.goal_start_time) + float(self.current_goal[5])
             time_err = abs(t_now - target_time)
+            
+        time_err = min(time_err, 1.0)
 
         reward = (
             1.2 * np.exp(-2.0 * reach_err)
@@ -164,8 +162,6 @@ class TableTennisWorker(CustomEnv):
             - 0.3 * time_err
         )
         
-        time_err = min(time_err, 1.0)
-
         success = (
             reach_err < self.reach_thr
             and vel_norm < self.vel_thr
