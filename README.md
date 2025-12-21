@@ -35,25 +35,6 @@ uv sync
 python train.py
 ```
 
-### Run with Docker 
-```bash
-docker run -it --rm \
-  --gpus all \
-  -v $PWD:/app \
-  ghcr.io/rtae/myochallenge/myochallenge-base:latest \
-  bash
-```
-
-
-## Train
-```bash
-docker run -d --name myochallenge_train \
-  --gpus all \
-  --shm-size=30gb \
-  -v ./logs:/app/logs \
-  ghcr.io/rtae/myochallenge/myochallenge-train:latest
-```
-
 ## Train with Docker
 
 ### Prerequisites
