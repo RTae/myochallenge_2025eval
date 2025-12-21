@@ -13,10 +13,10 @@ class TableTennisManager(CustomEnv):
     """
     High-level HRL manager.
 
-    - Observes worker obs (21) + time proxy (1) = 22
-    - Action is a 6D goal for worker
-    - Executes frozen worker for decision_interval steps per manager step
-    - Reward is SMOOTHED (low variance) using moving average of success
+    - Observes worker obs (18) + time proxy (1) = 19
+    - Action = 6D goal
+    - Runs frozen worker for decision_interval steps
+    - TERMINATES episodes so PPO can learn properly
     """
 
     def __init__(
@@ -44,10 +44,10 @@ class TableTennisManager(CustomEnv):
             dtype=np.float32,
         )
 
-        # Goal bounds from worker
+        # goal bounds from worker
         base_worker = self.worker_env.envs[0]
-        self.goal_low = np.asarray(base_worker.goal_low, dtype=np.float32).reshape(6,)
-        self.goal_high = np.asarray(base_worker.goal_high, dtype=np.float32).reshape(6,)
+        self.goal_low = np.asarray(base_worker.goal_low, np.float32)
+        self.goal_high = np.asarray(base_worker.goal_high, np.float32)
 
         self.action_space = gym.spaces.Box(
             low=self.goal_low,
@@ -59,14 +59,19 @@ class TableTennisManager(CustomEnv):
         self.current_step = 0
         self._worker_obs = None
 
-        # ---- reward smoothing ----
+        # reward smoothing buffer
         self.success_buffer = deque(maxlen=20)
 
+    # --------------------------------------------------
+    # Expose sim for video callback
+    # --------------------------------------------------
     @property
     def sim(self):
-        # so your generic video callback can do env.sim.renderer.render_offscreen(...)
         return self.worker_env.envs[0].sim
 
+    # --------------------------------------------------
+    # Reset
+    # --------------------------------------------------
     def reset(
         self,
         *,
@@ -76,19 +81,30 @@ class TableTennisManager(CustomEnv):
         self._worker_obs = self.worker_env.reset()
         self.current_step = 0
         self.success_buffer.clear()
-        obs = self._build_obs()
-        return obs, {"is_success": False, "is_paddle_hit": False}
 
+        obs = self._build_obs()
+        return obs, {
+            "is_success": False,
+            "is_paddle_hit": False,
+        }
+
+    # --------------------------------------------------
+    # Step
+    # --------------------------------------------------
     def step(self, action: np.ndarray):
-        goal = np.clip(np.asarray(action, dtype=np.float32).reshape(6,), self.goal_low, self.goal_high)
+        goal = np.clip(
+            np.asarray(action, np.float32).reshape(6,),
+            self.goal_low,
+            self.goal_high,
+        )
+
         self.worker_env.env_method("set_goal", goal, indices=0)
 
         hit = False
         success = False
 
         for _ in range(self.decision_interval):
-            obs_1d = np.asarray(self._worker_obs[0], dtype=np.float32)
-
+            obs_1d = np.asarray(self._worker_obs[0], np.float32)
             worker_action, _ = self.worker_model.predict(obs_1d, deterministic=True)
 
             obs, _, dones, infos = self.worker_env.step([worker_action])
@@ -97,21 +113,28 @@ class TableTennisManager(CustomEnv):
 
             info = infos[0]
             hit |= bool(info.get("is_paddle_hit", False))
-
-            # IMPORTANT: success is from worker's env success (solved)
             success |= bool(info.get("is_success", False))
 
-            if bool(dones[0]):
-                break
-            if self.current_step >= self.max_episode_steps:
+            if dones[0]:
                 break
 
-        # ---- reward smoothing ----
+        # -----------------------------
+        # Reward smoothing
+        # -----------------------------
         self.success_buffer.append(1.0 if success else 0.0)
+        success_rate = float(np.mean(self.success_buffer))
         reward = self._reward_smoothed(hit, success)
-        success_rate = float(np.mean(self.success_buffer)) if len(self.success_buffer) > 0 else 0.0
 
-        return self._build_obs(), float(reward), False, False, {
+        # -----------------------------
+        # TERMINATION
+        # -----------------------------
+        # Terminate on success or max steps
+        terminated = bool(success)
+        truncated = bool(self.current_step >= self.max_episode_steps)
+
+        obs = self._build_obs()
+
+        info_out = {
             "is_success": success,
             "is_paddle_hit": hit,
             "success_rate_smooth": success_rate,
@@ -120,33 +143,34 @@ class TableTennisManager(CustomEnv):
             "goal_dz": float(goal[2]),
         }
 
+        return obs, reward, terminated, truncated, info_out
+
+    # --------------------------------------------------
+    # Observation
+    # --------------------------------------------------
     def _build_obs(self) -> np.ndarray:
-        worker_obs = np.asarray(self._worker_obs[0], dtype=np.float32).reshape(18,)
+        worker_obs = np.asarray(self._worker_obs[0], np.float32).reshape(self.worker_obs_dim)
 
         t = np.array(
             [self.current_step / max(1, self.max_episode_steps)],
             dtype=np.float32,
-        ).reshape(1,)
+        )
 
         obs = np.hstack([worker_obs, t])
-        assert obs.shape == (self.observation_dim,), f"obs.shape={obs.shape}"
+        assert obs.shape == (self.observation_dim,)
         return obs
 
+    # --------------------------------------------------
+    # Reward
+    # --------------------------------------------------
     def _reward_smoothed(self, hit: bool, success: bool) -> float:
-        """
-        Low-variance + smoothed reward:
-        - small living cost
-        - small hit bonus
-        - terminal success bonus
-        - PLUS smooth success-rate shaping
-        """
-        success_rate = float(np.mean(self.success_buffer)) if len(self.success_buffer) > 0 else 0.0
+        success_rate = float(np.mean(self.success_buffer)) if self.success_buffer else 0.0
 
-        r = -0.1                # living cost
-        r += 0.5 * success_rate # smooth dense signal
+        r = -0.1
+        r += 0.5 * success_rate
         if hit:
-            r += 0.5            # small immediate encouragement
+            r += 0.5
         if success:
-            r += 5.0            # terminal bonus
+            r += 5.0
 
         return float(r)

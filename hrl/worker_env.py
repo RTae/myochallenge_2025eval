@@ -1,4 +1,3 @@
-# hrl/worker_env.py
 from typing import Tuple, Dict, Optional
 import numpy as np
 from myosuite.utils import gym
