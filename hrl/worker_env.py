@@ -55,7 +55,8 @@ class TableTennisWorker(CustomEnv):
         self.reach_thr = 0.25
         self.vel_thr = 1.2
         self.time_thr = 0.35
-        self.success_bonus = 15.0
+        self.success_bonus = 40
+        self.prev_reach_err = 0
 
     # ------------------------------------------------
     # Goal API (called by manager)
@@ -97,7 +98,13 @@ class TableTennisWorker(CustomEnv):
         reach_err = float(np.linalg.norm(obs_dict["reach_err"]))
         vel_norm  = float(np.linalg.norm(obs_dict["paddle_vel"]))
         time_err  = abs(float(obs_dict["time"]) - float(self.current_goal[5]))
-
+        info.update({
+            "base_reward": float(base_reward),
+            "shaped_reward": float(shaped_reward),
+            "reach_err_delta": self.prev_reach_err - reach_err if self.prev_reach_err is not None else 0.0
+        })
+        self.prev_reach_err = reach_err
+        
         info.update({
             "is_goal_success": bool(goal_success),
             "is_paddle_hit": bool(hit),
@@ -145,11 +152,10 @@ class TableTennisWorker(CustomEnv):
         dt_goal = float(np.asarray(self.current_goal, dtype=np.float32).reshape(-1)[5])
         time_err = abs(t_scalar - dt_goal)
 
-        # shaping
         reward = (
-            1.5 * np.exp(-2.0 * reach_err)     # usable gradient when far
-            + 0.5 * (1.0 - np.tanh(reach_err)) # linear-ish pull when far
-            - 0.05 * vel_norm                  # keep smoothness
+            1.2 * np.exp(-2.0 * reach_err)          # sharp near target
+            + 0.8 * (1.0 - np.clip(reach_err, 0, 2))# linear pull when far
+            - 0.05 * vel_norm
         )
 
         success = (
