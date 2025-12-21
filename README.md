@@ -55,3 +55,8 @@ make build
 ```bash
 make train
 ```
+4. Stop training container (optional)
+You don't need to do it everytime you can just run *make train* again after build a image from *make build*
+```bash
+make stop
+```
