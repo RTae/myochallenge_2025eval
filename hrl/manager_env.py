@@ -93,7 +93,6 @@ class TableTennisManager(CustomEnv):
         self.worker_env.env_method("set_goal", goal_norm, indices=0)
         
         assert np.all(goal_norm >= -1.01) and np.all(goal_norm <= 1.01)
-        logger.debug(f"[Manager] set_goal = {goal_norm}")
         
 
         hit = False
