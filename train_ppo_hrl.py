@@ -86,7 +86,19 @@ def main():
         worker_model = PPO.load(
             LOAD_WORKER_MODEL_PATH,
             env=worker_env,
+            verbose=1,
             device="cpu",
+            tensorboard_log=cfg.logdir,
+            n_steps=1024,
+            batch_size=256,
+            learning_rate=3e-4,
+            gamma=0.97,
+            gae_lambda=cfg.ppo_lambda,
+            clip_range=cfg.ppo_clip_range,
+            n_epochs=cfg.ppo_epochs,
+            max_grad_norm=cfg.ppo_max_grad_norm,
+            policy_kwargs=dict(net_arch=[128, 128]),
+            seed=cfg.seed,
         )
     else:
         logger.info("[Worker] No pretrained worker model given/found. Training from scratch.")
@@ -196,6 +208,18 @@ def main():
             LOAD_MANAGER_MODEL_PATH,
             env=manager_env,
             device="cpu",
+            verbose=1,
+            tensorboard_log=cfg.logdir,
+            n_steps=128,
+            batch_size=256,
+            learning_rate=1e-4,
+            gamma=0.995,
+            gae_lambda=0.97,
+            clip_range=cfg.ppo_clip_range,
+            n_epochs=cfg.ppo_epochs,
+            max_grad_norm=cfg.ppo_max_grad_norm,
+            policy_kwargs=dict(net_arch=[256, 256]),
+            seed=cfg.seed,
         )
     else:
         logger.info("[Manager] No pretrained manager model given/found. Training from scratch.")
