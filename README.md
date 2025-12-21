@@ -41,7 +41,6 @@ python train.py
 1. Make sure you already pull these image below into your local.
 ```bash
 docker pull tensorflow/tensorflow:2.15.0
-docker pull tensorflow/tensorflow:2.15.0
 ```
 2. Install docker gpu https://docs.docker.com/engine/containers/resource_constraints/#gpu
 
