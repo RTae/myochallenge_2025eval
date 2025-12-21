@@ -106,6 +106,7 @@ def main():
             "MlpPolicy",
             worker_env,
             verbose=1,
+            device="cpu",
             tensorboard_log=cfg.logdir,
             n_steps=1024,
             batch_size=256,
