@@ -181,12 +181,12 @@ class TableTennisWorker(CustomEnv):
             dtype=np.float32,
         ).reshape(-1)
         
-        # Paddle: Whether the ball is in contact with the paddle.
-        # Own: Whether the ball is in contact with the agent.
-        # Opponent: Whether the ball is in contact with an opponent agent.
-        # Ground: Whether the ball is in contact with the ground.
-        # Net: Whether the ball is in contact with the net.
-        # Env: Whether the ball is in contact with any part of the environment.
+        # 0 Paddle: Whether the ball is in contact with the paddle.
+        # 1 Own: Whether the ball is in contact with the agent.
+        # 2 Opponent: Whether the ball is in contact with an opponent agent.
+        # 3 Ground: Whether the ball is in contact with the ground.
+        # 4 Net: Whether the ball is in contact with the net.
+        # 5 Env: Whether the ball is in contact with any part of the environment.
         
         ball_paddle  = float(touching[0])
         paddle_contact = (ball_paddle > 0.5)
