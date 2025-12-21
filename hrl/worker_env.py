@@ -107,7 +107,7 @@ class TableTennisWorker(CustomEnv):
         self.goal_start_time = float(obs_dict["time"])
         
         self.current_goal = None
-        self.set_goal(self._sample_goal())
+        self.set_goal(self._sample_goal(obs_dict))
 
         self._prev_paddle_contact = False
         self.prev_reach_err = float(
