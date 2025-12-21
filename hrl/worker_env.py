@@ -76,7 +76,7 @@ class TableTennisWorker(CustomEnv):
     # ------------------------------------------------
     def reset(self, seed: Optional[int] = None, options: Optional[Dict] = None):
         _, info = super().reset(seed=seed)
-        obs_dict = info["obs_dict"]
+        obs_dict = self.env.unwrapped.obs_dict
         self.goal_start_time = float(obs_dict["time"])
         
         self.current_goal = None
@@ -93,12 +93,11 @@ class TableTennisWorker(CustomEnv):
         _, base_reward, terminated, truncated, info = super().step(action)
         
         obs_dict = info['obs_dict']
-
         assert self.current_goal is not None, "Worker goal missing during step()"
 
         shaped_reward, goal_success, reach_err, vel_norm, time_err = self._compute_reward(obs_dict)
-
-        hit = self._detect_paddle_hit()
+        hit = self._detect_paddle_hit(obs_dict)
+        
         total_reward = float(shaped_reward + 0.05 * float(base_reward))
         reach_err_delta = 0.0 if self.prev_reach_err is None else (self.prev_reach_err - reach_err)
         self.prev_reach_err = reach_err
@@ -176,9 +175,9 @@ class TableTennisWorker(CustomEnv):
     # ------------------------------------------------
     # Paddle hit detection
     # ------------------------------------------------
-    def _detect_paddle_hit(self) -> bool:
+    def _detect_paddle_hit(self, obs_dict) -> bool:
         touching = np.asarray(
-            self.env.unwrapped.obs_dict.get("touching_info", []),
+            obs_dict,
             dtype=np.float32,
         ).reshape(-1)
 
