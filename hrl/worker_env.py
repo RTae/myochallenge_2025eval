@@ -26,17 +26,17 @@ class TableTennisWorker(CustomEnv):
         super().__init__(config)
 
         # ------------------------------------------------
-        # Goal bounds (RELATIVE offsets, sane)
+        # Goal bounds
         # ------------------------------------------------
-        self.goal_low = np.array(
-            [-0.6, -0.6, -0.4, -0.8, -0.5, 0.15],
-            dtype=np.float32,
-        )
-        self.goal_high = np.array(
-            [ 0.6,  0.6,  0.6,  0.8,  0.5, 0.8],
+        self.goal_center = np.array(
+            [0.0, 0.0, 0.1, 0.0, 0.0, 0.475],
             dtype=np.float32,
         )
 
+        self.goal_half_range = np.array(
+            [0.6, 0.6, 0.5, 0.8, 0.5, 0.325],
+            dtype=np.float32,
+        )
         self.goal_dim = 6
         self.state_dim = 12
         self.observation_dim = self.goal_dim + self.state_dim
@@ -63,14 +63,41 @@ class TableTennisWorker(CustomEnv):
     # Goal API
     # ------------------------------------------------
     def set_goal(self, goal: np.ndarray):
-        goal = np.asarray(goal, dtype=np.float32).reshape(-1)
-        assert goal.shape == (6,), f"goal.shape={goal.shape}"
-        self.current_goal = goal
+        goal_norm = np.asarray(goal, dtype=np.float32).reshape(6,)
+        self.current_goal = self._denorm_goal(goal_norm)
+        
+    def _denorm_goal(self, goal_norm: np.ndarray) -> np.ndarray:
+        goal_norm = np.clip(goal_norm, -1.0, 1.0)
+        return self.goal_center + goal_norm * self.goal_half_range
 
-    def _sample_goal(self) -> np.ndarray:
-        return np.random.uniform(self.goal_low, self.goal_high).astype(np.float32)
-    
+    def _sample_goal(self, obs_dict) -> np.ndarray:
+        """
+        Sample a ball-conditioned goal in NORMALIZED space [-1, 1]^6
+        """
 
+        ball_xy = np.asarray(obs_dict["ball_pos"][:2], dtype=np.float32)
+
+        # physical target near ball
+        noise_xy = np.random.normal(scale=0.15, size=2)
+        target_xy = ball_xy + noise_xy
+
+        dz = np.random.uniform(0.0, 0.3)
+        nxny = np.random.uniform(-0.5, 0.5, size=2)
+        t = np.random.uniform(0.2, 0.5)
+
+        goal_phys = np.array([
+            target_xy[0],
+            target_xy[1],
+            dz,
+            nxny[0],
+            nxny[1],
+            t,
+        ], dtype=np.float32)
+
+        goal_norm = (goal_phys - self.goal_center) / self.goal_half_range
+        goal_norm = np.clip(goal_norm, -1.0, 1.0)
+
+        return goal_norm
     # ------------------------------------------------
     # Gym API
     # ------------------------------------------------
