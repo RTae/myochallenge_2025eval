@@ -4,7 +4,7 @@ from collections import deque
 import numpy as np
 from myosuite.utils import gym
 from stable_baselines3.common.vec_env import VecEnv
-import loguru as logger
+from loguru import logger
 
 from config import Config
 from custom_env import CustomEnv
@@ -14,10 +14,10 @@ class TableTennisManager(CustomEnv):
     """
     High-level HRL manager.
 
-    - Observes worker obs (18) + time proxy (1) = 19
+    - Observes worker obs (18) + normalized time (1) = 19
     - Action = 6D goal
     - Runs frozen worker for decision_interval steps
-    - TERMINATES episodes so PPO can learn properly
+    - Terminates on goal success or max steps
     """
 
     def __init__(
@@ -45,10 +45,10 @@ class TableTennisManager(CustomEnv):
             dtype=np.float32,
         )
 
-        # goal bounds from worker
+        # Goal bounds (copied from worker)
         base_worker = self.worker_env.envs[0]
-        self.goal_low = np.asarray(base_worker.goal_low, np.float32)
-        self.goal_high = np.asarray(base_worker.goal_high, np.float32)
+        self.goal_low = np.asarray(base_worker.goal_low, dtype=np.float32)
+        self.goal_high = np.asarray(base_worker.goal_high, dtype=np.float32)
 
         self.action_space = gym.spaces.Box(
             low=self.goal_low,
@@ -60,11 +60,11 @@ class TableTennisManager(CustomEnv):
         self.current_step = 0
         self._worker_obs = None
 
-        # reward smoothing buffer
+        # Smoothed success buffer
         self.success_buffer = deque(maxlen=20)
 
     # --------------------------------------------------
-    # Expose sim for video callback
+    # Expose sim (for video callback)
     # --------------------------------------------------
     @property
     def sim(self):
@@ -79,66 +79,71 @@ class TableTennisManager(CustomEnv):
         seed: Optional[int] = None,
         options: Optional[Dict] = None,
     ) -> Tuple[np.ndarray, Dict]:
+
         self._worker_obs = self.worker_env.reset()
         self.current_step = 0
         self.success_buffer.clear()
 
         obs = self._build_obs()
-        return obs, {
-            "is_success": False,
-            "is_paddle_hit": False,
-        }
+        return obs, {}
 
     # --------------------------------------------------
     # Step
     # --------------------------------------------------
     def step(self, action: np.ndarray):
+
+        # Clip goal
         goal = np.clip(
-            np.asarray(action, np.float32).reshape(6,),
+            np.asarray(action, dtype=np.float32).reshape(6,),
             self.goal_low,
             self.goal_high,
         )
 
+        # Send goal to worker
         self.worker_env.env_method("set_goal", goal, indices=0)
-        
-        logger.debug(f"Manager set_goal: {self.worker_env.envs[0].current_goal}")
+        logger.debug(f"[Manager] set_goal = {goal}")
 
         hit = False
         success = False
 
+        # Run worker for K steps
         for _ in range(self.decision_interval):
-            obs_1d = np.asarray(self._worker_obs[0], np.float32)
-            worker_action, _ = self.worker_model.predict(obs_1d, deterministic=True)
+            obs_1d = np.asarray(self._worker_obs[0], dtype=np.float32)
+
+            worker_action, _ = self.worker_model.predict(
+                obs_1d, deterministic=True
+            )
 
             obs, _, dones, infos = self.worker_env.step([worker_action])
             self._worker_obs = obs
             self.current_step += 1
 
             info = infos[0]
+
             hit |= bool(info.get("is_paddle_hit", False))
-            success |= bool(info.get("is_success", False))
+            success |= bool(info.get("is_goal_success", False))
 
             if dones[0]:
                 break
 
-        # -----------------------------
-        # Reward smoothing
-        # -----------------------------
+        # --------------------------------------------------
+        # Reward (smoothed)
+        # --------------------------------------------------
         self.success_buffer.append(1.0 if success else 0.0)
         success_rate = float(np.mean(self.success_buffer))
+
         reward = self._reward_smoothed(hit, success)
 
-        # -----------------------------
-        # TERMINATION
-        # -----------------------------
-        # Terminate on success or max steps
+        # --------------------------------------------------
+        # Termination
+        # --------------------------------------------------
         terminated = bool(success)
         truncated = bool(self.current_step >= self.max_episode_steps)
 
         obs = self._build_obs()
 
         info_out = {
-            "is_success": success,
+            "is_goal_success": success,
             "is_paddle_hit": hit,
             "success_rate_smooth": success_rate,
             "goal_dx": float(goal[0]),
@@ -152,14 +157,16 @@ class TableTennisManager(CustomEnv):
     # Observation
     # --------------------------------------------------
     def _build_obs(self) -> np.ndarray:
-        worker_obs = np.asarray(self._worker_obs[0], np.float32).reshape(self.worker_obs_dim)
+        worker_obs = np.asarray(
+            self._worker_obs[0], dtype=np.float32
+        ).reshape(self.worker_obs_dim)
 
-        t = np.array(
+        t_frac = np.array(
             [self.current_step / max(1, self.max_episode_steps)],
             dtype=np.float32,
         )
 
-        obs = np.hstack([worker_obs, t])
+        obs = np.hstack([worker_obs, t_frac])
         assert obs.shape == (self.observation_dim,)
         return obs
 
@@ -167,7 +174,11 @@ class TableTennisManager(CustomEnv):
     # Reward
     # --------------------------------------------------
     def _reward_smoothed(self, hit: bool, success: bool) -> float:
-        success_rate = float(np.mean(self.success_buffer)) if self.success_buffer else 0.0
+        success_rate = (
+            float(np.mean(self.success_buffer))
+            if self.success_buffer
+            else 0.0
+        )
 
         r = -0.1
         r += 0.5 * success_rate
