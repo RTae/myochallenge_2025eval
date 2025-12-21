@@ -1,6 +1,8 @@
 from loguru import logger
 from config import Config
 import numpy as np
+from typing import Optional
+from stable_baselines3.common.vec_env import VecNormalize
 import os
 
 # For video callback
@@ -52,3 +54,39 @@ def quat_to_paddle_normal(q: np.ndarray) -> np.ndarray:
     ], dtype=np.float32)
 
     return normal
+
+def resume_vecnormalize_on_training_env(
+    training_env,
+    load_vecnorm_path: Optional[str],
+    *,
+    training: bool,
+    norm_reward: bool,
+):
+    """
+    This keeps your build_worker_vec() stack intact.
+
+    If build_worker_vec returns VecNormalize already:
+      - we load stats and attach to the underlying venv to preserve wrappers.
+    If it returns a plain VecEnv:
+      - we wrap it with VecNormalize.load.
+
+    Returns the (possibly replaced) env.
+    """
+    if not load_vecnorm_path:
+        return training_env
+    if not os.path.exists(load_vecnorm_path):
+        logger.warning(f"[Worker] VecNormalize load path not found: {load_vecnorm_path}")
+        return training_env
+
+    # If training_env is already VecNormalize, preserve its underlying venv
+    if isinstance(training_env, VecNormalize):
+        base_venv = training_env.venv
+        logger.info(f"[Worker] Loading VecNormalize stats onto existing VecNormalize. path={load_vecnorm_path}")
+        new_env = VecNormalize.load(load_vecnorm_path, base_venv)
+    else:
+        logger.info(f"[Worker] Wrapping training env with VecNormalize.load. path={load_vecnorm_path}")
+        new_env = VecNormalize.load(load_vecnorm_path, training_env)
+
+    new_env.training = training
+    new_env.norm_reward = norm_reward
+    return new_env
