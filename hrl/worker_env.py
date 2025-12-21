@@ -77,13 +77,16 @@ class TableTennisWorker(CustomEnv):
     def reset(self, seed: Optional[int] = None, options: Optional[Dict] = None):
         _, info = super().reset(seed=seed)
 
+            
         if self.current_goal is None:
             self.set_goal(self._sample_goal())
+        else:
+            self.goal_start_time = float(np.asarray(obs_dict["time"]).reshape(-1)[0])
 
         self._prev_paddle_contact = False
-        obs_dict = info.get("obs_dict", self.env.unwrapped.obs_dict)
+        obs_dict = info['obs_dict']
         self.prev_reach_err = float(np.linalg.norm(np.asarray(obs_dict["reach_err"], dtype=np.float32)))
-        return self._build_obs(), info
+        return self._build_obs(obs_dict), info
 
     def step(self, action: np.ndarray):
         _, base_reward, terminated, truncated, info = super().step(action)
@@ -104,12 +107,11 @@ class TableTennisWorker(CustomEnv):
             "base_reward": float(base_reward),
             "shaped_reward": float(shaped_reward),
             "reach_err_delta": float(reach_err_delta),
-
-            "is_goal_success": bool(goal_success),
-            "is_paddle_hit": bool(hit),
             "reach_err": float(reach_err),
             "paddle_vel_norm": float(vel_norm),
             "goal_time_err": float(time_err),
+            "is_goal_success": bool(goal_success),
+            "is_paddle_hit": bool(hit),
         })
         return self._build_obs(obs_dict), total_reward, terminated, truncated, info
 
@@ -140,7 +142,7 @@ class TableTennisWorker(CustomEnv):
     # ------------------------------------------------
     # Reward + goal success logic
     # ------------------------------------------------
-    def _compute_reward(self, obs_dict) -> Tuple[float, bool]:
+    def _compute_reward(self, obs_dict) -> Tuple[float, bool, float, float, float]:
         
         reach_err = float(np.linalg.norm(np.asarray(obs_dict["reach_err"], dtype=np.float32)))
         vel_norm  = float(np.linalg.norm(np.asarray(obs_dict["paddle_vel"], dtype=np.float32)))
