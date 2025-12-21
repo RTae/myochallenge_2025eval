@@ -152,9 +152,10 @@ class TableTennisWorker(CustomEnv):
             time_err = abs(t_now - target_time)
 
         reward = (
-            1.2 * np.exp(-2.0 * reach_err)          # sharp near target
-            + 0.8 * (1.0 - np.clip(reach_err, 0, 2))# linear pull when far
+            1.2 * np.exp(-2.0 * reach_err)
+            + 0.8 * (1.0 - np.clip(reach_err, 0, 2))
             - 0.05 * vel_norm
+            - 0.3 * time_err
         )
 
         success = (
