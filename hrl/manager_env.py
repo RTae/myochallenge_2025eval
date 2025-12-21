@@ -56,7 +56,7 @@ class TableTennisManager(CustomEnv):
         self._worker_obs = None
 
         # Smoothed success buffer
-        self.success_buffer = deque(maxlen=20)
+        self.success_buffer = deque(maxlen=15)
         self.success_rate_thred = 0.8
 
     # --------------------------------------------------
@@ -169,20 +169,15 @@ class TableTennisManager(CustomEnv):
     # Reward
     # --------------------------------------------------
     def _reward_smoothed(self, is_hit: bool, is_goal_success: bool, is_success: bool) -> float:
-        success_rate = (
-            float(np.mean(self.success_buffer))
-            if self.success_buffer
-            else 0.0
-        )
+        success_rate = float(np.mean(self.success_buffer)) if self.success_buffer else 0.0
 
-        r = -0.1
-        r += 0.5 * success_rate
-        if is_hit:
-            r += 0.5
+        r = -0.05                     # small living cost
+        r += 1.0 * success_rate       # consistency matters most
+
         if is_goal_success:
-            r += 5.0
-            
-        if success_rate>self.success_rate_thred and is_success:
-            r += 0.5
+            r += 3.0                  # core signal
+
+        if is_success:
+            r += 2.0                  # downstream success bonus
 
         return float(r)

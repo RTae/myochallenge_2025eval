@@ -63,9 +63,15 @@ class TableTennisWorker(CustomEnv):
     # Goal API
     # ------------------------------------------------
     def set_goal(self, goal: np.ndarray):
-        goal_norm = np.asarray(goal, dtype=np.float32).reshape(6,)
+        goal_norm = np.clip(
+            np.asarray(goal, dtype=np.float32).reshape(6,),
+            -1.0, 1.0
+        )
         self.current_goal = self._denorm_goal(goal_norm)
-        
+        self.goal_start_time = float(
+            np.asarray(self.env.unwrapped.obs_dict["time"]).reshape(-1)[0]
+        )
+            
     def _denorm_goal(self, goal_norm: np.ndarray) -> np.ndarray:
         goal_norm = np.clip(goal_norm, -1.0, 1.0)
         return self.goal_center + goal_norm * self.goal_half_range
@@ -213,10 +219,13 @@ class TableTennisWorker(CustomEnv):
         # Directional reach progress
         # ----------------------------
         # Penalize moving away from the target (but do NOT reward improvement explicitly)
-        reach_delta = self.prev_reach_err - reach_err
+        reach_delta = 0.0
+        if self.prev_reach_err is not None:
+            reach_delta = self.prev_reach_err - reach_err
+
         if reach_delta < 0.0:
             reward += 0.1 * reach_delta   # negative penalty
-
+        
         # Extra velocity penalty when still far from the target
         # (discourages fast swings before proper alignment)
         reward -= 0.2 * vel_norm * (reach_err > 0.2)
@@ -239,7 +248,7 @@ class TableTennisWorker(CustomEnv):
 
         # Small bonus for paddle-ball contact (encouragement, not a shortcut)
         if hit:
-            reward += 1.0
+            reward += 0.3
 
         return float(reward), bool(success), reach_err, vel_norm, time_err
     

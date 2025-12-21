@@ -197,7 +197,7 @@ def main():
         worker_env_loader=worker_env_loader,
         worker_model_path=SAVE_WORKER_MODEL_PATH,
         worker_env_path=SAVE_WORKER_ENV_PATH,
-        decision_interval=cfg.episode_len // 10,
+        decision_interval=8,
         max_episode_steps=cfg.episode_len,
     )
 
