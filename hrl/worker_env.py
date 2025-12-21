@@ -122,8 +122,8 @@ class TableTennisWorker(CustomEnv):
         obs_dict = info['obs_dict']
         assert self.current_goal is not None, "Worker goal missing during step()"
 
-        shaped_reward, goal_success, reach_err, vel_norm, time_err = self._compute_reward(obs_dict)
         hit = self._detect_paddle_hit(obs_dict)
+        shaped_reward, goal_success, reach_err, vel_norm, time_err = self._compute_reward(obs_dict, hit)
         
         total_reward = float(shaped_reward + 0.05 * float(base_reward))
         reach_err_delta = 0.0 if self.prev_reach_err is None else (self.prev_reach_err - reach_err)
@@ -168,7 +168,7 @@ class TableTennisWorker(CustomEnv):
     # ------------------------------------------------
     # Reward + goal success logic
     # ------------------------------------------------
-    def _compute_reward(self, obs_dict) -> Tuple[float, bool, float, float, float]:
+    def _compute_reward(self, obs_dict:dict, hit:bool) -> Tuple[float, bool, float, float, float]:
         
         reach_err = float(np.linalg.norm(np.asarray(obs_dict["reach_err"], dtype=np.float32)))
         vel_norm  = float(np.linalg.norm(np.asarray(obs_dict["paddle_vel"], dtype=np.float32)))
@@ -181,21 +181,36 @@ class TableTennisWorker(CustomEnv):
             
         time_err = min(time_err, 1.0)
 
+        # ------------------------------------------------
+        # Reward computation
+        # ------------------------------------------------
         reward = (
-            1.2 * np.exp(-2.0 * reach_err)
-            + 0.8 * (1.0 - np.clip(reach_err, 0, 2))
-            - 0.05 * vel_norm
-            - 0.3 * time_err
+            1.2 * np.exp(-2.0 * reach_err) # reach term
+            + 0.8 * (1.0 - np.clip(reach_err, 0, 2)) # reach linear term
+            - 0.2 * vel_norm # velocity penalty
+            - 0.3 * time_err # timing penalty
         )
+        
+        reach_delta = self.prev_reach_err - reach_err
+        if reach_delta < 0:   # moving away from target
+            reward += 0.1 * reach_delta   # negative penalty
         
         success = (
             reach_err < self.reach_thr
             and vel_norm < self.vel_thr
             and time_err < self.time_thr
         )
+        
+        reward -= 0.2 * vel_norm * (reach_err > 0.2)
 
+        # ------------------------------------------------
+        # Final bonuses
+        # ------------------------------------------------
         if success:
             reward += self.success_bonus
+            
+        if hit:
+            reward += 1.0
 
         return float(reward), bool(success), reach_err, vel_norm, time_err
 
