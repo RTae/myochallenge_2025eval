@@ -64,6 +64,7 @@ class TableTennisWorker(CustomEnv):
     # ------------------------------------------------
     def set_goal(self, goal: np.ndarray):
         goal = np.asarray(goal, dtype=np.float32).reshape(-1)
+        assert goal.shape == (6,), f"goal.shape={goal.shape}"
         self.current_goal = goal
         self.goal_start_time = float(
             np.asarray(self.env.unwrapped.obs_dict["time"]).reshape(-1)[0]
@@ -71,6 +72,7 @@ class TableTennisWorker(CustomEnv):
 
     def _sample_goal(self) -> np.ndarray:
         return np.random.uniform(self.goal_low, self.goal_high).astype(np.float32)
+    
 
     # ------------------------------------------------
     # Gym API
@@ -81,8 +83,6 @@ class TableTennisWorker(CustomEnv):
             
         if self.current_goal is None:
             self.set_goal(self._sample_goal())
-        else:
-            self.goal_start_time = float(np.asarray(obs_dict["time"]).reshape(-1)[0])
 
         self._prev_paddle_contact = False
         self.prev_reach_err = float(np.linalg.norm(np.asarray(obs_dict["reach_err"], dtype=np.float32)))
@@ -172,7 +172,7 @@ class TableTennisWorker(CustomEnv):
         return float(reward), bool(success), reach_err, vel_norm, time_err
 
     # ------------------------------------------------
-    # Paddle hit detection (RISING EDGE)
+    # Paddle hit detection
     # ------------------------------------------------
     def _detect_paddle_hit(self) -> bool:
         touching = np.asarray(
