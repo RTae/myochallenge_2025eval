@@ -180,7 +180,6 @@ def main():
     # MANAGER
     # ==================================================
     cfg.logdir = MANAGER_DIR
-    cfg.num_envs = 24
     
     if LOAD_MANAGER_MODEL_PATH:
         assert os.path.exists(SAVE_WORKER_MODEL_PATH)
