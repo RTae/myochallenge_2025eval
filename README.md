@@ -53,3 +53,24 @@ docker run -d --name myochallenge_train \
   -v ./logs:/app/logs \
   ghcr.io/rtae/myochallenge/myochallenge-train:latest
 ```
+
+## Train with Docker
+
+### Prerequisites
+1. Make sure you already pull these image below into your local.
+```bash
+docker pull tensorflow/tensorflow:2.15.0
+docker pull tensorflow/tensorflow:2.15.0
+```
+2. Install docker gpu https://docs.docker.com/engine/containers/resource_constraints/#gpu
+
+### Steps
+1. Edit *Dockerfile.train*
+2. Build Docker image
+```bash
+make build
+```
+3. Run training container
+```bash
+make train
+```
