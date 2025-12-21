@@ -51,8 +51,8 @@ class TableTennisWorker(CustomEnv):
         self.current_goal: Optional[np.ndarray] = None
         self._prev_paddle_contact = False  # for rising-edge hit
 
-        # Success thresholds for GOAL success (not episode success)
-        self.reach_thr = 0.12
+        # Success thresholds for goal success, not episode success
+        self.reach_thr = 0.25
         self.vel_thr = 1.2
         self.time_thr = 0.35
         self.success_bonus = 15.0
