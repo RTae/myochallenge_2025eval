@@ -165,59 +165,93 @@ class TableTennisWorker(CustomEnv):
 
         return obs_out
 
-    # ------------------------------------------------
-    # Reward + goal success logic
-    # ------------------------------------------------
-    def _compute_reward(self, obs_dict:dict, hit:bool) -> Tuple[float, bool, float, float, float]:
-        
+    def _compute_reward(self, obs_dict: dict, hit: bool) -> Tuple[float, bool, float, float, float]:
+        """
+        Worker reward function.
+
+        Objectives:
+        - Smoothly reduce reach error (move paddle toward target)
+        - Avoid high-velocity / ballistic arm motions
+        - Encourage correct timing relative to the goal
+        - Provide sparse bonuses for meaningful success and ball contact
+        """
+
+        # ----------------------------
+        # Core state quantities
+        # ----------------------------
         reach_err = float(np.linalg.norm(np.asarray(obs_dict["reach_err"], dtype=np.float32)))
         vel_norm  = float(np.linalg.norm(np.asarray(obs_dict["paddle_vel"], dtype=np.float32)))
         t_now     = float(np.asarray(obs_dict["time"]).reshape(-1)[0])
-        time_err = 0.0
 
+        # Time error: how far we are from the desired goal execution time
+        time_err = 0.0
         if getattr(self, "goal_start_time", None) is not None:
             target_time = float(self.goal_start_time) + float(self.current_goal[5])
             time_err = abs(t_now - target_time)
-            
+
+        # Clamp timing error to avoid unbounded penalties
         time_err = min(time_err, 1.0)
 
-        # ------------------------------------------------
-        # Reward computation
-        # ------------------------------------------------
+        # ----------------------------
+        # Reward shaping terms
+        # ----------------------------
         reward = (
-            1.2 * np.exp(-2.0 * reach_err) # reach term
-            + 0.8 * (1.0 - np.clip(reach_err, 0, 2)) # reach linear term
-            - 0.2 * vel_norm # velocity penalty
-            - 0.3 * time_err # timing penalty
+            # Smooth exponential attraction near the target
+            1.2 * np.exp(-2.0 * reach_err)
+
+            # Linear pull when farther away (prevents flat gradients)
+            + 0.8 * (1.0 - np.clip(reach_err, 0, 2))
+
+            # Penalize high paddle velocity (prevents arm throwing)
+            - 0.2 * vel_norm
+
+            # Penalize being too early or too late relative to goal time
+            - 0.3 * time_err
         )
-        
+
+        # ----------------------------
+        # Directional reach progress
+        # ----------------------------
+        # Penalize moving away from the target (but do NOT reward improvement explicitly)
         reach_delta = self.prev_reach_err - reach_err
-        if reach_delta < 0:   # moving away from target
+        if reach_delta < 0.0:
             reward += 0.1 * reach_delta   # negative penalty
-        
+
+        # Extra velocity penalty when still far from the target
+        # (discourages fast swings before proper alignment)
+        reward -= 0.2 * vel_norm * (reach_err > 0.2)
+
+        # ----------------------------
+        # Goal success condition
+        # ----------------------------
         success = (
             reach_err < self.reach_thr
             and vel_norm < self.vel_thr
             and time_err < self.time_thr
         )
-        
-        reward -= 0.2 * vel_norm * (reach_err > 0.2)
 
-        # ------------------------------------------------
-        # Final bonuses
-        # ------------------------------------------------
+        # ----------------------------
+        # Sparse bonuses
+        # ----------------------------
+        # Large bonus for satisfying all goal constraints
         if success:
             reward += self.success_bonus
-            
+
+        # Small bonus for paddle-ball contact (encouragement, not a shortcut)
         if hit:
             reward += 1.0
 
         return float(reward), bool(success), reach_err, vel_norm, time_err
-
-    # ------------------------------------------------
-    # Paddle hit detection
-    # ------------------------------------------------
+    
     def _detect_paddle_hit(self, obs_dict) -> bool:
+        """
+        Check hit
+        
+        :param self: Description
+        :param obs_dict: Description
+        :return: Description
+        :rtype: bool
+        """
         touching = np.asarray(
             obs_dict['touching_info'],
             dtype=np.float32,
