@@ -177,7 +177,7 @@ class TableTennisWorker(CustomEnv):
     # ------------------------------------------------
     def _detect_paddle_hit(self, obs_dict) -> bool:
         touching = np.asarray(
-            obs_dict,
+            obs_dict['touching_info'],
             dtype=np.float32,
         ).reshape(-1)
 
