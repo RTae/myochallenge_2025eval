@@ -180,15 +180,16 @@ class TableTennisWorker(CustomEnv):
             obs_dict['touching_info'],
             dtype=np.float32,
         ).reshape(-1)
-
-        if touching.size < 3:
-            return False
-
-        ball_table  = float(touching[0])
-        ball_net    = float(touching[1])
-        ball_paddle = float(touching[2])
-
-        paddle_contact = (ball_paddle > 0.5) and (ball_table < 0.1) and (ball_net < 0.1)
+        
+        # Paddle: Whether the ball is in contact with the paddle.
+        # Own: Whether the ball is in contact with the agent.
+        # Opponent: Whether the ball is in contact with an opponent agent.
+        # Ground: Whether the ball is in contact with the ground.
+        # Net: Whether the ball is in contact with the net.
+        # Env: Whether the ball is in contact with any part of the environment.
+        
+        ball_paddle  = float(touching[0])
+        paddle_contact = (ball_paddle > 0.5)
 
         hit = bool(paddle_contact and (not self._prev_paddle_contact))
         self._prev_paddle_contact = bool(paddle_contact)
