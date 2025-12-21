@@ -49,14 +49,15 @@ class TableTennisWorker(CustomEnv):
         )
 
         self.current_goal: Optional[np.ndarray] = None
-        self._prev_paddle_contact = False  # for rising-edge hit
+        self.prev_reach_err: Optional[float] = None
+        self.goal_start_time: Optional[float] = None
+        self._prev_paddle_contact = False
 
         # Success thresholds for goal success, not episode success
         self.reach_thr = 0.25
         self.vel_thr = 1.2
         self.time_thr = 0.35
         self.success_bonus = 40
-        self.prev_reach_err = 0
 
     # ------------------------------------------------
     # Goal API (called by manager)
@@ -65,6 +66,7 @@ class TableTennisWorker(CustomEnv):
         goal = np.asarray(goal, dtype=np.float32).reshape(-1)
         assert goal.shape == (6,), f"goal.shape={goal.shape}"
         self.current_goal = goal
+        self.goal_start_time = float(np.asarray(self.env.unwrapped.obs_dict["time"]).reshape(-1)[0])
 
     def _sample_goal(self) -> np.ndarray:
         return np.random.uniform(self.goal_low, self.goal_high).astype(np.float32)
@@ -79,6 +81,8 @@ class TableTennisWorker(CustomEnv):
             self.set_goal(self._sample_goal())
 
         self._prev_paddle_contact = False
+        obs_dict = info.get("obs_dict", self.env.unwrapped.obs_dict)
+        self.prev_reach_err = float(np.linalg.norm(np.asarray(obs_dict["reach_err"], dtype=np.float32)))
         return self._build_obs(), info
 
     def step(self, action: np.ndarray):
@@ -94,23 +98,32 @@ class TableTennisWorker(CustomEnv):
 
         total_reward = float(shaped_reward + 0.05 * float(base_reward))
 
-        obs_dict  = info['obs_dict']
-        reach_err = float(np.linalg.norm(obs_dict["reach_err"]))
-        vel_norm  = float(np.linalg.norm(obs_dict["paddle_vel"]))
-        time_err  = abs(float(obs_dict["time"]) - float(self.current_goal[5]))
+        obs_dict = info.get("obs_dict", self.env.unwrapped.obs_dict)
+
+        reach_err = float(np.linalg.norm(np.asarray(obs_dict["reach_err"], dtype=np.float32)))
+        vel_norm  = float(np.linalg.norm(np.asarray(obs_dict["paddle_vel"], dtype=np.float32)))
+        t_now     = float(np.asarray(obs_dict["time"]).reshape(-1)[0])
+
+        # If you implement goal_start_time:
+        if getattr(self, "goal_start_time", None) is not None:
+            target_time = float(self.goal_start_time) + float(self.current_goal[5])
+            time_err = abs(t_now - target_time)
+        else:
+            time_err = 0.0  # until you track goal_start_time
+
+        reach_err_delta = 0.0 if self.prev_reach_err is None else (self.prev_reach_err - reach_err)
+        self.prev_reach_err = reach_err
+
         info.update({
             "base_reward": float(base_reward),
             "shaped_reward": float(shaped_reward),
-            "reach_err_delta": self.prev_reach_err - reach_err if self.prev_reach_err is not None else 0.0
-        })
-        self.prev_reach_err = reach_err
-        
-        info.update({
+            "reach_err_delta": float(reach_err_delta),
+
             "is_goal_success": bool(goal_success),
             "is_paddle_hit": bool(hit),
-            "reach_err": reach_err,
-            "paddle_vel_norm": vel_norm,
-            "goal_time_err": time_err,
+            "reach_err": float(reach_err),
+            "paddle_vel_norm": float(vel_norm),
+            "goal_time_err": float(time_err),
         })
         return self._build_obs(), total_reward, terminated, truncated, info
 
