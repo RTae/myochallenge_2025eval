@@ -1,4 +1,3 @@
-# hrl/manager_env.py
 from __future__ import annotations
 
 from typing import Tuple, Dict, Optional, Any
@@ -13,22 +12,16 @@ from custom_env import CustomEnv
 
 class TableTennisManager(CustomEnv):
     """
-    High-level HRL manager.
+    High-level manager.
 
-    Observation:
-      - worker_obs (worker_obs_dim) + normalized time fraction (1)
+    Observation = worker_obs (18) + normalized time (1) = 19
+    Action      = goal_norm (6) in [-1,1]^6
 
-    Action:
-      - 6D residual in normalized goal space [-1, 1]^6
-
-    Control:
-      - computes oracle goal from worker's calculate_prediction-based helper
-      - applies residual: goal = clip(oracle + residual_scale * action, [-1, 1])
-      - sets goal in worker via env_method("set_goal", goal_norm)
-
-    Termination:
-      - terminated on worker goal success (is_goal_success)
-      - truncated on max manager steps
+    At each manager step:
+      - set worker goal
+      - run frozen worker policy for decision_interval environment steps
+      - aggregate info and compute manager reward
+      - terminate on goal_success or max steps
     """
 
     def __init__(
@@ -38,20 +31,18 @@ class TableTennisManager(CustomEnv):
         config: Config,
         decision_interval: int = 10,
         max_episode_steps: int = 800,
-        residual_scale: float = 0.3,
         success_buffer_len: int = 15,
     ):
         super().__init__(config)
 
         self.worker_env = worker_env
         self.worker_model = worker_model
+
         self.decision_interval = int(decision_interval)
         self.max_episode_steps = int(max_episode_steps)
-        self.residual_scale = float(residual_scale)
 
-        # NOTE: this must match what your worker env actually returns as obs dimension
         self.worker_obs_dim = 18
-        self.observation_dim = self.worker_obs_dim + 1
+        self.observation_dim = 19
 
         self.observation_space = gym.spaces.Box(
             low=-np.inf,
@@ -60,7 +51,6 @@ class TableTennisManager(CustomEnv):
             dtype=np.float32,
         )
 
-        # Manager always outputs normalized residuals
         self.action_space = gym.spaces.Box(
             low=-1.0,
             high=1.0,
@@ -71,72 +61,36 @@ class TableTennisManager(CustomEnv):
         self.current_step = 0
         self._worker_obs = None
 
-        # Smoothed goal-success buffer (tracks worker goal success, not env solved)
+        # Smooth goal success history (stabilizes reward)
         self.success_buffer = deque(maxlen=int(success_buffer_len))
 
-    # --------------------------------------------------
-    # Expose sim (for video callback)
-    # --------------------------------------------------
     @property
     def sim(self):
+        # for video callback
         return self.worker_env.envs[0].sim
 
-    # --------------------------------------------------
-    # Reset
-    # --------------------------------------------------
     def reset(
         self,
         *,
         seed: Optional[int] = None,
         options: Optional[Dict] = None,
     ) -> Tuple[np.ndarray, Dict]:
-
-        # Reset worker env; this DOES call worker.reset() inside the subprocess
         self._worker_obs = self.worker_env.reset()
         self.current_step = 0
         self.success_buffer.clear()
+        return self._build_obs(), {}
 
-        obs = self._build_obs()
-        return obs, {}
-
-    # --------------------------------------------------
-    # Step
-    # --------------------------------------------------
     def step(self, action: np.ndarray):
-        """
-        action: residual (6,) in [-1, 1]^6
-        """
-        # Ensure correct shape
-        residual = np.asarray(action, dtype=np.float32).reshape(6,)
-        residual = np.clip(residual, -1.0, 1.0)
-
-        # --------------------------------------------------
-        # 1) Oracle goal from current worker/base state
-        # --------------------------------------------------
-        base_worker = self.worker_env.envs[0]  # worker wrapper instance inside vec env
-        obs_dict = base_worker.env.unwrapped.obs_dict  # raw dict from myosuite env
-
-        # predict_goal_from_state should return normalized goal in [-1, 1]^6
-        oracle_goal = np.asarray(base_worker.predict_goal_from_state(obs_dict), dtype=np.float32).reshape(6,)
-        oracle_goal = np.clip(oracle_goal, -1.0, 1.0)
-
-        # --------------------------------------------------
-        # 2) Residual goal = oracle + scaled residual
-        # --------------------------------------------------
-        goal_norm = np.clip(oracle_goal + self.residual_scale * residual, -1.0, 1.0)
-
-        # Send goal to worker; worker.set_goal resets goal_start_time per-goal (in your latest worker)
+        # ---- 1) set a new goal for worker ----
+        goal_norm = np.clip(np.asarray(action, dtype=np.float32).reshape(6,), -1.0, 1.0)
         self.worker_env.env_method("set_goal", goal_norm, indices=0)
 
-        # --------------------------------------------------
-        # 3) Rollout worker for decision_interval steps
-        # --------------------------------------------------
-        is_hit = False
-        is_goal_success = False
-        is_success = False  # env-level success ("solved")
+        # ---- 2) run frozen worker for K steps ----
+        hit_any = False
+        goal_success_any = False
+        env_success_any = False
 
         for _ in range(self.decision_interval):
-            # worker obs for SB3 policy
             obs_1d = np.asarray(self._worker_obs[0], dtype=np.float32)
 
             worker_action, _ = self.worker_model.predict(obs_1d, deterministic=True)
@@ -146,94 +100,68 @@ class TableTennisManager(CustomEnv):
             self.current_step += 1
 
             info = infos[0]
-            is_hit |= bool(info.get("is_paddle_hit", False))
-            is_goal_success |= bool(info.get("is_goal_success", False))
-            is_success |= bool(info.get("is_success", False))
+            hit_any |= bool(info.get("is_paddle_hit", False))
+            goal_success_any |= bool(info.get("is_goal_success", False))
+            env_success_any |= bool(info.get("is_success", False))
 
             if dones[0]:
                 break
 
-        # --------------------------------------------------
-        # 4) Reward (manager-level)
-        # --------------------------------------------------
-        self.success_buffer.append(1.0 if is_goal_success else 0.0)
+        # ---- 3) reward (smoothed by recent goal_success) ----
+        self.success_buffer.append(1.0 if goal_success_any else 0.0)
         success_rate = float(np.mean(self.success_buffer)) if self.success_buffer else 0.0
 
-        reward = self._reward_smoothed(
-            is_hit=is_hit,
-            is_goal_success=is_goal_success,
-            is_success=is_success,
+        reward = self._reward_manager(
+            hit=hit_any,
+            goal_success=goal_success_any,
+            env_success=env_success_any,
             success_rate=success_rate,
         )
 
-        # --------------------------------------------------
-        # 5) Termination / truncation
-        # --------------------------------------------------
-        terminated = bool(is_goal_success)  # one goal episode
+        # ---- 4) termination/truncation ----
+        # Recommended: terminate on goal_success (gives cleaner manager episodes)
+        terminated = bool(goal_success_any)
         truncated = bool(self.current_step >= self.max_episode_steps)
 
-        obs = self._build_obs()
+        obs_out = self._build_obs()
 
         info_out = {
-            "is_success": is_success,
-            "is_goal_success": is_goal_success,
-            "is_paddle_hit": is_hit,
-            "success_rate_smooth": success_rate,
-            "oracle_goal": oracle_goal.astype(np.float32),
-            "goal_norm": goal_norm.astype(np.float32),
+            "is_success": bool(env_success_any),
+            "is_goal_success": bool(goal_success_any),
+            "is_paddle_hit": bool(hit_any),
+            "success_rate_smooth": float(success_rate),
+            "goal_dx": float(goal_norm[0]),
+            "goal_dy": float(goal_norm[1]),
+            "goal_dz": float(goal_norm[2]),
         }
 
-        return obs, float(reward), terminated, truncated, info_out
+        return obs_out, float(reward), terminated, truncated, info_out
 
-    # --------------------------------------------------
-    # Observation
-    # --------------------------------------------------
     def _build_obs(self) -> np.ndarray:
-        """
-        Concatenate:
-          - worker_obs (worker_obs_dim,)
-          - time fraction (1,)
-        """
         worker_obs = np.asarray(self._worker_obs[0], dtype=np.float32).reshape(self.worker_obs_dim)
-
-        t_frac = np.array(
-            [self.current_step / max(1, self.max_episode_steps)],
-            dtype=np.float32,
-        )
-
+        t_frac = np.array([self.current_step / max(1, self.max_episode_steps)], dtype=np.float32)
         obs = np.hstack([worker_obs, t_frac])
-        assert obs.shape == (self.observation_dim,), f"obs.shape={obs.shape}"
+        assert obs.shape == (self.observation_dim,)
         return obs
 
-    # --------------------------------------------------
-    # Reward
-    # --------------------------------------------------
-    def _reward_smoothed(
-        self,
-        *,
-        is_hit: bool,
-        is_goal_success: bool,
-        is_success: bool,
-        success_rate: float,
-    ) -> float:
+    def _reward_manager(self, hit: bool, goal_success: bool, env_success: bool, success_rate: float) -> float:
         """
         Manager reward:
-          - living cost
-          - consistency bonus (smoothed goal success)
-          - large bonus for goal success
-          - smaller shaping for hit
-          - bonus for env-level solved
+        - small living cost
+        - reward consistency (success_rate)
+        - bonus for immediate goal_success
+        - bigger bonus if env solved
         """
-        r = -0.1
-        r += 2.0 * float(success_rate)
+        r = -0.05
+        r += 1.0 * success_rate
 
-        if is_goal_success:
-            r += 6.0
-
-        if is_hit:
-            r += 1.0
-
-        if is_success:
+        if goal_success:
             r += 3.0
+
+        if env_success:
+            r += 2.0
+
+        if hit:
+            r += 0.2
 
         return float(r)
