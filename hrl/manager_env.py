@@ -128,8 +128,6 @@ class TableTennisManager(CustomEnv):
         goal_success_any = False
         env_success_any = False
         
-        info_out = {}
-
         for _ in range(self.decision_interval):
             obs_1d = np.asarray(self._worker_obs[0], dtype=np.float32)
 
@@ -137,7 +135,7 @@ class TableTennisManager(CustomEnv):
                 obs_1d, deterministic=True
             )
 
-            obs, _, dones, infos = self.worker_env.step([worker_action])
+            obs, _, dones, infos = self.worker_env.step(worker_action[None])
             self._worker_obs = obs
             self.current_step += 1
 
@@ -146,8 +144,6 @@ class TableTennisManager(CustomEnv):
             goal_success_any |= bool(info.get("worker/is_goal_success"))
             env_success_any |= bool(info.get("is_success"))
             
-            info_out["worker/cos_sim"] = infos[0].get("worker/cos_sim")
-
             if dones[0]:
                 break
 
@@ -180,6 +176,7 @@ class TableTennisManager(CustomEnv):
             "success_rate_smooth": success_rate,
             "goal_delta_norm": delta_norm,
             "goal_delta": goal_delta.copy(),
+            "worker/cos_sim": infos[0].get("worker/cos_sim"),
         }
 
         return obs_out, float(reward), terminated, truncated, info_out
