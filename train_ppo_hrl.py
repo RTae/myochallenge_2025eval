@@ -274,7 +274,7 @@ def main():
             "worker_env": video_worker_env,
             "worker_model": frozen_worker_model,
             "config": cfg,
-            "decision_interval": 8,
+            "decision_interval": 1,
             "max_episode_steps": cfg.episode_len,
         },
         cfg=cfg,
