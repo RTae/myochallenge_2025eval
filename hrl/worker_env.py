@@ -68,11 +68,14 @@ class TableTennisWorker(CustomEnv):
             np.asarray(goal, dtype=np.float32).reshape(6,),
             -1.0, 1.0
         )
+
         self.current_goal = self._denorm_goal(goal_norm)
+
+        # Reset timing reference PER GOAL
         self.goal_start_time = float(
             np.asarray(self.env.unwrapped.obs_dict["time"]).reshape(-1)[0]
         )
-            
+                
     def _denorm_goal(self, goal_norm: np.ndarray) -> np.ndarray:
         goal_norm = np.clip(goal_norm, -1.0, 1.0)
         return self.goal_center + goal_norm * self.goal_half_range
@@ -106,26 +109,34 @@ class TableTennisWorker(CustomEnv):
 
         return goal_norm
     
+    def _norm_goal(self, goal_phys: np.ndarray) -> np.ndarray:
+        goal_norm = (goal_phys - self.goal_center) / self.goal_half_range
+        return np.clip(goal_norm, -1.0, 1.0)
+    
     def predict_goal_from_state(self, obs_dict):
-        ball_pos = obs_dict["ball_pos"]
-        ball_vel = obs_dict["ball_vel"]
-        paddle_pos = obs_dict["paddle_pos"]
+        """
+        Utility function (NOT used automatically during training).
+        Can be used by Manager or for debugging / oracle goals.
+        """
 
-        pred_ball_pos, n_ideal, _ = calculate_prediction(
+        ball_pos = np.asarray(obs_dict["ball_pos"], dtype=np.float32)
+        ball_vel = np.asarray(obs_dict["ball_vel"], dtype=np.float32)
+        paddle_pos = np.asarray(obs_dict["paddle_pos"], dtype=np.float32)
+
+        pred_ball_pos, n_ideal, dt = calculate_prediction(
             ball_pos, ball_vel, paddle_pos
         )
 
         goal_phys = np.array([
-            pred_ball_pos[0],
-            pred_ball_pos[1],
-            pred_ball_pos[2],
-            n_ideal[0],
-            n_ideal[1],
-            dt,
-        ])
+            pred_ball_pos[0],   # x_hit
+            pred_ball_pos[1],   # y_hit
+            pred_ball_pos[2],   # z_hit
+            n_ideal[0],         # normal x
+            n_ideal[1],         # normal y
+            dt,                 # time to impact
+        ], dtype=np.float32)
 
-        goal_norm = (goal_phys - goal_center) / goal_half_range
-        return np.clip(goal_norm, -1.0, 1.0)
+        return self._norm_goal(goal_phys)
     
     # ------------------------------------------------
     # Gym API
