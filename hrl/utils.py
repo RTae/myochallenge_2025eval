@@ -1,282 +1,294 @@
-from __future__ import annotations
-
-from typing import Tuple, Dict, Optional
 import numpy as np
-from myosuite.utils import gym
 
-from config import Config
-from custom_env import CustomEnv
-from utils import quat_to_paddle_normal
-
-from hrl.utils import calculate_prediction
-
-
-class TableTennisWorker(CustomEnv):
-    """
-    Low-level worker (muscle controller).
-
-    Obs = state (12) + goal_phys (6) = 18
-    state = [
-        reach_err (3),
-        ball_vel (3),
-        paddle_normal (3),
-        ball_xy (2),
-        time (1),
-    ]
-
-    Goal (physical) = [
-        target_x,
-        target_y,
-        target_z,
-        normal_x,
-        normal_y,
-        dt  (time offset)
-    ]
-
-    NOTE:
-    - set_goal() accepts goal in NORMALIZED space [-1,1]^6.
-    - internally we store goal in PHYSICAL units in self.current_goal.
-    """
-
-    def __init__(self, config: Config):
-        super().__init__(config)
-
-        # ------------------------------------------------
-        # Goal normalization (phys <-> norm)
-        # ------------------------------------------------
-        self.goal_center = np.array([0.0, 0.0, 0.1, 0.0, 0.0, 0.475], dtype=np.float32)
-        self.goal_half_range = np.array([0.6, 0.6, 0.5, 0.8, 0.5, 0.325], dtype=np.float32)
-
-        self.goal_dim = 6
-        self.state_dim = 12
-        self.observation_dim = self.goal_dim + self.state_dim
-
-        self.observation_space = gym.spaces.Box(
-            low=-np.inf, high=np.inf, shape=(self.observation_dim,), dtype=np.float32
-        )
-
-        self.current_goal: Optional[np.ndarray] = None  # PHYSICAL 6D goal
-        self.prev_reach_err: Optional[float] = None
-        self.goal_start_time: Optional[float] = None
-        self._prev_paddle_contact = False
-
-        # Goal success thresholds (worker-level)
-        self.reach_thr = 0.25
-        self.vel_thr = 1.2
-        self.time_thr = 0.35
-        self.success_bonus = 40.0
-
-    # ------------------------------------------------
-    # Goal helpers
-    # ------------------------------------------------
-    def _denorm_goal(self, goal_norm: np.ndarray) -> np.ndarray:
-        goal_norm = np.clip(goal_norm, -1.0, 1.0).astype(np.float32)
-        return self.goal_center + goal_norm * self.goal_half_range
-
-    def _norm_goal(self, goal_phys: np.ndarray) -> np.ndarray:
-        goal_phys = np.asarray(goal_phys, dtype=np.float32).reshape(6,)
-        goal_norm = (goal_phys - self.goal_center) / self.goal_half_range
-        return np.clip(goal_norm, -1.0, 1.0).astype(np.float32)
-
-    # ------------------------------------------------
-    # External API: manager calls this
-    # ------------------------------------------------
-    def set_goal(self, goal: np.ndarray):
+def calculate_prediction(self, ball_pos, ball_vel, paddle_pos):
         """
-        goal: normalized [-1,1]^6
+        Predict ball position at the paddle X-plane and compute an "ideal" paddle orientation
+        that would reflect the ball towards a fixed target.
+        
+        For single-env usage (1D `ball_pos` / `ball_vel`), we prefer a short MuJoCo forward
+        rollout from the current simulator state. This matches the true dynamics specified
+        in `myoarm_pong.xml` (drag via `fluidcoef`, contact with table/net, etc.).
+
+        For batched inputs, we fall back to a lightweight analytic approximation.
         """
-        goal_norm = np.asarray(goal, dtype=np.float32).reshape(6,)
-        goal_norm = np.clip(goal_norm, -1.0, 1.0)
+        # --- helpers (batch-safe) ---
+        def _safe_unit(v, fallback):
+            n = np.linalg.norm(v, axis=-1, keepdims=True)
+            return np.divide(v, n, out=np.broadcast_to(fallback, v.shape).copy(), where=n > 1e-9)
 
-        # Store PHYSICAL goal
-        self.current_goal = self._denorm_goal(goal_norm)
+        def _quat_from_two_unit_vecs(a_unit, b_unit):
+            # Returns quaternion [w, x, y, z] rotating a_unit -> b_unit (shortest arc)
+            dot = np.sum(a_unit * b_unit, axis=-1, keepdims=True)  # (..., 1)
+            v = np.cross(a_unit, b_unit)  # (..., 3)
+            w = 1.0 + dot  # (..., 1)
 
-        # Reset timing reference PER GOAL (critical for manager)
-        t_now = float(np.asarray(self.env.unwrapped.obs_dict["time"]).reshape(-1)[0])
-        self.goal_start_time = t_now
+            # Handle opposite vectors: choose a stable orthogonal axis (here z-axis for our fixed a=[-1,0,0])
+            opposite = (dot < -0.999999).squeeze(-1)
+            q = np.concatenate([w, v], axis=-1)  # (..., 4)
+            q_norm = np.linalg.norm(q, axis=-1, keepdims=True)
+            q = np.divide(q, q_norm, out=np.zeros_like(q), where=q_norm > 1e-12)
 
-    # ------------------------------------------------
-    # (Optional) Predict a good goal from current state
-    # ------------------------------------------------
-    def predict_goal_from_state(self, obs_dict: dict) -> np.ndarray:
-        """
-        Returns: normalized goal [-1,1]^6 constructed from physics prediction.
+            if np.any(opposite):
+                # 180deg around +Z gives [-1,0,0] -> [1,0,0]
+                q_op = np.array([0.0, 0.0, 0.0, 1.0])
+                if q.ndim == 1:
+                    q = q_op
+                else:
+                    q = q.copy()
+                    q[opposite] = q_op
+            return q
 
-        Requires obs_dict to contain:
-        - "ball_pos" (3,)
-        - "ball_vel" (3,)
-        - "paddle_pos" (3,)  (or you can derive from your env if named differently)
-        """
-        ball_pos = np.asarray(obs_dict["ball_pos"], dtype=np.float32).reshape(3,)
-        ball_vel = np.asarray(obs_dict["ball_vel"], dtype=np.float32).reshape(3,)
-        paddle_pos = np.asarray(obs_dict["paddle_pos"], dtype=np.float32).reshape(3,)
+        def _sim_predict_ball_at_xplane(paddle_xplane, max_time=2.0):
+            """
+            Predict ball state when its center reaches the given world X-plane, by stepping
+            the MuJoCo simulator forward from the current state and then restoring it.
+            Returns (pos(3,), vel(3,), ok(bool)).
+            """
+            sim = self.sim  # SimScene / DMSimScene wrapper
+            model = sim.model
+            data = sim.data
 
-        # calculate_prediction returns (pred_ball_pos, n_ideal, paddle_ori_ideal)
-        pred_ball_pos, n_ideal, _ = calculate_prediction(ball_pos, ball_vel, paddle_pos)
+            # Save full mutable state we might touch
+            qpos0 = data.qpos.copy()
+            qvel0 = data.qvel.copy()
+            time0 = float(data.time)
+            ctrl0 = data.ctrl.copy() if getattr(model, "nu", 0) > 0 else None
+            act0 = data.act.copy() if getattr(model, "na", 0) > 0 else None
+            
+            # Save paddle properties if we are going to modify them
+            # We want to essentially remove the paddle from collision or move it out of the way.
+            # Easiest is to move the paddle far away in joint space.
+            # Paddle joints start at self.paddle_posadr
+            
+            try:
+                # Freeze paddle by holding position actuators at current joint positions
+                # OR better: move paddle joints far away so it doesn't hit ball during prediction
+                # Paddle is joint "paddle_x" etc.
+                # Actually, setting qpos to something huge might break physics stability if constraints are violated.
+                # Let's just zero velocity and hope it doesn't move much? 
+                # Or set the joint limits to be somewhere else?
+                # Safer: disable collision for paddle geom.
+                # But conaffinity is in model.
+                
+                # Let's try zeroing velocities and setting control to hold current position (if possible)
+                # But the paddle might be IN THE WAY right now.
+                # If we are predicting for future intersection, and the paddle is currently blocking, 
+                # the rollout will hit the paddle.
+                
+                # Best approach: Teleport paddle out of the way (e.g. z = +10.0)
+                # "paddle_z" is the 3rd joint of paddle.
+                # Range is -0.3 to 0.1 in actuator, but joint range is -2 to 2.
+                # Let's set paddle_z joint value to 1.5 (high up)
+                
+                paddle_z_adr = self.paddle_posadr + 2
+                data.qpos[paddle_z_adr] = 1.5 
+                
+                # Also zero velocities for paddle
+                pd = int(self.paddle_dofadr)
+                data.qvel[pd:pd+6] = 0.0
+                
+                # Step until ball crosses x-plane (from smaller x to larger x)
+                # Ball moves +X in this env setup.
+                
+                dt_sim = float(model.opt.timestep)
+                n_steps = int(max(1, np.ceil(max_time / max(dt_sim, 1e-9))))
 
-        pred_ball_pos = np.asarray(pred_ball_pos, dtype=np.float32).reshape(3,)
-        n_ideal = np.asarray(n_ideal, dtype=np.float32).reshape(3,)
+                ball_sid = self.id_info.ball_sid
+                prev_pos = data.site_xpos[ball_sid].copy()
+                prev_err = paddle_xplane - float(prev_pos[0])
 
-        # Use predicted time-to-plane as dt if your function returns it.
-        # If not returned, we estimate dt using vx.
-        # NOTE: this is just a fallback; better is to return dt from calculate_prediction.
-        vx = float(ball_vel[0])
-        err_x = float(paddle_pos[0] - ball_pos[0])
-        if err_x > 0.0 and vx > 1e-3:
-            dt = float(np.clip(err_x / vx, 0.0, 2.0))
+                ok = False
+                out_pos = prev_pos.copy()
+                out_vel = self.get_sensor_by_name(model, data, "pingpong_vel_sensor").copy()
+
+                # If already passed, return current
+                if prev_err <= 0:
+                    return prev_pos, out_vel, True
+
+                for _ in range(n_steps):
+                    # Advance physics by one internal step (no rendering).
+                    # DMSimScene implements advance(substeps, render).
+                    # Check if advance exists, else use standard step
+                    if hasattr(sim, "advance"):
+                        sim.advance(substeps=1, render=False)
+                    else:
+                        # Fallback for standard mujoco/dm_control sim
+                        sim.step()
+                        
+                    curr_pos = data.site_xpos[ball_sid].copy()
+                    curr_err = paddle_xplane - float(curr_pos[0])
+
+                    # Detect crossing: err goes from >0 to <=0
+                    if (prev_err > 0.0) and (curr_err <= 0.0):
+                        # Linear interpolate between prev and curr for position at plane
+                        denom = (prev_err - curr_err)
+                        alpha = prev_err / denom if abs(denom) > 1e-12 else 0.0
+                        alpha = float(np.clip(alpha, 0.0, 1.0))
+                        out_pos = prev_pos + alpha * (curr_pos - prev_pos)
+                        out_pos[0] = float(paddle_xplane)
+
+                        # Use current sensor velocity as a good approximation at crossing
+                        out_vel = self.get_sensor_by_name(model, data, "pingpong_vel_sensor").copy()
+                        ok = True
+                        break
+
+                    prev_pos = curr_pos
+                    prev_err = curr_err
+                    
+                    # Safety check: if ball falls off table (Z < 0), stop
+                    if curr_pos[2] < 0.0:
+                        break
+
+                return out_pos, out_vel, ok
+            except Exception as e:
+                # If anything fails, return None
+                return None, None, False
+            finally:
+                # Restore state and forward
+                data.qpos[:] = qpos0
+                data.qvel[:] = qvel0
+                data.time = time0
+                if ctrl0 is not None:
+                    data.ctrl[:] = ctrl0
+                if act0 is not None:
+                    data.act[:] = act0
+                
+                # Use sim.forward() to ensure consistency with wrapper
+                sim.forward()
+
+        # --- core ---
+        # Only for verification; rollout the mujoco simulator for the prediction
+        if False:
+            paddle_xplane = float(paddle_pos[0])
+
+            # If ball isn't moving towards +X plane, don't predict forward.
+            # Or if it's already passed.
+            if float(ball_vel[0]) <= 1e-4 or float(paddle_xplane - ball_pos[0]) <= 0.0:
+                pred_ball_pos = np.array([paddle_xplane, float(ball_pos[1]), float(ball_pos[2])], dtype=float)
+                pred_ball_vel = np.array(ball_vel, dtype=float)
+            else:
+                # Bound rollout horizon by a coarse time-to-plane estimate.
+                approx_dt = float((paddle_xplane - ball_pos[0]) / max(float(ball_vel[0]), 1e-4))
+                max_time = float(np.clip(approx_dt * 1.5, 0.05, 2.0))
+                
+                pred_ball_pos, pred_ball_vel, ok = _sim_predict_ball_at_xplane(paddle_xplane, max_time=max_time)
+                if not ok or pred_ball_pos is None:
+                    # Fall back to current state if we didn't cross the plane in time.
+                    # Or maybe use analytic fallback?
+                    # Let's just project linearly as a failsafe
+                    pred_ball_pos = np.array([paddle_xplane, float(ball_pos[1]), float(ball_pos[2])], dtype=float)
+                    pred_ball_vel = np.array(ball_vel, dtype=float)
+
+            # Ideal paddle normal (Reflection law) using predicted impact point + impact velocity
+            opp_target = np.array([-0.7, 0.0, 0.8], dtype=float)
+            d_out = _safe_unit(opp_target - pred_ball_pos, np.array([-1.0, 0.0, 0.0]))
+            d_in = _safe_unit(pred_ball_vel, np.array([1.0, 0.0, 0.0]))
+            n_ideal = _safe_unit(d_out - d_in, np.array([-1.0, 0.0, 0.0]))
+
+            # Keep normal generally pointing -X (paddle facing convention)
+            if float(n_ideal[0]) > 0.0:
+                n_ideal = -n_ideal
+
+            a_u = np.array([-1.0, 0.0, 0.0], dtype=float)
+            paddle_ori_ideal = _quat_from_two_unit_vecs(a_u, _safe_unit(n_ideal, np.array([-1.0, 0.0, 0.0])))
+            return pred_ball_pos, n_ideal, paddle_ori_ideal
+
+        # Predictive time to paddle x-plane
+        reach_err = paddle_pos - ball_pos
+        err_x = reach_err[..., 0]
+        vx = ball_vel[..., 0]
+        eps_vx = 1e-3
+
+        dt = np.zeros_like(err_x)
+        valid = (err_x > 0.0) & (vx > eps_vx)
+        dt = np.divide(err_x, vx, out=dt, where=valid)
+        dt = np.clip(dt, 0.0, 2.0)
+
+        # Gravity magnitude (MuJoCo uses negative Z gravity)
+        g = float(-self.sim.model.opt.gravity[2]) if hasattr(self, "sim") else 9.81
+        if not np.isfinite(g) or g <= 0:
+            g = 9.81
+
+        # Table top plane (use OWN half: where we expect the bounce before paddle hit)
+        own_gid = self.id_info.own_half_gid
+        table_z = float(self.sim.data.geom_xpos[own_gid][2] + self.sim.model.geom_size[own_gid][2])
+        ball_r = float(self.sim.model.geom_size[self.id_info.ball_gid][0])
+        z_contact = table_z + ball_r
+
+        # Ballistic prediction (with at most one bounce on the table plane)
+        x_pred = np.broadcast_to(paddle_pos[..., 0], err_x.shape)
+        y0 = ball_pos[..., 1]
+        z0 = ball_pos[..., 2]
+        vy0 = ball_vel[..., 1]
+        vz0 = ball_vel[..., 2]
+
+        # Unbounced
+        y_pred = y0 + vy0 * dt
+        z_pred = z0 + vz0 * dt - 0.5 * g * (dt ** 2)
+        vz_pred = vz0 - g * dt
+
+        # Check if we'd hit the table before reaching the paddle x-plane:
+        # Solve z0 + vz0*t - 0.5*g*t^2 = z_contact for smallest positive t.
+        a = -0.5 * g
+        b = vz0
+        c = z0 - z_contact
+        disc = b * b - 4.0 * a * c
+        disc = np.maximum(disc, 0.0)
+        sqrt_disc = np.sqrt(disc)
+
+        # With a<0, the earlier root is (-b - sqrt_disc)/(2a) if it is positive
+        denom = 2.0 * a
+        t_hit = np.divide((-b - sqrt_disc), denom, out=np.full_like(dt, np.inf), where=np.abs(denom) > 1e-12)
+        hit_mask = (t_hit > 0.0) & (t_hit < dt)
+
+        if np.any(hit_mask):
+            # Velocity at table impact
+            vz_hit = vz0 - g * t_hit
+
+            # Simple restitution (can be tuned via env attr if you want)
+            e = float(getattr(self, "predict_restitution", 0.9))
+            e = float(np.clip(e, 0.0, 1.0))
+
+            vz_after = -e * vz_hit
+            dt2 = dt - t_hit
+
+            # Propagate after bounce from (y_hit,z_contact) with updated vz
+            y_hit = y0 + vy0 * t_hit
+            y_pred_b = y_hit + vy0 * dt2
+            z_pred_b = z_contact + vz_after * dt2 - 0.5 * g * (dt2 ** 2)
+            vz_pred_b = vz_after - g * dt2
+
+            y_pred = np.where(hit_mask, y_pred_b, y_pred)
+            z_pred = np.where(hit_mask, z_pred_b, z_pred)
+            vz_pred = np.where(hit_mask, vz_pred_b, vz_pred)
+
+        pred_ball_pos = np.stack([x_pred, y_pred, z_pred], axis=-1)
+
+        # Predicted ball velocity at impact (account for gravity + bounce)
+        pred_ball_vel = np.stack([vx, vy0, vz_pred], axis=-1)
+
+        # Ideal paddle normal (Reflection law) using predicted impact point + impact velocity
+        opp_target = np.array([-0.7, 0.0, 0.8])
+        d_out = opp_target - pred_ball_pos
+        d_out = _safe_unit(d_out, np.array([-1.0, 0.0, 0.0]))
+
+        d_in = _safe_unit(pred_ball_vel, np.array([1.0, 0.0, 0.0]))
+
+        n_ideal = _safe_unit(d_out - d_in, np.array([-1.0, 0.0, 0.0]))
+        # Ensure normal points roughly towards -X (paddle facing direction in this model)
+        flip = (n_ideal[..., 0] > 0.0)
+        if np.any(flip):
+            n_ideal = n_ideal.copy()
+            n_ideal[flip] *= -1.0
+
+        # Convert n_ideal to quaternion aligning reference normal [-1, 0, 0] to n_ideal
+        a_unit = np.array([-1.0, 0.0, 0.0])
+        if n_ideal.ndim == 1:
+            a_u = a_unit
         else:
-            dt = 0.35  # safe default (inside your goal range)
+            a_u = np.broadcast_to(a_unit, n_ideal.shape)
+        a_u = _safe_unit(a_u, np.array([-1.0, 0.0, 0.0]))
+        b_u = _safe_unit(n_ideal, np.array([-1.0, 0.0, 0.0]))
+        paddle_ori_ideal = _quat_from_two_unit_vecs(a_u, b_u)
 
-        goal_phys = np.array(
-            [pred_ball_pos[0], pred_ball_pos[1], pred_ball_pos[2], n_ideal[0], n_ideal[1], dt],
-            dtype=np.float32,
-        )
-
-        return self._norm_goal(goal_phys)
-
-    # ------------------------------------------------
-    # Random/ball-conditioned sampling (for worker pretrain)
-    # ------------------------------------------------
-    def _sample_goal(self, obs_dict: dict) -> np.ndarray:
-        """
-        Sample a ball-conditioned goal in NORMALIZED space [-1,1]^6.
-        """
-        ball_xy = np.asarray(obs_dict["ball_pos"][:2], dtype=np.float32)
-
-        noise_xy = np.random.normal(scale=0.15, size=2).astype(np.float32)
-        target_xy = ball_xy + noise_xy
-
-        dz = np.random.uniform(0.0, 0.3)
-        nxny = np.random.uniform(-0.5, 0.5, size=2)
-        dt = np.random.uniform(0.2, 0.5)
-
-        goal_phys = np.array([target_xy[0], target_xy[1], dz, nxny[0], nxny[1], dt], dtype=np.float32)
-        return self._norm_goal(goal_phys)
-
-    # ------------------------------------------------
-    # Gym API
-    # ------------------------------------------------
-    def reset(self, seed: Optional[int] = None, options: Optional[Dict] = None):
-        _, info = super().reset(seed=seed)
-        obs_dict = self.env.unwrapped.obs_dict
-
-        # New episode -> reset internal trackers
-        self._prev_paddle_contact = False
-        self.prev_reach_err = float(np.linalg.norm(np.asarray(obs_dict["reach_err"], dtype=np.float32)))
-
-        # Set an initial goal (for standalone worker training)
-        goal_norm = self._sample_goal(obs_dict)
-        self.set_goal(goal_norm)
-
-        return self._build_obs(obs_dict), info
-
-    def step(self, action: np.ndarray):
-        _, base_reward, terminated, truncated, info = super().step(action)
-        obs_dict = info["obs_dict"]
-
-        assert self.current_goal is not None, "Worker goal missing during step()"
-
-        hit = self._detect_paddle_hit(obs_dict)
-        shaped_reward, goal_success, reach_err, vel_norm, time_err = self._compute_reward(obs_dict, hit)
-
-        total_reward = float(shaped_reward + 0.05 * float(base_reward))
-
-        reach_err_delta = 0.0 if self.prev_reach_err is None else (self.prev_reach_err - reach_err)
-        self.prev_reach_err = reach_err
-
-        info.update(
-            {
-                "base_reward": float(base_reward),
-                "shaped_reward": float(shaped_reward),
-                "reach_err_delta": float(reach_err_delta),
-                "reach_err": float(reach_err),
-                "paddle_vel_norm": float(vel_norm),
-                "goal_time_err": float(time_err),
-                "is_goal_success": bool(goal_success),
-                "is_paddle_hit": bool(hit),
-            }
-        )
-
-        return self._build_obs(obs_dict), total_reward, terminated, truncated, info
-
-    # ------------------------------------------------
-    # Observation builder
-    # ------------------------------------------------
-    def _build_obs(self, obs_dict) -> np.ndarray:
-        reach_err = np.asarray(obs_dict["reach_err"], dtype=np.float32).reshape(3,)
-        ball_vel = np.asarray(obs_dict["ball_vel"], dtype=np.float32).reshape(3,)
-
-        paddle_n = quat_to_paddle_normal(
-            np.asarray(obs_dict["paddle_ori"], dtype=np.float32).reshape(4,)
-        ).reshape(3,)
-
-        ball_xy = np.asarray(obs_dict["ball_pos"][:2], dtype=np.float32).reshape(2,)
-        t = np.array([float(obs_dict["time"])], dtype=np.float32).reshape(1,)
-
-        goal = np.asarray(self.current_goal, dtype=np.float32).reshape(6,)  # PHYSICAL
-
-        state = np.hstack([reach_err, ball_vel, paddle_n, ball_xy, t])
-        obs_out = np.hstack([state, goal])
-
-        assert state.shape == (self.state_dim,), f"state.shape={state.shape}"
-        assert obs_out.shape == (self.observation_dim,), f"obs_out.shape={obs_out.shape}"
-
-        return obs_out
-
-    # ------------------------------------------------
-    # Reward + goal success
-    # ------------------------------------------------
-    def _compute_reward(self, obs_dict: dict, hit: bool) -> Tuple[float, bool, float, float, float]:
-        reach_err = float(np.linalg.norm(np.asarray(obs_dict["reach_err"], dtype=np.float32)))
-        vel_norm = float(np.linalg.norm(np.asarray(obs_dict["paddle_vel"], dtype=np.float32)))
-        t_now = float(np.asarray(obs_dict["time"]).reshape(-1)[0])
-
-        # Timing error relative to when this goal was issued
-        time_err = 0.0
-        if self.goal_start_time is not None:
-            target_time = float(self.goal_start_time) + float(self.current_goal[5])
-            time_err = abs(t_now - target_time)
-        time_err = min(time_err, 1.0)
-
-        # Dense shaping
-        reward = (
-            1.2 * np.exp(-2.0 * reach_err)
-            + 0.8 * (1.0 - np.clip(reach_err, 0, 2))
-            - 0.2 * vel_norm
-            - 0.3 * time_err
-        )
-
-        # Penalize moving away from target
-        if self.prev_reach_err is not None:
-            reach_delta = self.prev_reach_err - reach_err
-            if reach_delta < 0.0:
-                reward += 0.1 * reach_delta  # negative penalty
-
-        # Extra velocity penalty when still far
-        reward -= 0.2 * vel_norm * (reach_err > 0.2)
-
-        success = (reach_err < self.reach_thr) and (vel_norm < self.vel_thr) and (time_err < self.time_thr)
-
-        if success:
-            reward += self.success_bonus
-
-        if hit:
-            reward += 0.3
-
-        return float(reward), bool(success), reach_err, vel_norm, time_err
-
-    # ------------------------------------------------
-    # Hit detection
-    # ------------------------------------------------
-    def _detect_paddle_hit(self, obs_dict) -> bool:
-        touching = np.asarray(obs_dict.get("touching_info", []), dtype=np.float32).reshape(-1)
-        if touching.size < 1:
-            return False
-
-        # touching[0] = ball-paddle contact in your env comment
-        ball_paddle = float(touching[0])
-        paddle_contact = (ball_paddle > 0.5)
-
-        hit = bool(paddle_contact and (not self._prev_paddle_contact))
-        self._prev_paddle_contact = bool(paddle_contact)
-        return hit
+        return pred_ball_pos, n_ideal, paddle_ori_ideal
