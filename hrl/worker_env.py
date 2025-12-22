@@ -168,6 +168,11 @@ class TableTennisWorker(CustomEnv):
             dtype=np.float32,
         )
 
+        goal_phys = np.clip(
+            goal_phys,
+            self.goal_center - self.goal_half_range,
+            self.goal_center + self.goal_half_range,
+        )
         return self._norm_goal(goal_phys)
 
     def predict_goal_from_state(self, obs_dict):
