@@ -77,21 +77,19 @@ class TableTennisWorker(CustomEnv):
         self.dt_max = 1.5
 
     # ------------------------------------------------
-    # Time-to-plane estimation (FIX)
+    # Time-to-plane estimation
     # ------------------------------------------------
     def _compute_dt(self, ball_pos, ball_vel, paddle_pos) -> float:
         err_x = float(paddle_pos[0] - ball_pos[0])
         vx = float(ball_vel[0])
-        eps_vx = 1e-3
 
-        if err_x <= 0.0 or vx <= eps_vx:
+        if err_x <= 0.0 or vx <= 1e-3:
             return float(self.dt_min)
 
-        dt = err_x / vx
-        return float(np.clip(dt, self.dt_min, self.dt_max))
+        return float(np.clip(err_x / vx, self.dt_min, self.dt_max))
 
     # ------------------------------------------------
-    # Goal helpers
+    # Normal helpers
     # ------------------------------------------------
     def _safe_unit(self, v):
         n = np.linalg.norm(v)
@@ -143,7 +141,6 @@ class TableTennisWorker(CustomEnv):
         pred_pos, n_ideal, _ = calculate_prediction(ball_pos, ball_vel, paddle_pos)
         dt = self._compute_dt(ball_pos, ball_vel, paddle_pos)
 
-        # Noise
         pos_noise = np.random.normal(0, self.pos_noise_scale)
         normal_noise = np.random.normal(0, self.normal_noise_scale, size=3)
         time_noise = np.random.normal(0, self.time_noise_scale)
@@ -165,8 +162,7 @@ class TableTennisWorker(CustomEnv):
             dtype=np.float32,
         )
 
-        goal_phys = self._clip_goal_phys(goal_phys)
-        return self._norm_goal(goal_phys)
+        return self._norm_goal(self._clip_goal_phys(goal_phys))
 
     def predict_goal_from_state(self, obs_dict):
         ball_pos = np.asarray(obs_dict["ball_pos"], dtype=np.float32)
@@ -186,8 +182,7 @@ class TableTennisWorker(CustomEnv):
             dtype=np.float32,
         )
 
-        goal_phys = self._clip_goal_phys(goal_phys)
-        return self._norm_goal(goal_phys)
+        return self._norm_goal(self._clip_goal_phys(goal_phys))
 
     # ------------------------------------------------
     # Gym API
@@ -207,10 +202,23 @@ class TableTennisWorker(CustomEnv):
         obs_dict = info["obs_dict"]
 
         hit = self._detect_paddle_hit(obs_dict)
-        shaped_reward, success, reach_err, vel_norm, time_err = self._compute_reward(obs_dict, hit)
+        shaped_reward, success, reach_err, vel_norm, time_err, cos_sim = self._compute_reward(obs_dict, hit)
 
         reward = shaped_reward + 0.05 * base_reward
         self.prev_reach_err = reach_err
+
+        # ---------- logging ----------
+        info.update(
+            {
+                "worker/reach_err": reach_err,
+                "worker/vel_norm": vel_norm,
+                "worker/time_err": time_err,
+                "worker/cos_sim": cos_sim,
+                "worker/dt_target": float(self.current_goal[5]),
+                "worker/is_goal_success": bool(success),
+                "worker/is_paddle_hit": bool(hit),
+            }
+        )
 
         return self._build_obs(obs_dict), float(reward), terminated, truncated, info
 
@@ -218,14 +226,20 @@ class TableTennisWorker(CustomEnv):
     # Observation
     # ------------------------------------------------
     def _build_obs(self, obs_dict):
+        assert self.current_goal is not None
+
         reach_err = np.asarray(obs_dict["reach_err"], dtype=np.float32)
         ball_vel = np.asarray(obs_dict["ball_vel"], dtype=np.float32)
+
         paddle_n = quat_to_paddle_normal(np.asarray(obs_dict["paddle_ori"], dtype=np.float32))
+        paddle_n = paddle_n / (np.linalg.norm(paddle_n) + 1e-8)
+
         ball_xy = np.asarray(obs_dict["ball_pos"][:2], dtype=np.float32)
         t = np.array([obs_dict["time"]], dtype=np.float32)
 
         state = np.hstack([reach_err, ball_vel, paddle_n, ball_xy, t])
-        return np.hstack([state, self.current_goal])
+        obs = np.hstack([state, self.current_goal])
+        return np.clip(obs, -5.0, 5.0)
 
     # ------------------------------------------------
     # Reward
@@ -236,17 +250,21 @@ class TableTennisWorker(CustomEnv):
         t_now = float(obs_dict["time"])
 
         target_time = self.goal_start_time + self.current_goal[5]
-        time_err = abs(t_now - target_time)
-        time_err = min(time_err, 1.0)
+        time_err = min(abs(t_now - target_time), 1.0)
 
         paddle_n = quat_to_paddle_normal(obs_dict["paddle_ori"])
+        paddle_n = paddle_n / (np.linalg.norm(paddle_n) + 1e-8)
+
         goal_n = self._unpack_normal_xy(self.current_goal[3], self.current_goal[4])
-        cos_sim = float(np.dot(paddle_n, goal_n))
+        cos_sim = float(np.clip(np.dot(paddle_n, goal_n), -1.0, 1.0))
+
+        # Orientation matters only when close
+        align_w = 0.6 * np.exp(-3.0 * reach_err)
 
         reward = (
             1.2 * np.exp(-2.0 * reach_err)
             + 0.8 * (1.0 - np.clip(reach_err, 0, 2))
-            + 0.6 * cos_sim
+            + align_w * cos_sim
             - 0.2 * vel_norm
             - 0.3 * time_err
         )
@@ -255,6 +273,7 @@ class TableTennisWorker(CustomEnv):
             reach_err < self.reach_thr
             and vel_norm < self.vel_thr
             and time_err < self.time_thr
+            and cos_sim > 0.9
         )
 
         if success:
@@ -262,7 +281,7 @@ class TableTennisWorker(CustomEnv):
         if hit:
             reward += 0.3
 
-        return reward, success, reach_err, vel_norm, time_err
+        return reward, success, reach_err, vel_norm, time_err, cos_sim
 
     # ------------------------------------------------
     # Hit detection
