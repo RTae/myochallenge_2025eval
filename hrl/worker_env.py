@@ -76,7 +76,7 @@ class TableTennisWorker(CustomEnv):
 
         self.dt_min = 0.05
         self.dt_max = 1.5
-        self.max_time = float(config.episode_len)
+        self.max_time = 3.0 # From env spec
 
     # ------------------------------------------------
     # Time-to-plane
