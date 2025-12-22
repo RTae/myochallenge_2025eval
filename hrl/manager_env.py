@@ -119,7 +119,7 @@ class TableTennisManager(CustomEnv):
         goal_final = np.clip(goal_pred + goal_delta, -1.0, 1.0)
 
         # Send to worker
-        self.worker_env.env_method("set_goal", goal_final)
+        self.worker_env.env_method("set_goal", goal_final, indices=0)
 
         # --------------------------------------------------
         # 2) Run frozen worker
@@ -142,9 +142,10 @@ class TableTennisManager(CustomEnv):
             self.current_step += 1
 
             info = infos[0]
-            hit_any |= bool(info.get("is_paddle_hit"))
-            goal_success_any |= bool(info.get("is_goal_success"))
+            hit_any |= bool(info.get("worker/is_paddle_hit"))
+            goal_success_any |= bool(info.get("worker/is_goal_success"))
             env_success_any |= bool(info.get("is_success"))
+            
             info_out["worker/cos_sim"] = infos[0].get("worker/cos_sim")
 
             if dones[0]:
