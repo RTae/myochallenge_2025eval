@@ -38,8 +38,8 @@ def main():
     cfg = Config()
     prepare_experiment_directory(cfg)
 
-    worker_total_timesteps = 40_000_000
-    manager_total_timesteps = 15_000_000
+    worker_total_timesteps = 20_000_000
+    manager_total_timesteps = 10_000_000
 
     # ==================================================
     # LOAD paths
@@ -196,7 +196,7 @@ def main():
         worker_env_loader=worker_env_loader,
         worker_model_path=SAVE_WORKER_MODEL_PATH,
         worker_env_path=SAVE_WORKER_ENV_PATH,
-        decision_interval=8,
+        decision_interval=5,
         max_episode_steps=cfg.episode_len,
     )
 
@@ -249,7 +249,7 @@ def main():
         worker_env_loader=worker_env_loader,
         worker_model_path=SAVE_WORKER_MODEL_PATH,
         worker_env_path=SAVE_WORKER_ENV_PATH,
-        decision_interval=8,
+        decision_interval=5,
         max_episode_steps=cfg.episode_len,
     )
 
