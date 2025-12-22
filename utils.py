@@ -38,22 +38,20 @@ def prepare_experiment_directory(cfg: Config):
 
 def quat_to_paddle_normal(q: np.ndarray) -> np.ndarray:
     """
-    Convert quaternion (x, y, z, w) to paddle surface normal (3D).
-    Assumes the paddle's local +Z axis is the hitting normal.
+    Paddle hitting normal = local +X axis
+    Quaternion format: (x, y, z, w)
     """
     q = q.astype(np.float32)
     q = q / (np.linalg.norm(q) + 1e-8)
 
     x, y, z, w = q
 
-    # Third column of rotation matrix (Z axis)
-    normal = np.array([
-        2.0 * (x*z + w*y),
-        2.0 * (y*z - w*x),
-        1.0 - 2.0 * (x*x + y*y),
+    # X axis of rotation matrix
+    return np.array([
+        1.0 - 2.0 * (y*y + z*z),
+        2.0 * (x*y + w*z),
+        2.0 * (x*z - w*y),
     ], dtype=np.float32)
-
-    return normal
 
 def resume_vecnormalize_on_training_env(
     training_env,
