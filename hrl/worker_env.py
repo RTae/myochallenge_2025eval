@@ -243,6 +243,27 @@ class TableTennisWorker(CustomEnv):
         paddle_n = quat_to_paddle_normal(obs_dict["paddle_ori"])
         paddle_n /= np.linalg.norm(paddle_n) + 1e-8
 
+        # Example:
+        # Desired paddle normal (goal_n) is facing the ball:
+        #     goal_n = [-1, 0, 0]
+        #
+        # If the paddle is perfectly aligned:
+        #     paddle_n = [-1, 0, 0]
+        #     cos_sim = dot(paddle_n, goal_n) = 1.0   (perfect alignment)
+        #
+        # If the paddle is slightly tilted upward:
+        #     paddle_n ≈ [-0.97, 0.00, 0.24]
+        #     cos_sim ≈ 0.97  (still good)
+        #
+        # If the paddle is orthogonal:
+        #     paddle_n = [0, 1, 0]
+        #     cos_sim = 0.0   (bad orientation)
+        #
+        # If the paddle faces the wrong way:
+        #     paddle_n = [1, 0, 0]
+        #     cos_sim = -1.0  (completely wrong)
+        #
+        # We reward cos_sim → 1 when paddle orientation matches the desired reflection normal.
         goal_n = self._unpack_normal_xy(self.current_goal[3], self.current_goal[4])
         cos_sim = float(np.clip(np.dot(paddle_n, goal_n), -1.0, 1.0))
 
