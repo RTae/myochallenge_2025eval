@@ -109,37 +109,13 @@ class TableTennisWorker(CustomEnv):
     # Prediction wrapper (FAST & SAFE)
     # ------------------------------------------------
     def _predict(self, obs_dict):
-        ball_pos = np.asarray(obs_dict["ball_pos"], dtype=np.float32)
-        ball_vel = np.asarray(obs_dict["ball_vel"], dtype=np.float32)
-        paddle_pos = np.asarray(obs_dict["paddle_pos"], dtype=np.float32)
-
-        # Table height
-        table_gid = self.id_info.own_half_gid
-        table_z = (
-            self.sim.data.geom_xpos[table_gid][2]
-            + self.sim.model.geom_size[table_gid][2]
+        pred_pos, n_ideal, _ = predict_ball_analytic(
+            sim=self.sim,
+            id_info=self.id_info,
+            ball_pos=obs_dict["ball_pos"],
+            ball_vel=obs_dict["ball_vel"],
+            paddle_pos=obs_dict["paddle_pos"],
         )
-
-        g = float(-self.sim.model.opt.gravity[2])
-        restitution = float(getattr(self, "predict_restitution", 0.9))
-
-        pred_pos, pred_vel = predict_ball_analytic(
-            ball_pos,
-            ball_vel,
-            paddle_pos[0],
-            gravity=g,
-            table_z=table_z,
-            restitution=restitution,
-        )
-
-        opp_target = np.array([-0.7, 0.0, 0.8], dtype=np.float32)
-        d_out = safe_unit(opp_target - pred_pos, np.array([-1.0, 0.0, 0.0]))
-        d_in = safe_unit(pred_vel, np.array([1.0, 0.0, 0.0]))
-
-        n_ideal = reflect_normal(d_in, d_out)
-        if n_ideal[0] > 0:
-            n_ideal = -n_ideal
-
         return pred_pos, n_ideal
 
     # ------------------------------------------------
