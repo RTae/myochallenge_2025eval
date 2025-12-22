@@ -250,7 +250,7 @@ def main():
         worker_env_loader=worker_env_loader,
         worker_model_path=SAVE_WORKER_MODEL_PATH,
         worker_env_path=SAVE_WORKER_ENV_PATH,
-        decision_interval=cfg.episode_len // 10,
+        decision_interval=8,
         max_episode_steps=cfg.episode_len,
     )
 
@@ -274,7 +274,7 @@ def main():
             "worker_env": video_worker_env,
             "worker_model": frozen_worker_model,
             "config": cfg,
-            "decision_interval": cfg.episode_len // 10,
+            "decision_interval": 8,
             "max_episode_steps": cfg.episode_len,
         },
         cfg=cfg,
