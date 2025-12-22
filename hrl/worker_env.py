@@ -1,6 +1,7 @@
 from typing import Tuple, Dict, Optional
 import numpy as np
 from myosuite.utils import gym
+from hrl.utils import calculate_prediction
 
 from config import Config
 from custom_env import CustomEnv
@@ -104,6 +105,28 @@ class TableTennisWorker(CustomEnv):
         goal_norm = np.clip(goal_norm, -1.0, 1.0)
 
         return goal_norm
+    
+    def predict_goal_from_state(self, obs_dict):
+        ball_pos = obs_dict["ball_pos"]
+        ball_vel = obs_dict["ball_vel"]
+        paddle_pos = obs_dict["paddle_pos"]
+
+        pred_ball_pos, n_ideal, _ = calculate_prediction(
+            ball_pos, ball_vel, paddle_pos
+        )
+
+        goal_phys = np.array([
+            pred_ball_pos[0],
+            pred_ball_pos[1],
+            pred_ball_pos[2],
+            n_ideal[0],
+            n_ideal[1],
+            dt,
+        ])
+
+        goal_norm = (goal_phys - goal_center) / goal_half_range
+        return np.clip(goal_norm, -1.0, 1.0)
+    
     # ------------------------------------------------
     # Gym API
     # ------------------------------------------------
