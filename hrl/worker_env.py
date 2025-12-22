@@ -6,12 +6,12 @@ from myosuite.utils import gym
 
 from config import Config
 from custom_env import CustomEnv
-from utils import quat_to_paddle_normal
 
 from hrl.utils import (
     safe_unit,
     reflect_normal,
     predict_ball_analytic,
+    quat_to_paddle_normal
 )
 
 class TableTennisWorker(CustomEnv):
@@ -235,7 +235,7 @@ class TableTennisWorker(CustomEnv):
         paddle_n = quat_to_paddle_normal(obs_dict["paddle_ori"])
         paddle_n /= np.linalg.norm(paddle_n) + 1e-8
         ball_xy = np.asarray(obs_dict["ball_pos"][:2], dtype=np.float32)
-        t = np.array([obs_dict["time"]], dtype=np.float32)
+        t = np.asarray([float(obs_dict["time"])], dtype=np.float32)
 
         state = np.hstack([reach_err, ball_vel, paddle_n, ball_xy, t])
         obs = np.hstack([state, self.current_goal])

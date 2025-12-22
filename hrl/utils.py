@@ -10,6 +10,23 @@ def reflect_normal(d_in, d_out):
     """
     return safe_unit(d_out - d_in, np.array([-1.0, 0.0, 0.0]))
 
+def quat_to_paddle_normal(q: np.ndarray) -> np.ndarray:
+    """
+    Paddle hitting normal = local +X axis
+    Quaternion format: (x, y, z, w)
+    """
+    q = q.astype(np.float32)
+    q = q / (np.linalg.norm(q) + 1e-8)
+
+    x, y, z, w = q
+
+    # X axis of rotation matrix
+    return np.array([
+        1.0 - 2.0 * (y*y + z*z),
+        2.0 * (x*y + w*z),
+        2.0 * (x*z - w*y),
+    ], dtype=np.float32)
+
 def quat_from_two_unit_vecs(a, b):
     """
     Quaternion rotating a -> b (shortest arc)
