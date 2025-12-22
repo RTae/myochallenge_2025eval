@@ -19,6 +19,18 @@ class TableTennisWorker(CustomEnv):
     Low-level worker (muscle controller).
 
     Observation = state (12) + goal (6) = 18
+    
+    State: 
+        - reach_err (3)
+        - ball_vel (3)
+        - paddle_normal (3)
+        - ball_xy (2)
+        - time (1)
+        
+    Goal:
+        - target_ball_pos (3)
+        - target_paddle_normal (2)
+        - target_time_to_plane (1)
     """
 
     def __init__(self, config: Config):
