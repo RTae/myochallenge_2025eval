@@ -39,7 +39,7 @@ def main():
     prepare_experiment_directory(cfg)
 
     worker_total_timesteps = 20_000_000
-    manager_total_timesteps = 10_000_000
+    manager_total_timesteps = 5_000_000
 
     # ==================================================
     # LOAD paths
