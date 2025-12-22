@@ -12,7 +12,7 @@ class TableTennisWorker(CustomEnv):
     """
     Low-level worker (muscle controller).
 
-    Observation = state (15) + goal (6) = 21
+    Observation = state (12) + goal (6) = 18
 
     state = [
         reach_err (3),
