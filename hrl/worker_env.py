@@ -76,6 +76,7 @@ class TableTennisWorker(CustomEnv):
 
         self.dt_min = 0.05
         self.dt_max = 1.5
+        self.max_time = float(config.episode_len)
 
     # ------------------------------------------------
     # Time-to-plane
@@ -218,62 +219,48 @@ class TableTennisWorker(CustomEnv):
     # Observation
     # ------------------------------------------------
     def _build_obs(self, obs_dict):
-        reach_err = np.asarray(obs_dict["reach_err"], dtype=np.float32)
-        ball_vel = np.asarray(obs_dict["ball_vel"], dtype=np.float32)
+        reach_err = np.asarray(obs_dict["reach_err"], dtype=np.float32) / 2.0
+        ball_vel  = np.asarray(obs_dict["ball_vel"], dtype=np.float32) / 5.0
+
         paddle_n = quat_to_paddle_normal(obs_dict["paddle_ori"])
         paddle_n /= np.linalg.norm(paddle_n) + 1e-8
-        ball_xy = np.asarray(obs_dict["ball_pos"][:2], dtype=np.float32)
-        t = np.asarray([float(obs_dict["time"])], dtype=np.float32)
+
+        ball_xy = np.asarray(obs_dict["ball_pos"][:2], dtype=np.float32) / 2.0
+        t = np.asarray([float(obs_dict["time"])], dtype=np.float32) / self.max_time
 
         state = np.hstack([reach_err, ball_vel, paddle_n, ball_xy, t])
         obs = np.hstack([state, self.current_goal])
-        return np.clip(obs, -5.0, 5.0)
+        return np.clip(obs, -3.0, 3.0)
 
     # ------------------------------------------------
     # Reward
     # ------------------------------------------------
     def _compute_reward(self, obs_dict, hit):
         reach_err = float(np.linalg.norm(obs_dict["reach_err"]))
+        reach_err_n = reach_err / 2.0
         vel_norm = float(np.linalg.norm(obs_dict["paddle_vel"]))
-        t_now = float(obs_dict["time"])
 
+        t_now = float(obs_dict["time"])
         target_time = self.goal_start_time + self.current_goal[5]
         time_err = min(abs(t_now - target_time), 1.0)
 
         paddle_n = quat_to_paddle_normal(obs_dict["paddle_ori"])
         paddle_n /= np.linalg.norm(paddle_n) + 1e-8
-
-        # Example:
-        # Desired paddle normal (goal_n) is facing the ball:
-        #     goal_n = [-1, 0, 0]
-        #
-        # If the paddle is perfectly aligned:
-        #     paddle_n = [-1, 0, 0]
-        #     cos_sim = dot(paddle_n, goal_n) = 1.0   (perfect alignment)
-        #
-        # If the paddle is slightly tilted upward:
-        #     paddle_n ≈ [-0.97, 0.00, 0.24]
-        #     cos_sim ≈ 0.97  (still good)
-        #
-        # If the paddle is orthogonal:
-        #     paddle_n = [0, 1, 0]
-        #     cos_sim = 0.0   (bad orientation)
-        #
-        # If the paddle faces the wrong way:
-        #     paddle_n = [1, 0, 0]
-        #     cos_sim = -1.0  (completely wrong)
-        #
-        # We reward cos_sim → 1 when paddle orientation matches the desired reflection normal.
         goal_n = self._unpack_normal_xy(self.current_goal[3], self.current_goal[4])
         cos_sim = float(np.clip(np.dot(paddle_n, goal_n), -1.0, 1.0))
 
-        align_w = 0.6 * np.exp(-3.0 * reach_err)
+        reach_w = np.exp(-(time_err / 0.18) ** 2)                 # try 0.12/0.18/0.25
+        align_w = 0.6 * np.exp(-3.0 * reach_err_n)
+
+        vel_w = 0.2 + 0.8 * reach_w
 
         reward = (
-            1.2 * np.exp(-2.0 * reach_err)
-            + 0.8 * (1.0 - np.clip(reach_err, 0, 2))
-            + align_w * cos_sim
-            - 0.2 * vel_norm
+            reach_w * (
+                1.2 * np.exp(-2.0 * reach_err_n)
+                + 0.8 * (1.0 - np.clip(reach_err_n, 0, 1))
+                + align_w * cos_sim
+            )
+            - 0.2 * vel_w * vel_norm
             - 0.3 * time_err
         )
 
@@ -281,7 +268,7 @@ class TableTennisWorker(CustomEnv):
             reach_err < self.reach_thr
             and vel_norm < self.vel_thr
             and time_err < self.time_thr
-            and cos_sim > 0.9
+            and cos_sim > 0.85
         )
 
         if success:

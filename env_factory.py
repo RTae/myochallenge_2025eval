@@ -26,7 +26,7 @@ def build_worker_vec(cfg: Config, num_envs: int) -> VecNormalize:
         return _init
 
     venv = make_subproc_env(num_envs, make_env)
-    return VecNormalize(venv, norm_obs=True, norm_reward=False, clip_obs=10.0)
+    return VecNormalize(venv, norm_obs=False, norm_reward=False)
 
 
 # ============================================================
