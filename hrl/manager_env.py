@@ -176,7 +176,7 @@ class TableTennisManager(CustomEnv):
             "success_rate_smooth": success_rate,
             "goal_delta_norm": delta_norm,
             "goal_delta": goal_delta.copy(),
-            "worker/cos_sim": infos[0].get("worker/cos_sim"),
+            **(infos[0] if infos and isinstance(infos[0], dict) else {})
         }
 
         return obs_out, float(reward), terminated, truncated, info_out
