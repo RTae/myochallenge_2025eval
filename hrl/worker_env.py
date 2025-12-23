@@ -92,8 +92,8 @@ class TableTennisWorker(CustomEnv):
     # Goal helpers
     # ------------------------------------------------
     def _pack_normal_xy(self, n):
-        # Ensure forward-facing +X (not -X)
-        if n[0] < 0:
+        # Ensure facing -X (opponent side)
+        if n[0] > 0:
             n = -n
         return float(n[0]), float(n[1])
 
