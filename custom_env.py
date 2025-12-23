@@ -22,7 +22,11 @@ class CustomEnv(gym.Env):
     def step(self, action: np.ndarray):
         obs, reward, terminated, truncated, info = self.env.step(action)
         info = dict(info)
+        act_reg = info['rwd_dict']['act_reg']
+        effort = -1.0 * np.mean(act_reg)
         info["is_success"] = bool(info.get("solved", False))
+        info['effort'] = effort
+        
         return obs, reward, terminated, truncated, info
 
     def render(self):
