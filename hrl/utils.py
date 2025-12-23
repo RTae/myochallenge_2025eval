@@ -1,27 +1,19 @@
 import numpy as np
+from scipy.spatial.transform import Rotation as R
+
 
 # ==================================================
 # Global forward direction (from logs: +X)
 # ==================================================
 FWD = np.array([1.0, 0.0, 0.0], dtype=np.float32)
-
+OWD = np.array([-1.0, 0.0, 0.0], dtype=np.float32)
 
 def safe_unit(v, fallback):
-    v = np.asarray(v, dtype=np.float32)
-    fallback = np.asarray(fallback, dtype=np.float32)
-
     n = np.linalg.norm(v, axis=-1, keepdims=True)
-    return np.divide(
-        v,
-        n,
-        out=np.broadcast_to(fallback, v.shape).copy(),
-        where=n > 1e-9,
-    )
-
+    return np.divide(v, n, out=np.broadcast_to(fallback, v.shape).copy(), where=n > 1e-9)
 
 def reflect_normal(d_in, d_out):
-    return safe_unit(d_out - d_in, FWD)
-
+    return safe_unit(d_out - d_in, OWD)
 
 def quat_from_two_unit_vecs(a, b):
     """
@@ -74,140 +66,166 @@ def quat_to_paddle_normal(q: np.ndarray) -> np.ndarray:
 # --------------------------------------------------
 # Core prediction
 # --------------------------------------------------
-def predict_ball_analytic(
-    sim,
-    id_info,
-    ball_pos,
-    ball_vel,
-    paddle_pos,
-    opp_target=np.array([0.7, 0.0, 0.8], dtype=np.float32),
-    max_dt=2.0,
-    restitution=None,
-):
-    ball_pos = np.asarray(ball_pos, dtype=np.float32)
-    ball_vel = np.asarray(ball_vel, dtype=np.float32)
-    paddle_pos = np.asarray(paddle_pos, dtype=np.float32)
+def predict_ball_trajectory(
+        ball_pos, ball_vel, paddle_pos, 
+        gravity=9.81, 
+        table_z=0.785, 
+        restitution=0.9,
+        net_height=0.95,
+        default_target=np.array([-0.9, 0.0, 0.95])
+    ):
+    """
+    Predict ball position at the paddle X-plane and compute an "ideal" paddle orientation
+    following the logic in pong_v0.py (including net clearance and dynamic target Z).
+    
+    Args:
+        ball_pos: Current ball position (3,) or (N, 3)
+        ball_vel: Current ball velocity (3,) or (N, 3)
+        paddle_pos: Current paddle position (3,) or (N, 3)
+        gravity: Gravity magnitude (positive)
+        table_z: Z-coordinate of the table surface (top of table + ball radius)
+        ball_radius: Radius of the ball
+        restitution: Coefficient of restitution for table bounce
+        net_height: Height of the net top (table_height + net_half_height)
+        default_target: Default target point on opponent side
+        
+    Returns:
+        pred_ball_pos: Predicted ball position at paddle x-plane
+        paddle_ori_ideal: Ideal paddle quaternion [w, x, y, z]
+    """
+    ball_pos = np.array(ball_pos)
+    ball_vel = np.array(ball_vel)
+    paddle_pos = np.array(paddle_pos)
+    
+    # --- 1. Analytic Fallback Prediction (from pong_v0.py lines 292-365) ---
+    reach_err = paddle_pos - ball_pos
+    err_x = reach_err[..., 0]
+    vx = ball_vel[..., 0]
+    eps_vx = 1e-3
 
-    # --------------------------------------------------
-    # Time to paddle X-plane (ball moves +X)
-    # --------------------------------------------------
-    err_x = paddle_pos[0] - ball_pos[0]
-    vx = ball_vel[0]
+    dt = np.zeros_like(err_x)
+    valid = (err_x > 0.0) & (vx > eps_vx)
+    dt = np.divide(err_x, vx, out=dt, where=valid)
+    dt = np.clip(dt, 0.0, 2.0)
 
-    if err_x <= 0.0 or vx <= 1e-3:
-        pred_ball_pos = ball_pos.copy()
-        pred_ball_vel = ball_vel.copy()
+    z_contact = table_z 
+
+    # Ballistic prediction
+    x_pred = np.broadcast_to(paddle_pos[..., 0], err_x.shape)
+    y0 = ball_pos[..., 1]
+    z0 = ball_pos[..., 2]
+    vy0 = ball_vel[..., 1]
+    vz0 = ball_vel[..., 2]
+
+    # Unbounced
+    y_pred = y0 + vy0 * dt
+    z_pred = z0 + vz0 * dt - 0.5 * gravity * (dt ** 2)
+    vz_pred = vz0 - gravity * dt
+
+    # Table bounce check
+    a = -0.5 * gravity
+    b = vz0
+    c = z0 - z_contact
+    disc = b * b - 4.0 * a * c
+    disc = np.maximum(disc, 0.0)
+    sqrt_disc = np.sqrt(disc)
+    denom = 2.0 * a
+    t_hit = np.divide((-b - sqrt_disc), denom, out=np.full_like(dt, np.inf), where=np.abs(denom) > 1e-12)
+    hit_mask = (t_hit > 0.0) & (t_hit < dt)
+
+    if np.any(hit_mask):
+        vz_hit = vz0 - gravity * t_hit
+        vz_after = -restitution * vz_hit
+        dt2 = dt - t_hit
+        y_hit = y0 + vy0 * t_hit
+        y_pred_b = y_hit + vy0 * dt2
+        z_pred_b = z_contact + vz_after * dt2 - 0.5 * gravity * (dt2 ** 2)
+        vz_pred_b = vz_after - gravity * dt2
+
+        if y_pred.ndim > 0:
+            y_pred[hit_mask] = y_pred_b[hit_mask]
+            z_pred[hit_mask] = z_pred_b[hit_mask]
+            vz_pred[hit_mask] = vz_pred_b[hit_mask]
+        else:
+            y_pred = y_pred_b
+            z_pred = z_pred_b
+            vz_pred = vz_pred_b
+
+    pred_ball_pos = np.stack([x_pred, y_pred, z_pred], axis=-1)
+    pred_ball_vel = np.stack([vx, vy0, vz_pred], axis=-1)
+
+    # --- 2. Dynamic target and normal calculation ---
+    target_x = default_target[0]
+    target_y = default_target[1]
+    target_z = default_target[2]
+
+    p_x = pred_ball_pos[..., 0]
+    p_z = pred_ball_pos[..., 2]
+    
+    vx_in = np.abs(pred_ball_vel[..., 0])
+    vx_est = np.maximum(vx_in, 0.5)
+    
+    # Time to net (net at x=0)
+    t_to_net = p_x / vx_est
+    gravity_drop = 0.5 * gravity * (t_to_net ** 2)
+    h_virt_net = net_height + gravity_drop
+    
+    denom = target_x - p_x
+    ratio_net = np.divide(-p_x, denom, out=np.zeros_like(p_x), where=np.abs(denom) > 1e-6)
+    
+    target_z_required = p_z + np.divide(h_virt_net - p_z, ratio_net, out=np.zeros_like(p_x), where=np.abs(ratio_net) > 1e-6)
+    final_target_z = np.clip(np.maximum(target_z, target_z_required), 0.5, 3.0)
+    
+    if final_target_z.ndim == 0:
+         opp_target = np.array([target_x, target_y, float(final_target_z)])
     else:
-        dt = np.clip(err_x / vx, 0.0, max_dt)
+         ones = np.ones_like(final_target_z)
+         opp_target = np.stack([target_x * ones, target_y * ones, final_target_z], axis=-1)
 
-        # --------------------------------------------------
-        # Physics
-        # --------------------------------------------------
-        g = float(-sim.model.opt.gravity[2])
-        if not np.isfinite(g) or g <= 0:
-            g = 9.81
+    # --- 3. Reflection Law and Orientation (Scipy implementation) ---
+    d_out = opp_target - pred_ball_pos
+    d_out = safe_unit(d_out, np.array(OWD))
+    d_in = safe_unit(pred_ball_vel, np.array([1.0, 0.0, 0.0]))
 
-        if restitution is None:
-            restitution = float(getattr(sim, "predict_restitution", 0.9))
-        restitution = float(np.clip(restitution, 0.0, 1.0))
+    n_ideal = safe_unit(d_out - d_in, np.array(OWD))
+    
+    # Paddle normal in local frame is [-1, 0, 0]
+    a_u = np.array(OWD)
+    
+    # Find shortest arc rotation from a_u to n_ideal using Scipy
+    # We'll handle this manually but using Scipy's Rotation object for the final quat
+    if n_ideal.ndim == 1:
+        n_ideal_batch = n_ideal[None, :]
+    else:
+        n_ideal_batch = n_ideal
+        
+    # Cross product for axis
+    axes = np.cross(a_u, n_ideal_batch)
+    axes_norm = np.linalg.norm(axes, axis=-1, keepdims=True)
+    
+    # Avoid divide by zero for parallel vectors
+    safe_axes = np.divide(axes, axes_norm, out=np.zeros_like(axes), where=axes_norm > 1e-9)
+    # If axes_norm is small, dot(a_u, n_ideal) is near 1 or -1
+    dots = np.sum(a_u * n_ideal_batch, axis=-1, keepdims=True)
+    angles = np.arccos(np.clip(dots, -1.0, 1.0))
+    
+    # Rotvec is axis * angle
+    rotvecs = safe_axes * angles
+    
+    # Handle opposite case (dot ~= -1)
+    opposite = (dots < -0.999999).squeeze(-1)
+    if np.any(opposite):
+        # 180 deg around Z
+        rotvecs[opposite] = np.array([0.0, 0.0, np.pi])
+        
+    rots = R.from_rotvec(rotvecs)
+    # Scipy is [x, y, z, w], MuJoCo is [w, x, y, z]
+    quats = rots.as_quat()
+    quats_mujoco = np.stack([quats[:, 3], quats[:, 0], quats[:, 1], quats[:, 2]], axis=-1)
+    
+    if n_ideal.ndim == 1:
+        paddle_ori_ideal = quats_mujoco[0]
+    else:
+        paddle_ori_ideal = quats_mujoco
 
-        own_gid = id_info.own_half_gid
-        table_z = (
-            sim.data.geom_xpos[own_gid][2]
-            + sim.model.geom_size[own_gid][2]
-        )
-        ball_r = sim.model.geom_size[id_info.ball_gid][0]
-        z_contact = table_z + ball_r
-
-        y0, z0 = ball_pos[1], ball_pos[2]
-        vy0, vz0 = ball_vel[1], ball_vel[2]
-
-        y = y0 + vy0 * dt
-        z = z0 + vz0 * dt - 0.5 * g * dt * dt
-        vz = vz0 - g * dt
-
-        if z < z_contact:
-            a = -0.5 * g
-            b = vz0
-            c = z0 - z_contact
-
-            disc = b * b - 4.0 * a * c
-            if disc >= 0.0:
-                t_hit = (-b - np.sqrt(disc)) / (2.0 * a)
-                if 0.0 < t_hit < dt:
-                    vz_hit = vz0 - g * t_hit
-                    vz_after = -restitution * vz_hit
-                    dt2 = dt - t_hit
-
-                    y_hit = y0 + vy0 * t_hit
-                    y = y_hit + vy0 * dt2
-                    z = z_contact + vz_after * dt2 - 0.5 * g * dt2 * dt2
-                    vz = vz_after - g * dt2
-
-        pred_ball_pos = np.array(
-            [paddle_pos[0], y, z], dtype=np.float32
-        )
-        pred_ball_vel = np.array(
-            [vx, vy0, vz], dtype=np.float32
-        )
-
-    # --------------------------------------------------
-    # Reflection-law paddle normal
-    # --------------------------------------------------
-    d_in = safe_unit(pred_ball_vel, FWD)
-    d_out = safe_unit(
-        opp_target - pred_ball_pos,
-        FWD,
-    )
-
-    n_ideal = safe_unit(d_out - d_in, FWD)
-
-    # Ensure paddle faces +X (group-safe)
-    if n_ideal[0] < 0.0:
-        n_ideal = -n_ideal
-
-    # --------------------------------------------------
-    # Quaternion: +X → n_ideal
-    # --------------------------------------------------
-    ref = FWD
-    paddle_quat_ideal = quat_from_two_unit_vecs(ref, n_ideal)
-
-    return pred_ball_pos, n_ideal, paddle_quat_ideal
-
-
-# --------------------------------------------------
-# Oracle sim predictor (unchanged)
-# --------------------------------------------------
-def predict_ball_with_sim(env, paddle_x, max_time=2.0):
-    sim = env.sim
-    model = sim.model
-    data = sim.data
-
-    qpos0 = data.qpos.copy()
-    qvel0 = data.qvel.copy()
-    time0 = float(data.time)
-
-    try:
-        dt_sim = float(model.opt.timestep)
-        steps = int(max_time / dt_sim)
-
-        ball_sid = env.id_info.ball_sid
-        prev = data.site_xpos[ball_sid].copy()
-
-        for _ in range(steps):
-            sim.step()
-            cur = data.site_xpos[ball_sid].copy()
-            if prev[0] < paddle_x <= cur[0]:
-                vel = env.get_sensor_by_name(
-                    model, data, "pingpong_vel_sensor"
-                )
-                return cur.copy(), vel.copy(), True
-            prev = cur
-
-        return prev.copy(), vel.copy(), False
-
-    finally:
-        data.qpos[:] = qpos0
-        data.qvel[:] = qvel0
-        data.time = time0
-        sim.forward()
+    return pred_ball_pos, paddle_ori_ideal

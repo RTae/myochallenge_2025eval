@@ -9,9 +9,9 @@ from custom_env import CustomEnv
 
 from hrl.utils import (
     safe_unit,
-    reflect_normal,
-    predict_ball_analytic,
-    quat_to_paddle_normal
+    predict_ball_trajectory,
+    quat_to_paddle_normal,
+    OWD
 )
 
 class TableTennisWorker(CustomEnv):
@@ -107,19 +107,18 @@ class TableTennisWorker(CustomEnv):
         # Prefer positive Z (lift) so the face is not forced downward
         nz = np.sqrt(max(1.0 - nx * nx - ny * ny, 0.0))
         n = np.array([nx, ny, nz], dtype=np.float32)
-        return safe_unit(n, np.array([1.0, 0.0, 0.0], dtype=np.float32))
+        return safe_unit(n, np.array(OWD, dtype=np.float32))
 
     # ------------------------------------------------
-    # Prediction wrapper (FAST & SAFE)
+    # Prediction wrapper
     # ------------------------------------------------
     def _predict(self, obs_dict):
-        pred_pos, n_ideal, _ = predict_ball_analytic(
-            sim=self.sim,
-            id_info=self.id_info,
+        pred_pos, paddle_ori_ideal = predict_ball_trajectory(
             ball_pos=obs_dict["ball_pos"],
             ball_vel=obs_dict["ball_vel"],
             paddle_pos=obs_dict["paddle_pos"],
         )
+        n_ideal = quat_to_paddle_normal(paddle_ori_ideal)
         return pred_pos, n_ideal
 
     # ------------------------------------------------
@@ -145,7 +144,7 @@ class TableTennisWorker(CustomEnv):
         n_noise = np.random.normal(0, self.normal_noise_scale, size=3)
         time_noise = np.random.normal(0, self.time_noise_scale)
 
-        n = safe_unit(n_ideal + n_noise, np.array([1.0, 0.0, 0.0], dtype=np.float32))
+        n = safe_unit(n_ideal + n_noise, np.array(OWD, dtype=np.float32))
         nx, ny = self._pack_normal_xy(n)
 
         goal_phys = np.array(
