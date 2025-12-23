@@ -64,7 +64,7 @@ def build_manager_vec(
 
             return Monitor(
                 env,
-                info_keywords=("is_success"),
+                info_keywords=("is_success",)
             )
 
         return _init
