@@ -12,42 +12,6 @@ def safe_unit(v, fallback):
     n = np.linalg.norm(v, axis=-1, keepdims=True)
     return np.divide(v, n, out=np.broadcast_to(fallback, v.shape).copy(), where=n > 1e-9)
 
-def reflect_normal(d_in, d_out):
-    return safe_unit(d_out - d_in, OWD)
-
-def quat_from_two_unit_vecs(a, b):
-    """
-    Shortest-arc quaternion rotating a -> b
-    a, b: (..., 3)
-    returns: (..., 4) quaternion [w, x, y, z]
-    """
-    a = safe_unit(a, FWD)
-    b = safe_unit(b, FWD)
-
-    dot = np.sum(a * b, axis=-1, keepdims=True)
-    v = np.cross(a, b)
-    w = 1.0 + dot
-
-    q = np.concatenate([w, v], axis=-1)
-    qn = np.linalg.norm(q, axis=-1, keepdims=True)
-    q = np.divide(q, qn, out=np.zeros_like(q), where=qn > 1e-12)
-
-    # Handle opposite vectors (180 deg), group-safe
-    opposite = dot.squeeze(-1) < -0.999999
-    if np.any(opposite):
-        axis = np.array([0.0, 0.0, 1.0], dtype=np.float32)
-        q = q.copy()
-        q[opposite] = np.concatenate(
-            [
-                np.zeros((np.sum(opposite), 1), dtype=np.float32),
-                np.tile(axis, (np.sum(opposite), 1)),
-            ],
-            axis=-1,
-        )
-
-    return q
-
-
 def quat_to_paddle_normal(q: np.ndarray) -> np.ndarray:
     q = q.astype(np.float32)
     q = q / (np.linalg.norm(q) + 1e-8)
@@ -185,7 +149,7 @@ def predict_ball_trajectory(
     # --- 3. Reflection Law and Orientation (Scipy implementation) ---
     d_out = opp_target - pred_ball_pos
     d_out = safe_unit(d_out, np.array(OWD))
-    d_in = safe_unit(pred_ball_vel, np.array([1.0, 0.0, 0.0]))
+    d_in = safe_unit(pred_ball_vel, np.array(FWD))
 
     n_ideal = safe_unit(d_out - d_in, np.array(OWD))
     
