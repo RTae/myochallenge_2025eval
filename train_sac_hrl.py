@@ -19,7 +19,7 @@ from loguru import logger
 # Worker loaders
 # ==================================================
 def load_worker_model(path: str):
-    return PPO.load(path, device="cpu")
+    return SAC.load(path, device="cpu")
 
 
 def load_worker_vecnormalize(path: str, env_fn: Callable[[], TableTennisWorker]) -> VecNormalize:
