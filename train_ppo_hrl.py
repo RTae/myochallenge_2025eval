@@ -38,8 +38,12 @@ def main():
     cfg = Config()
     prepare_experiment_directory(cfg)
 
-    worker_total_timesteps = 10_000_000
-    manager_total_timesteps = 2_000_000
+    worker_total_timesteps = 20_000_000
+    manager_total_timesteps = 10_000_000
+    worker_batch_size = 64
+    worker_n_steps = 1024
+    manager_batch_size = 64
+    manager_n_steps = 128
 
     # ==================================================
     # LOAD paths
@@ -89,8 +93,8 @@ def main():
             verbose=1,
             device="cpu",
             tensorboard_log=cfg.logdir,
-            n_steps=1024,
-            batch_size=256,
+            n_steps=worker_n_steps,
+            batch_size=batch_size,
             learning_rate=3e-4,
             gamma=0.97,
             gae_lambda=cfg.ppo_lambda,
@@ -109,7 +113,7 @@ def main():
             device="cpu",
             tensorboard_log=cfg.logdir,
             n_steps=1024,
-            batch_size=256,
+            batch_size=batch_size,
             learning_rate=3e-4,
             gamma=0.97,
             gae_lambda=cfg.ppo_lambda,
@@ -210,8 +214,8 @@ def main():
             device="cpu",
             verbose=1,
             tensorboard_log=cfg.logdir,
-            n_steps=128,
-            batch_size=256,
+            n_steps=manager_n_steps,
+            batch_size=manager_batch_size,
             learning_rate=1e-4,
             gamma=0.995,
             gae_lambda=0.97,
@@ -230,7 +234,7 @@ def main():
             verbose=1,
             tensorboard_log=cfg.logdir,
             n_steps=128,
-            batch_size=256,
+            batch_size=manager_batch_size,
             learning_rate=1e-4,
             gamma=0.995,
             gae_lambda=0.97,
