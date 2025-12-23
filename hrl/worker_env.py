@@ -104,7 +104,7 @@ class TableTennisWorker(CustomEnv):
             ny *= s
         nz = -np.sqrt(max(1.0 - nx * nx - ny * ny, 0.0))
         n = np.array([nx, ny, nz], dtype=np.float32)
-        return safe_unit(n, np.array([-1.0, 0.0, 0.0]))
+        return safe_unit(n, np.array([1.0, 0.0, 0.0]))
 
     # ------------------------------------------------
     # Prediction wrapper (FAST & SAFE)
