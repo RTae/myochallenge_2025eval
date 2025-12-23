@@ -21,7 +21,7 @@ class Config:
     seed: int = getenv("SEED", 42, int)
 
     # IMPORTANT: keep this small early
-    num_envs: int = getenv("NUM_ENVS", 40, int)
+    num_envs: int = getenv("NUM_ENVS", 24, int)
 
     # Episode length (~3 seconds)
     episode_len: int = getenv("EPISODE_LEN", 300, int)

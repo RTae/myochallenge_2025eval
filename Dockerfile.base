@@ -1,7 +1,7 @@
 #################################################
 ### Base image with Python 3.11 + uv           ##
 #################################################
-FROM nvidia/cuda:12.4.0-base-ubuntu22.04 AS python-base
+FROM nvidia/cuda:13.0.1-base-ubuntu24.04 AS python-base
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
