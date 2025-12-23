@@ -92,7 +92,8 @@ class TableTennisWorker(CustomEnv):
     # Goal helpers
     # ------------------------------------------------
     def _pack_normal_xy(self, n):
-        if n[0] > 0:
+        # Ensure forward-facing +X (not -X)
+        if n[0] < 0:
             n = -n
         return float(n[0]), float(n[1])
 
@@ -102,9 +103,11 @@ class TableTennisWorker(CustomEnv):
             s = 0.999 / np.sqrt(r2)
             nx *= s
             ny *= s
-        nz = -np.sqrt(max(1.0 - nx * nx - ny * ny, 0.0))
+
+        # Prefer positive Z (lift) so the face is not forced downward
+        nz = np.sqrt(max(1.0 - nx * nx - ny * ny, 0.0))
         n = np.array([nx, ny, nz], dtype=np.float32)
-        return safe_unit(n, np.array([1.0, 0.0, 0.0]))
+        return safe_unit(n, np.array([1.0, 0.0, 0.0], dtype=np.float32))
 
     # ------------------------------------------------
     # Prediction wrapper (FAST & SAFE)
@@ -142,7 +145,7 @@ class TableTennisWorker(CustomEnv):
         n_noise = np.random.normal(0, self.normal_noise_scale, size=3)
         time_noise = np.random.normal(0, self.time_noise_scale)
 
-        n = safe_unit(n_ideal + n_noise, np.array([-1.0, 0.0, 0.0]))
+        n = safe_unit(n_ideal + n_noise, np.array([1.0, 0.0, 0.0], dtype=np.float32))
         nx, ny = self._pack_normal_xy(n)
 
         goal_phys = np.array(
