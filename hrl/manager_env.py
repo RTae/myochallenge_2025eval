@@ -150,7 +150,7 @@ class TableTennisManager(CustomEnv):
         # --------------------------------------------------
         # 3) Reward
         # --------------------------------------------------
-        self.success_buffer.append(1.0 if goal_success_any else 0.0)
+        self.success_buffer.append(1.0 if env_success_any else 0.0)
         success_rate = float(np.mean(self.success_buffer)) if self.success_buffer else 0.0
 
         delta_norm = float(np.linalg.norm(goal_delta))
@@ -173,7 +173,6 @@ class TableTennisManager(CustomEnv):
         info_out = {
             "is_goal_success": bool(goal_success_any),
             "is_success": bool(env_success_any),
-            "goal_success_rate_smooth": success_rate,
             "goal_delta_norm": delta_norm,
             "goal_delta": goal_delta.copy(),
             **(infos[0] if infos and isinstance(infos[0], dict) else {})
