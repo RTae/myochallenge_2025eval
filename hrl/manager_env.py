@@ -226,7 +226,7 @@ class TableTennisManager(CustomEnv):
             r += 6.0
 
         # Penalize large deviation from physics
-        r -= 0.3 * delta_norm
+        r -= 0.2 * (delta_norm ** 2)
 
         # Encourage small correction when successful
         if goal_success:
