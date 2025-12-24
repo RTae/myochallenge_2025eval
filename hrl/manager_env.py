@@ -220,10 +220,10 @@ class TableTennisManager(CustomEnv):
         r += 1.0 * success_rate        # consistency
 
         if goal_success:
-            r += 4.0
+            r += 1.0
 
         if env_success:
-            r += 3.0
+            r += 6.0
 
         # Penalize large deviation from physics
         r -= 0.3 * delta_norm
