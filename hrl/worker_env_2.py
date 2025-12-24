@@ -17,19 +17,18 @@ from hrl.utils import (
 
 class TableTennisWorker(CustomEnv):
     """
-    State : [
-        reach_err (3) // goal_pos - paddle_pos
-        ball_vel (3) // ball velocity
-        paddle_normal (3) // paddle orientation as normal vector
-        ball_xy (2) // ball position x,y
-        time (1) // time elapsed in episode
-    ]
-    
-    Goal : [
-        target_ball_pos (3) // predicted ball position at paddle x-plane
-        target_paddle_normal (2) // target paddle normal x,y
-        target_time_to_plane (1) // target time-to-plane
-    ]
+    Goal-conditioned low-level controller (Phase 2 worker)
+
+    State :
+        - ball_vel (3)
+        - paddle_normal (3)
+        - ball_xy (2)
+        - time (1)
+
+    Goal :
+        - target_ball_pos (3)
+        - target_paddle_normal (2)
+        - target_time_to_plane (1)
     """
 
     def __init__(self, config: Config):
@@ -45,7 +44,7 @@ class TableTennisWorker(CustomEnv):
             [0.6, 0.6, 0.5, 0.8, 0.5, 0.35], dtype=np.float32
         )
 
-        self.state_dim = 12
+        self.state_dim = 9
         self.goal_dim = 6
         self.observation_dim = self.state_dim + self.goal_dim
 
@@ -56,19 +55,34 @@ class TableTennisWorker(CustomEnv):
             dtype=np.float32,
         )
 
+        # -------------------------------
         # Runtime
+        # -------------------------------
         self.current_goal: Optional[np.ndarray] = None
         self.goal_start_time: Optional[float] = None
         self.prev_reach_err: Optional[float] = None
         self._prev_paddle_contact = False
 
-        # Success thresholds (RELAXED vs your old version)
+        # -------------------------------
+        # Success thresholds (RELAXED)
+        # -------------------------------
         self.reach_thr = 0.12
         self.time_thr = 0.25
         self.paddle_ori_thr = 0.80
         self.success_bonus = 30.0
 
         self.max_time = 3.0
+
+        # ==================================================
+        # 🔧 NEW: Goal noise (ANNEALED, OFF by default)
+        # ==================================================
+        self.goal_noise_scale = 0.0  # <-- start deterministic
+
+    # ------------------------------------------------
+    # 🔧 NEW: External control (called from callback)
+    # ------------------------------------------------
+    def set_goal_noise_scale(self, scale: float):
+        self.goal_noise_scale = float(np.clip(scale, 0.0, 0.2))
 
     # ------------------------------------------------
     # Prediction
@@ -94,9 +108,12 @@ class TableTennisWorker(CustomEnv):
         return np.clip((g - self.goal_center) / self.goal_half_range, -1.0, 1.0)
 
     def predict_goal_from_state(self, obs_dict):
+        """
+        Deterministic physics-based goal (manager uses this).
+        NO noise here.
+        """
         pred_pos, n_ideal = self._predict(obs_dict)
 
-        # time-to-plane (simple + robust)
         err_x = obs_dict["paddle_pos"][0] - obs_dict["ball_pos"][0]
         vx = max(obs_dict["ball_vel"][0], 0.5)
         dt = np.clip(err_x / vx, 0.05, 1.5)
@@ -107,6 +124,16 @@ class TableTennisWorker(CustomEnv):
             [pred_pos[0], pred_pos[1], pred_pos[2], nx, ny, dt],
             dtype=np.float32,
         )
+
+        # 🔧 NEW: optional noise (annealed)
+        if self.goal_noise_scale > 0.0:
+            goal_phys[:3] += np.random.normal(
+                0.0, self.goal_noise_scale, size=3
+            )
+            goal_phys[5] += np.random.normal(
+                0.0, self.goal_noise_scale * 0.5
+            )
+
         return self._norm_goal(goal_phys)
 
     # ------------------------------------------------
@@ -121,7 +148,9 @@ class TableTennisWorker(CustomEnv):
         self.set_goal(goal)
 
         paddle_pos = obs_dict["paddle_pos"]
-        self.prev_reach_err = np.linalg.norm(paddle_pos - self.current_goal[:3])
+        self.prev_reach_err = np.linalg.norm(
+            paddle_pos - self.current_goal[:3]
+        )
 
         return self._build_obs(obs_dict), info
 
@@ -129,7 +158,7 @@ class TableTennisWorker(CustomEnv):
         _, base_reward, terminated, truncated, info = super().step(action)
         obs_dict = info["obs_dict"]
 
-        reward, _, logs = self._compute_reward(obs_dict)
+        reward, success, logs = self._compute_reward(obs_dict)
         reward += 0.05 * base_reward
 
         info.update(logs)
@@ -139,7 +168,6 @@ class TableTennisWorker(CustomEnv):
     # Observation
     # ------------------------------------------------
     def _build_obs(self, obs_dict):
-        # State (physical)
         paddle_n = quat_to_paddle_normal(obs_dict["paddle_ori"])
         paddle_n /= np.linalg.norm(paddle_n) + 1e-8
 
@@ -154,28 +182,30 @@ class TableTennisWorker(CustomEnv):
         return np.clip(obs, -3.0, 3.0)
 
     # ------------------------------------------------
-    # Reward (KEY PART)
+    # Reward (GOAL-CENTRIC, NOT BALL-CENTRIC)
     # ------------------------------------------------
     def _compute_reward(self, obs_dict):
         paddle_pos = obs_dict["paddle_pos"]
         goal_pos = self.current_goal[:3]
 
-        # --- 1. Goal-relative reach PROGRESS ---
+        # --- 1. Progress to goal ---
         reach_err = np.linalg.norm(paddle_pos - goal_pos)
         reach_delta = self.prev_reach_err - reach_err
         self.prev_reach_err = reach_err
 
         reward = 2.0 * reach_delta
 
-        # --- 2. Orientation shaping ---
+        # --- 2. Orientation ---
         paddle_n = quat_to_paddle_normal(obs_dict["paddle_ori"])
         paddle_n /= np.linalg.norm(paddle_n) + 1e-8
-        goal_n = self._unpack_normal_xy(self.current_goal[3], self.current_goal[4])
+        goal_n = self._unpack_normal_xy(
+            self.current_goal[3], self.current_goal[4]
+        )
 
         cos_sim = float(np.dot(paddle_n, goal_n))
         reward += 1.0 * np.clip(cos_sim, 0.0, 1.0)
 
-        # --- 3. Timing shaping ---
+        # --- 3. Timing ---
         t_now = obs_dict["time"]
         t_target = self.goal_start_time + self.current_goal[5]
         time_err = abs(t_now - t_target)
@@ -222,4 +252,7 @@ class TableTennisWorker(CustomEnv):
             nx *= s
             ny *= s
         nz = np.sqrt(max(1.0 - nx * nx - ny * ny, 0.0))
-        return safe_unit(np.array([nx, ny, nz], dtype=np.float32), np.array(OWD))
+        return safe_unit(
+            np.array([nx, ny, nz], dtype=np.float32),
+            np.array(OWD),
+        )
