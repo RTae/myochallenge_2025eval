@@ -20,10 +20,7 @@ class TableTennisManager(CustomEnv):
 
     Action:
         action ∈ [-1, 1]^6
-        → interpreted as Δgoal (correction) applied to physics prediction
-
-    Final goal:
-        goal_final = clip(goal_pred + action, -1, 1)
+        → interpreted as Δgoal (small correction)
     """
 
     def __init__(
@@ -53,7 +50,7 @@ class TableTennisManager(CustomEnv):
             dtype=np.float32,
         )
 
-        # Action is Δgoal (correction)
+        # Action: Δgoal (normalized)
         self.action_space = gym.spaces.Box(
             low=-1.0,
             high=1.0,
@@ -61,10 +58,22 @@ class TableTennisManager(CustomEnv):
             dtype=np.float32,
         )
 
+        self.delta_scale = np.array(
+            [
+                0.15,  # Δx
+                0.15,  # Δy
+                0.10,  # Δz
+                0.10,  # Δnx
+                0.10,  # Δny
+                0.20,  # Δdt
+            ],
+            dtype=np.float32,
+        )
+
         self.current_step = 0
         self._worker_obs = None
 
-        # Smoothed success statistics
+        # Smoothed success statistics (weak stabilizer only)
         self.success_buffer = deque(maxlen=int(success_buffer_len))
 
     # --------------------------------------------------
@@ -96,38 +105,36 @@ class TableTennisManager(CustomEnv):
     def step(self, action: np.ndarray):
         """
         action ∈ [-1, 1]^6
-        Interpreted as Δgoal (correction on top of predicted goal)
+        Interpreted as scaled Δgoal correction
         """
 
-        # Rename for semantic clarity
-        goal_delta = np.clip(
+        # --------------------------------------------------
+        # 1) Scale and apply Δgoal
+        # --------------------------------------------------
+        raw_delta = np.clip(
             np.asarray(action, dtype=np.float32).reshape(6,),
             -1.0,
             1.0,
         )
 
-        # --------------------------------------------------
-        # 1) Physics-based reference goal
-        # --------------------------------------------------
+        goal_delta = raw_delta * self.delta_scale
+
         worker = self.worker_env.envs[0]
         obs_dict = worker.env.unwrapped.obs_dict
 
-        # Normalized predicted goal ∈ [-1,1]^6
+        # Physics-based prediction
         goal_pred = worker.predict_goal_from_state(obs_dict)
 
-        # Apply manager correction
+        # Final goal sent to worker
         goal_final = np.clip(goal_pred + goal_delta, -1.0, 1.0)
-
-        # Send to worker
         self.worker_env.env_method("set_goal", goal_final, indices=0)
 
         # --------------------------------------------------
         # 2) Run frozen worker
         # --------------------------------------------------
-        hit_any = False
         goal_success_any = False
         env_success_any = False
-        
+
         for _ in range(self.decision_interval):
             obs_1d = np.asarray(self._worker_obs[0], dtype=np.float32)
 
@@ -140,10 +147,9 @@ class TableTennisManager(CustomEnv):
             self.current_step += 1
 
             info = infos[0]
-            hit_any |= bool(info.get("worker/is_paddle_hit"))
-            goal_success_any |= bool(info.get("worker/is_goal_success"))
+            goal_success_any |= bool(info.get("is_goal_success"))
             env_success_any |= bool(info.get("is_success"))
-            
+
             if dones[0]:
                 break
 
@@ -171,8 +177,6 @@ class TableTennisManager(CustomEnv):
         obs_out = self._build_obs()
 
         info_out = {
-            "is_goal_success": bool(goal_success_any),
-            "is_success": bool(env_success_any),
             "goal_delta_norm": delta_norm,
             "goal_delta": goal_delta.copy(),
             **(infos[0] if infos and isinstance(infos[0], dict) else {})
@@ -194,11 +198,10 @@ class TableTennisManager(CustomEnv):
         )
 
         obs = np.hstack([worker_obs, t_frac])
-        assert obs.shape == (self.observation_dim,)
         return obs
 
     # --------------------------------------------------
-    # Manager Reward
+    # Manager Reward (FINAL, ALIGNED)
     # --------------------------------------------------
     def _reward_manager(
         self,
@@ -208,16 +211,24 @@ class TableTennisManager(CustomEnv):
         success_rate: float,
         delta_norm: float,
     ) -> float:
+        """
+        Manager reward:
+        - env_success dominates
+        - goal_success is a bridge
+        - success_rate stabilizes
+        - delta_norm lightly regularizes
+        """
+
         r = -0.05  # living cost
 
-        # --- FINAL TASK (dominant) ---
+        # --- FINAL TASK ---
         if env_success:
             r += 8.0
-            return r   # IMPORTANT: early return
+            return r  # stop credit leakage
 
         # --- BRIDGE SIGNAL ---
         if goal_success:
-            r += 1.5   # only when env not yet success
+            r += 1.5
 
         # --- STABILITY (weak) ---
         r += 0.2 * success_rate
