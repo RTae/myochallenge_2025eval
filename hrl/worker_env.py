@@ -67,6 +67,7 @@ class TableTennisWorker(CustomEnv):
         self.reach_thr = 0.25
         self.vel_thr = 1.2
         self.time_thr = 0.35
+        self.paddle_ori_thr = 0.85
         self.success_bonus = 40.0
 
         # Noise
@@ -270,7 +271,7 @@ class TableTennisWorker(CustomEnv):
             reach_err < self.reach_thr
             and vel_norm < self.vel_thr
             and time_err < self.time_thr
-            and cos_sim > 0.85
+            and cos_sim > self.paddle_ori_thr
         )
 
         if success:
