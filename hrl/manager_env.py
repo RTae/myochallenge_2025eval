@@ -165,7 +165,7 @@ class TableTennisManager(CustomEnv):
         # --------------------------------------------------
         # 4) Termination
         # --------------------------------------------------
-        terminated = bool(goal_success_any)
+        terminated = bool(env_success_any)
         truncated = bool(self.current_step >= self.max_episode_steps)
 
         obs_out = self._build_obs()
@@ -173,7 +173,7 @@ class TableTennisManager(CustomEnv):
         info_out = {
             "is_goal_success": bool(goal_success_any),
             "is_success": bool(env_success_any),
-            "success_rate_smooth": success_rate,
+            "goal_success_rate_smooth": success_rate,
             "goal_delta_norm": delta_norm,
             "goal_delta": goal_delta.copy(),
             **(infos[0] if infos and isinstance(infos[0], dict) else {})
