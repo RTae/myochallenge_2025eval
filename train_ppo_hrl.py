@@ -60,8 +60,8 @@ def main():
     os.makedirs(WORKER_DIR, exist_ok=True)
     os.makedirs(MANAGER_DIR, exist_ok=True)
 
-    SAVE_WORKER_MODEL_PATH = os.path.join(WORKER_DIR, "worker_model.pkl")
-    SAVE_WORKER_ENV_PATH = os.path.join(WORKER_DIR, "vecnormalize.pkl")
+    SAVE_WORKER_MODEL_PATH = "logs/exp2/worker/worker_model.pkl"
+    SAVE_WORKER_ENV_PATH = "logs/exp2/worker/vecnormalize.pkl"
     SAVE_MANAGER_MODEL_PATH = os.path.join(MANAGER_DIR, "manager_model.pkl")
 
     info_cb = InfoLoggerCallback()
@@ -69,115 +69,115 @@ def main():
     # ==================================================
     # WORKER
     # ==================================================
-    cfg.logdir = WORKER_DIR
+    # cfg.logdir = WORKER_DIR
 
-    # ---- Build training env exactly like your original ----
-    worker_env = build_worker_vec(cfg=cfg, num_envs=cfg.num_envs)
+    # # ---- Build training env exactly like your original ----
+    # worker_env = build_worker_vec(cfg=cfg, num_envs=cfg.num_envs)
 
-    # ---- If LOAD_WORKER_ENV_PATH exists, load VecNormalize stats onto worker_env ----
-    worker_env = resume_vecnormalize_on_training_env(
-        worker_env,
-        LOAD_WORKER_ENV_PATH,
-        training=True,
-        norm_reward=False,
-    )
+    # # ---- If LOAD_WORKER_ENV_PATH exists, load VecNormalize stats onto worker_env ----
+    # worker_env = resume_vecnormalize_on_training_env(
+    #     worker_env,
+    #     LOAD_WORKER_ENV_PATH,
+    #     training=True,
+    #     norm_reward=False,
+    # )
 
-    # ---- Build model: load if provided else create new ----
-    worker_resumed = bool(LOAD_WORKER_MODEL_PATH and os.path.exists(LOAD_WORKER_MODEL_PATH))
+    # # ---- Build model: load if provided else create new ----
+    # worker_resumed = bool(LOAD_WORKER_MODEL_PATH and os.path.exists(LOAD_WORKER_MODEL_PATH))
 
-    if worker_resumed:
-        logger.info(f"[Worker] Loading pretrained model from: {LOAD_WORKER_MODEL_PATH}")
-        worker_model = PPO.load(
-            LOAD_WORKER_MODEL_PATH,
-            env=worker_env,
-            verbose=1,
-            device="cpu",
-            tensorboard_log=cfg.logdir,
-            n_steps=worker_n_steps,
-            batch_size=worker_batch_size,
-            learning_rate=3e-4,
-            gamma=0.97,
-            gae_lambda=cfg.ppo_lambda,
-            clip_range=cfg.ppo_clip_range,
-            n_epochs=cfg.ppo_epochs,
-            max_grad_norm=cfg.ppo_max_grad_norm,
-            policy_kwargs=dict(net_arch=[128, 128]),
-            seed=cfg.seed,
-        )
-    else:
-        logger.info("[Worker] No pretrained worker model given/found. Training from scratch.")
-        worker_model = PPO(
-            "MlpPolicy",
-            worker_env,
-            verbose=1,
-            device="cpu",
-            tensorboard_log=cfg.logdir,
-            n_steps=1024,
-            batch_size=worker_batch_size,
-            learning_rate=3e-4,
-            gamma=0.97,
-            gae_lambda=cfg.ppo_lambda,
-            clip_range=cfg.ppo_clip_range,
-            n_epochs=cfg.ppo_epochs,
-            max_grad_norm=cfg.ppo_max_grad_norm,
-            policy_kwargs=dict(net_arch=[128, 128]),
-            seed=cfg.seed,
-        )
+    # if worker_resumed:
+    #     logger.info(f"[Worker] Loading pretrained model from: {LOAD_WORKER_MODEL_PATH}")
+    #     worker_model = PPO.load(
+    #         LOAD_WORKER_MODEL_PATH,
+    #         env=worker_env,
+    #         verbose=1,
+    #         device="cpu",
+    #         tensorboard_log=cfg.logdir,
+    #         n_steps=worker_n_steps,
+    #         batch_size=worker_batch_size,
+    #         learning_rate=3e-4,
+    #         gamma=0.97,
+    #         gae_lambda=cfg.ppo_lambda,
+    #         clip_range=cfg.ppo_clip_range,
+    #         n_epochs=cfg.ppo_epochs,
+    #         max_grad_norm=cfg.ppo_max_grad_norm,
+    #         policy_kwargs=dict(net_arch=[128, 128]),
+    #         seed=cfg.seed,
+    #     )
+    # else:
+    #     logger.info("[Worker] No pretrained worker model given/found. Training from scratch.")
+    #     worker_model = PPO(
+    #         "MlpPolicy",
+    #         worker_env,
+    #         verbose=1,
+    #         device="cpu",
+    #         tensorboard_log=cfg.logdir,
+    #         n_steps=1024,
+    #         batch_size=worker_batch_size,
+    #         learning_rate=3e-4,
+    #         gamma=0.97,
+    #         gae_lambda=cfg.ppo_lambda,
+    #         clip_range=cfg.ppo_clip_range,
+    #         n_epochs=cfg.ppo_epochs,
+    #         max_grad_norm=cfg.ppo_max_grad_norm,
+    #         policy_kwargs=dict(net_arch=[128, 128]),
+    #         seed=cfg.seed,
+    #     )
 
-    # ---- Worker evaluation ----
-    eval_worker_env = build_worker_vec(cfg=cfg, num_envs=1)
+    # # ---- Worker evaluation ----
+    # eval_worker_env = build_worker_vec(cfg=cfg, num_envs=1)
 
-    if LOAD_WORKER_ENV_PATH:
-        eval_worker_env = resume_vecnormalize_on_training_env(
-            eval_worker_env,
-            LOAD_WORKER_ENV_PATH,
-            training=False,
-            norm_reward=False,
-        )
+    # if LOAD_WORKER_ENV_PATH:
+    #     eval_worker_env = resume_vecnormalize_on_training_env(
+    #         eval_worker_env,
+    #         LOAD_WORKER_ENV_PATH,
+    #         training=False,
+    #         norm_reward=False,
+    #     )
 
-    if isinstance(eval_worker_env, VecNormalize):
-        eval_worker_env.training = False
-        eval_worker_env.norm_reward = False
+    # if isinstance(eval_worker_env, VecNormalize):
+    #     eval_worker_env.training = False
+    #     eval_worker_env.norm_reward = False
 
-    eval_worker_cb = EvalCallback(
-        eval_worker_env,
-        best_model_save_path=os.path.join(cfg.logdir, "best"),
-        log_path=os.path.join(cfg.logdir, "eval"),
-        eval_freq=int(cfg.eval_freq // cfg.num_envs),
-        n_eval_episodes=cfg.eval_episodes,
-        deterministic=True,
-        render=False,
-    )
+    # eval_worker_cb = EvalCallback(
+    #     eval_worker_env,
+    #     best_model_save_path=os.path.join(cfg.logdir, "best"),
+    #     log_path=os.path.join(cfg.logdir, "eval"),
+    #     eval_freq=int(cfg.eval_freq // cfg.num_envs),
+    #     n_eval_episodes=cfg.eval_episodes,
+    #     deterministic=True,
+    #     render=False,
+    # )
 
-    # ---- Worker video ---
-    video_worker_cb = VideoCallback(
-        env_func=TableTennisWorker,
-        env_args={"config": cfg},
-        cfg=cfg,
-        predict_fn=make_predict_fn(worker_model),
-    )
+    # # ---- Worker video ---
+    # video_worker_cb = VideoCallback(
+    #     env_func=TableTennisWorker,
+    #     env_args={"config": cfg},
+    #     cfg=cfg,
+    #     predict_fn=make_predict_fn(worker_model),
+    # )
 
-    logger.info("Starting WORKER training...")
-    logger.info(f"Worker total timesteps: {worker_total_timesteps}")
+    # logger.info("Starting WORKER training...")
+    # logger.info(f"Worker total timesteps: {worker_total_timesteps}")
 
-    worker_model.learn(
-        total_timesteps=worker_total_timesteps,
-        reset_num_timesteps=not worker_resumed,  # continue curves if resumed
-        callback=CallbackList([eval_worker_cb, info_cb, video_worker_cb]),
-    )
+    # worker_model.learn(
+    #     total_timesteps=worker_total_timesteps,
+    #     reset_num_timesteps=not worker_resumed,  # continue curves if resumed
+    #     callback=CallbackList([eval_worker_cb, info_cb, video_worker_cb]),
+    # )
 
-    # ---- Save worker to SAVE paths  ----
-    worker_model.save(SAVE_WORKER_MODEL_PATH)
-    if isinstance(worker_env, VecNormalize):
-        worker_env.save(SAVE_WORKER_ENV_PATH)
-    else:
-        logger.warning("[Worker] Training env is not VecNormalize; skipping vecnormalize save.")
+    # # ---- Save worker to SAVE paths  ----
+    # worker_model.save(SAVE_WORKER_MODEL_PATH)
+    # if isinstance(worker_env, VecNormalize):
+    #     worker_env.save(SAVE_WORKER_ENV_PATH)
+    # else:
+    #     logger.warning("[Worker] Training env is not VecNormalize; skipping vecnormalize save.")
 
-    logger.info(f"Saved WORKER model to: {SAVE_WORKER_MODEL_PATH}")
-    logger.info(f"Saved WORKER VecNormalize to: {SAVE_WORKER_ENV_PATH}")
+    # logger.info(f"Saved WORKER model to: {SAVE_WORKER_MODEL_PATH}")
+    # logger.info(f"Saved WORKER VecNormalize to: {SAVE_WORKER_ENV_PATH}")
 
-    worker_env.close()
-    eval_worker_env.close()
+    # worker_env.close()
+    # eval_worker_env.close()
 
     # ==================================================
     # MANAGER
@@ -201,7 +201,7 @@ def main():
         worker_model_path=SAVE_WORKER_MODEL_PATH,
         worker_env_path=SAVE_WORKER_ENV_PATH,
         decision_interval=5,
-        max_episode_steps=cfg.episode_len,
+        max_episode_steps=800,
     )
 
     manager_resumed = bool(LOAD_MANAGER_MODEL_PATH and os.path.exists(LOAD_MANAGER_MODEL_PATH))
@@ -254,7 +254,7 @@ def main():
         worker_model_path=SAVE_WORKER_MODEL_PATH,
         worker_env_path=SAVE_WORKER_ENV_PATH,
         decision_interval=5,
-        max_episode_steps=cfg.episode_len,
+        max_episode_steps=800,
     )
 
     eval_manager_cb = EvalCallback(
@@ -278,7 +278,7 @@ def main():
             "worker_model": frozen_worker_model,
             "config": cfg,
             "decision_interval": 1,
-            "max_episode_steps": cfg.episode_len,
+            "max_episode_steps": 800,
         },
         cfg=cfg,
         predict_fn=make_predict_fn(manager_model),
