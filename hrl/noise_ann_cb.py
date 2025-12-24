@@ -40,14 +40,19 @@ class WorkerNoiseAnnealCallback(BaseCallback):
 
     def _on_step(self) -> bool:
         # --------------------------------------------------
-        # 1) Update EMA success
+        # 1) Update EMA success (average over envs)
         # --------------------------------------------------
         infos = self.locals.get("infos", [])
         if infos:
-            success = infos[0].get("is_goal_success", False)
+            successes = [
+                float(info.get("is_goal_success", 0.0))
+                for info in infos
+            ]
+            mean_success = float(np.mean(successes))
+
             self.success_ema = (
                 (1.0 - self.alpha) * self.success_ema
-                + self.alpha * float(success)
+                + self.alpha * mean_success
             )
 
         # --------------------------------------------------
@@ -61,19 +66,23 @@ class WorkerNoiseAnnealCallback(BaseCallback):
         # --------------------------------------------------
         progress = np.clip(
             (self.success_ema - self.start_success)
-            / (self.end_success - self.start_success),
+            / max(1e-6, self.end_success - self.start_success),
             0.0,
             1.0,
         )
 
-        # Quadratic schedule = gentler early
+        # Quadratic schedule = gentle early
         noise_scale = self.max_noise * (progress ** 2)
 
         # --------------------------------------------------
-        # 4) Apply noise to worker
+        # 4) Apply noise to ALL worker envs (SB3-safe)
         # --------------------------------------------------
-        worker = self.worker_env.envs[0]
-        worker.set_goal_noise_scale(noise_scale)
+        self.worker_env.env_method(
+            "set_goal_noise_scale", noise_scale
+        )
+        self.worker_env.env_method(
+            "set_progress", progress
+        )
 
         # --------------------------------------------------
         # 5) Periodic logging
@@ -86,6 +95,7 @@ class WorkerNoiseAnnealCallback(BaseCallback):
             logger.info(
                 f"[WorkerNoiseAnneal @ {self.n_calls:,} steps] "
                 f"success_ema={self.success_ema:.3f} | "
+                f"progress={progress:.3f} | "
                 f"goal_noise_scale={noise_scale:.4f}"
             )
 
