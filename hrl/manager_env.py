@@ -36,6 +36,13 @@ class TableTennisManager(CustomEnv):
 
         self.worker_env = worker_env
         self.worker_model = worker_model
+        
+        t_progress = float(np.mean(self.worker_env.env_method("get_progress")))
+        t_noice = self.worker_env.env_method("goal_noise_scale")
+        assert (
+            t_progress >= 1.0
+            and not any(t_noice)
+        ), f"Manager requires fully unlocked worker (progress=1, noise=0), got progress={t_progress}, noise={t_noice}"
 
         self.decision_interval = int(decision_interval)
         self.max_episode_steps = int(max_episode_steps)

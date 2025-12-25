@@ -36,7 +36,7 @@ def build_manager_vec(
     cfg: Config,
     num_envs: int,
     worker_model_loader,
-    worker_env_loader,  
+    worker_env_loader,
     worker_model_path: str,
     worker_env_path: str,
     decision_interval: int,
@@ -50,10 +50,16 @@ def build_manager_vec(
 
     def make_env(rank: int):
         def _init():
-            # Create worker env INSIDE subprocess
+            # --- Load frozen worker env + policy ---
             worker_vec = worker_env_loader(worker_env_path)
             worker_model = worker_model_loader(worker_model_path)
 
+            # --- FORCE worker into final curriculum regime ---
+            worker_vec.env_method("set_goal_noise_scale", 0.0)
+            worker_vec.env_method("set_progress", 1.0)
+            worker_vec.env_method("set_allow_hard_success", True)
+
+            # --- Create manager ---
             env = TableTennisManager(
                 worker_env=worker_vec,
                 worker_model=worker_model,
@@ -62,10 +68,7 @@ def build_manager_vec(
                 max_episode_steps=max_episode_steps,
             )
 
-            return Monitor(
-                env,
-                info_keywords=("is_success",)
-            )
+            return Monitor(env, info_keywords=("is_success",))
 
         return _init
 
