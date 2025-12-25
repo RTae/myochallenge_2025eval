@@ -238,6 +238,7 @@ class TableTennisWorker(CustomEnv):
     # Reward
     # ==================================================
     def _compute_reward(self, obs_dict):
+        
         paddle_pos = obs_dict["paddle_pos"]
         goal_pos = self.current_goal[:3]
 
@@ -245,6 +246,7 @@ class TableTennisWorker(CustomEnv):
         reach_delta = self.prev_reach_err - reach_err
         self.prev_reach_err = reach_err
 
+        # Reward for reaching close to the goal position
         reward = 2.0 * np.clip(reach_delta, -0.05, 0.05)
 
         paddle_vel = obs_dict["paddle_vel"]
@@ -258,6 +260,9 @@ class TableTennisWorker(CustomEnv):
         time_err = abs(dt)
 
         vel_gate = np.exp(-2.0 * reach_err) * np.exp(-2.0 * time_err)
+        
+        # Penalty for high paddle velocity and impulse
+        # -= 0.10 for velocity, -= 0.25 for impulse
         reward -= vel_gate * (0.10 * np.linalg.norm(paddle_vel) + 0.25 * impulse)
 
         paddle_n = quat_to_paddle_normal(obs_dict["paddle_ori"])
@@ -265,8 +270,12 @@ class TableTennisWorker(CustomEnv):
         goal_n = self._unpack_normal_xy(self.current_goal[3], self.current_goal[4])
         cos_sim = float(np.dot(paddle_n, goal_n))
 
+        # Reward for paddle orientation alignment
+        # += exp(-3 * reach_err) * clip(cos_sim, 0, 1)
         reward += np.exp(-3.0 * reach_err) * np.clip(cos_sim, 0.0, 1.0)
-
+        
+        # Penalty for timing error, if early get lower penalty, if late higher penalty
+        # -= 0.2 if early, -= 0.6 if late
         reward -= (0.2 if dt < 0 else 0.6) * min(abs(dt), 1.0)
 
         touching = obs_dict["touching_info"][0] > 0.5
