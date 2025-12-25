@@ -22,16 +22,19 @@ class TableTennisWorker(CustomEnv):
     State :
         - ball_vel (3)
         - paddle_normal (3)
+        - paddle_vel (3)
         - ball_xy (2)
-        - time (1)
-
+        - time_frac (1)
+        - time_to_goal (1)
+        - paddle_touch (1)
+        - impulse_obs (1)
     Goal :
         - target_ball_pos (3)
         - target_paddle_normal (2)
         - target_time_to_plane (1)
         
     Observation :
-        state + goal (9 + 6 = 15)
+        state + goal (15 + 6 = 21)
     """
 
     def __init__(self, config: Config):
@@ -47,7 +50,7 @@ class TableTennisWorker(CustomEnv):
             [0.6, 0.6, 0.5, 0.8, 0.5, 0.35], dtype=np.float32
         )
 
-        self.state_dim = 14
+        self.state_dim = 15
         self.goal_dim = 6
         self.observation_dim = self.state_dim + self.goal_dim
 
@@ -64,6 +67,7 @@ class TableTennisWorker(CustomEnv):
         self.current_goal: Optional[np.ndarray] = None
         self.goal_start_time: Optional[float] = None
         self.prev_reach_err: Optional[float] = None
+        self.prev_paddle_vel = None
         self._prev_paddle_contact = False
         
         # ==================================================
@@ -82,7 +86,7 @@ class TableTennisWorker(CustomEnv):
         self.reach_thr = self.reach_thr_base
         self.time_thr = self.time_thr_base
         self.paddle_ori_thr = self.paddle_ori_thr_base
-        self.success_bonus = 30.0
+        self.success_bonus = 10.0
 
         self.max_time = 3.0
         
@@ -169,6 +173,7 @@ class TableTennisWorker(CustomEnv):
         self.prev_reach_err = np.linalg.norm(
             paddle_pos - self.current_goal[:3]
         )
+        self.prev_paddle_vel = np.zeros(3, dtype=np.float32)
 
         return self._build_obs(obs_dict), info
 
@@ -219,6 +224,14 @@ class TableTennisWorker(CustomEnv):
         paddle_touch = np.asarray(
             [float(obs_dict["touching_info"][0])], dtype=np.float32
         )  # NEW
+        
+        
+        # --------------------------------
+        # Impulse signal
+        # --------------------------------
+        vel_delta = paddle_vel - getattr(self, "prev_paddle_vel_obs", paddle_vel)
+        impulse_obs = np.asarray([np.linalg.norm(vel_delta)], dtype=np.float32)
+        self.prev_paddle_vel_obs = paddle_vel
 
         # --------------------------------
         # State
@@ -232,6 +245,7 @@ class TableTennisWorker(CustomEnv):
                 time_frac,       # 1
                 time_to_goal,    # 1
                 paddle_touch,    # 1 
+                impulse_obs      # 1
             ],
             axis=0,
         )
@@ -259,11 +273,25 @@ class TableTennisWorker(CustomEnv):
         reward = 2.0 * np.clip(reach_delta, -0.05, 0.05)
 
         # ==================================================
-        # 1.5) Velocity damping (anti-throw)
+        # 1.5) Impulse damping (anti-throw)
         # ==================================================
-        paddle_vel = np.linalg.norm(obs_dict["paddle_vel"])
+        paddle_vel = np.asarray(obs_dict["paddle_vel"], dtype=np.float32)
+        paddle_speed = np.linalg.norm(paddle_vel)
+
+        # Change in velocity = impulse proxy
+        vel_delta = paddle_vel - self.prev_paddle_vel
+        impulse = np.linalg.norm(vel_delta)
+
+        self.prev_paddle_vel = paddle_vel
+
+        # Gate damping near goal only
         vel_gate = np.exp(-2.0 * reach_err)
-        reward -= vel_gate * 0.15 * paddle_vel
+
+        # Penalize sudden bursts more than steady motion
+        reward -= vel_gate * (
+            0.10 * paddle_speed +
+            0.25 * impulse
+        )
 
         # ==================================================
         # 2) Orientation shaping
