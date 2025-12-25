@@ -47,7 +47,7 @@ class TableTennisWorker(CustomEnv):
             [0.6, 0.6, 0.5, 0.8, 0.5, 0.35], dtype=np.float32
         )
 
-        self.state_dim = 9
+        self.state_dim = 14
         self.goal_dim = 6
         self.observation_dim = self.state_dim + self.goal_dim
 
@@ -181,24 +181,59 @@ class TableTennisWorker(CustomEnv):
     # Observation
     # ------------------------------------------------
     def _build_obs(self, obs_dict):
+        # --------------------------------
+        # Paddle orientation
+        # --------------------------------
         paddle_n = quat_to_paddle_normal(obs_dict["paddle_ori"])
-        paddle_n = paddle_n / (np.linalg.norm(paddle_n) + 1e-8)
+        paddle_n /= np.linalg.norm(paddle_n) + 1e-8
 
+        # --------------------------------
+        # Core kinematics
+        # --------------------------------
         ball_vel = np.asarray(obs_dict["ball_vel"], dtype=np.float32) / 5.0
-        ball_xy  = np.asarray(obs_dict["ball_pos"][:2], dtype=np.float32) / 2.0
+        paddle_vel = np.asarray(obs_dict["paddle_vel"], dtype=np.float32) / 5.0  # NEW
+        ball_xy = np.asarray(obs_dict["ball_pos"][:2], dtype=np.float32) / 2.0
+
+        # --------------------------------
+        # Time signals
+        # --------------------------------
         time_frac = np.asarray(
             [float(obs_dict["time"]) / self.max_time],
-            dtype=np.float32
+            dtype=np.float32,
         )
 
+        time_to_goal = (
+            (self.goal_start_time + self.current_goal[5]) - obs_dict["time"]
+        )
+        time_to_goal = np.clip(time_to_goal / self.max_time, -1.0, 1.0)
+        time_to_goal = np.asarray([time_to_goal], dtype=np.float32)  # NEW
+
+        # --------------------------------
+        # Contact signal
+        # --------------------------------
+        paddle_touch = np.asarray(
+            [float(obs_dict["touching_info"][0])], dtype=np.float32
+        )  # NEW
+
+        # --------------------------------
+        # State
+        # --------------------------------
         state = np.concatenate(
-            [ball_vel, paddle_n, ball_xy, time_frac],
-            axis=0
+            [
+                ball_vel,        # 3
+                paddle_n,        # 3
+                paddle_vel,      # 3
+                ball_xy,         # 2
+                time_frac,       # 1
+                time_to_goal,    # 1
+                paddle_touch,    # 1 
+            ],
+            axis=0,
         )
 
         obs = np.concatenate(
             [state, self.current_goal.astype(np.float32)],
-            axis=0
+            axis=0,
         )
 
         return np.clip(obs, -3.0, 3.0)
