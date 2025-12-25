@@ -11,7 +11,8 @@ from hrl.utils import (
     safe_unit,
     predict_ball_trajectory,
     quat_to_paddle_normal,
-    OWD
+    OWD,
+    as_1d
 )
 
 
@@ -184,10 +185,7 @@ class TableTennisWorker(CustomEnv):
 
         info.update(logs)
         return self._build_obs(obs_dict), float(reward), terminated, truncated, info
-
-    # ==================================================
-    # Observation
-    # ==================================================
+    
     def _build_obs(self, obs_dict):
         paddle_n = quat_to_paddle_normal(obs_dict["paddle_ori"])
         paddle_n /= np.linalg.norm(paddle_n) + 1e-8
@@ -205,7 +203,7 @@ class TableTennisWorker(CustomEnv):
             (self.goal_start_time + self.current_goal[5]) - obs_dict["time"]
         )
         time_to_goal = np.clip(time_to_goal / self.max_time, -1.0, 1.0)
-        time_to_goal = np.array([time_to_goal], dtype=np.float32)
+        time_to_goal = np.asarray(time_to_goal, dtype=np.float32).reshape(1)
 
         paddle_touch = np.array(
             [float(obs_dict["touching_info"][0])], dtype=np.float32
@@ -219,20 +217,21 @@ class TableTennisWorker(CustomEnv):
 
         state = np.concatenate(
             [
-                ball_vel,
-                paddle_n,
-                paddle_vel,
-                rel_goal_pos,
-                ball_xy,
-                time_frac,
-                time_to_goal,
-                paddle_touch,
-                impulse_obs,
+                as_1d(ball_vel),
+                as_1d(paddle_n),
+                as_1d(paddle_vel),
+                as_1d(rel_goal_pos),
+                as_1d(ball_xy),
+                as_1d(time_frac),
+                as_1d(time_to_goal),
+                as_1d(paddle_touch),
+                as_1d(impulse_obs),
             ],
             axis=0,
         )
 
         obs = np.concatenate([state, self.current_goal.astype(np.float32)], axis=0)
+        
         return np.clip(obs, -3.0, 3.0)
 
     # ==================================================
