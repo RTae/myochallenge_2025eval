@@ -85,6 +85,8 @@ class TableTennisWorker(CustomEnv):
         self.success_bonus = 30.0
 
         self.max_time = 3.0
+        
+        self.allow_hard_success = False
 
     # ------------------------------------------------
     # External control from callback
@@ -97,6 +99,9 @@ class TableTennisWorker(CustomEnv):
         self.reach_thr      = self.reach_thr_base - 0.10 * progress
         self.time_thr       = self.time_thr_base - 0.20 * progress
         self.paddle_ori_thr = self.paddle_ori_thr_base + 0.25 * progress
+        
+    def set_allow_hard_success(self, flag: bool):
+        self.allow_hard_success = bool(flag)
 
     # ------------------------------------------------
     # Prediction
@@ -306,7 +311,7 @@ class TableTennisWorker(CustomEnv):
             and time_err < self.time_thr
             and cos_sim > self.paddle_ori_thr
         )
-        if success:
+        if self.allow_hard_success and success:
             reward += self.success_bonus
 
         logs = {
