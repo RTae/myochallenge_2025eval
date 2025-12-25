@@ -43,6 +43,9 @@ class TableTennisManager(CustomEnv):
         self.worker_obs_dim = int(self.worker_env.observation_space.shape[0])
         self.observation_dim = self.worker_obs_dim + 1
 
+        assert self.observation_dim == int(self.worker_env.observation_space.shape[0]) + 1, \
+            "Obs dim mismatch"
+
         self.observation_space = gym.spaces.Box(
             low=-np.inf,
             high=np.inf,
@@ -217,5 +220,8 @@ class TableTennisManager(CustomEnv):
             r += 1.5
 
         r += 0.2 * success_rate
+        
+        delta_norm = min(delta_norm, 0.2)
         r -= 0.1 * (delta_norm ** 2)
+        
         return float(r)
