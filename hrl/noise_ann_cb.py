@@ -93,10 +93,10 @@ class WorkerNoiseAnnealCallback(BaseCallback):
         self.worker_env.env_method("set_progress", progress)
         self.worker_env.env_method("set_allow_hard_success", allow_hard)
         
-        self.logger.record("soft_success_ema", self.success_ema)
-        self.logger.record("progress", progress)
-        self.logger.record("goal_noise", noise_scale)
-        self.logger.record("hard_enabled", float(allow_hard))
+        self.logger.record("info/soft_success_ema", self.success_ema)
+        self.logger.record("info/progress", progress)
+        self.logger.record("info/goal_noise", noise_scale)
+        self.logger.record("info/hard_enabled", float(allow_hard))
 
         # --------------------------------------------------
         # 7) Logging
