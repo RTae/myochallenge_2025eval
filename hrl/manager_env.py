@@ -13,14 +13,14 @@ from custom_env import CustomEnv
 
 class TableTennisManager(CustomEnv):
     """
-    High-level HRL manager (Δ-goal formulation).
+    High-level HRL manager (Δ-goal in *normalized goal space*).
 
     Observation:
-        worker_obs (18) + normalized time (1) = 19
+        worker_obs (worker_obs_dim) + normalized time (1)
 
     Action:
-        action ∈ [-1, 1]^6
-        → interpreted as Δgoal (small correction)
+        a ∈ [-1, 1]^6
+        → interpreted as Δgoal_norm (small correction in normalized space)
     """
 
     def __init__(
@@ -40,8 +40,8 @@ class TableTennisManager(CustomEnv):
         self.decision_interval = int(decision_interval)
         self.max_episode_steps = int(max_episode_steps)
 
-        self.worker_obs_dim = 18
-        self.observation_dim = 19
+        self.worker_obs_dim = int(self.worker_env.observation_space.shape[0])
+        self.observation_dim = self.worker_obs_dim + 1
 
         self.observation_space = gym.spaces.Box(
             low=-np.inf,
@@ -50,7 +50,7 @@ class TableTennisManager(CustomEnv):
             dtype=np.float32,
         )
 
-        # Action: Δgoal (normalized)
+        # Action: Δgoal_norm
         self.action_space = gym.spaces.Box(
             low=-1.0,
             high=1.0,
@@ -58,34 +58,24 @@ class TableTennisManager(CustomEnv):
             dtype=np.float32,
         )
 
-        self.delta_scale = np.array(
-            [
-                0.15,  # Δx
-                0.15,  # Δy
-                0.10,  # Δz
-                0.10,  # Δnx
-                0.10,  # Δny
-                0.20,  # Δdt
-            ],
+        self.delta_min = np.array(
+            [0.02, 0.02, 0.015, 0.02, 0.02, 0.04],
+            dtype=np.float32,
+        )
+
+        self.delta_max = np.array(
+            [0.06, 0.06, 0.05, 0.06, 0.06, 0.12],
             dtype=np.float32,
         )
 
         self.current_step = 0
         self._worker_obs = None
-
-        # Smoothed success statistics (weak stabilizer only)
         self.success_buffer = deque(maxlen=int(success_buffer_len))
 
-    # --------------------------------------------------
-    # Access sim (for video callbacks)
-    # --------------------------------------------------
     @property
     def sim(self):
         return self.worker_env.envs[0].sim
 
-    # --------------------------------------------------
-    # Reset
-    # --------------------------------------------------
     def reset(
         self,
         *,
@@ -96,61 +86,71 @@ class TableTennisManager(CustomEnv):
         self._worker_obs = self.worker_env.reset()
         self.current_step = 0
         self.success_buffer.clear()
-
         return self._build_obs(), {}
 
-    # --------------------------------------------------
-    # Step
-    # --------------------------------------------------
     def step(self, action: np.ndarray):
-        """
-        action ∈ [-1, 1]^6
-        Interpreted as scaled Δgoal correction
-        """
-
         # --------------------------------------------------
-        # 1) Scale and apply Δgoal
+        # 1) Build goal correction (normalized space)
         # --------------------------------------------------
         raw_delta = np.clip(
             np.asarray(action, dtype=np.float32).reshape(6,),
             -1.0,
             1.0,
         )
+        progress = float(
+            np.mean(
+                self.worker_env.env_method("get_progress")
+            )
+        )
 
-        goal_delta = raw_delta * self.delta_scale
+        # quadratic schedule
+        scale = self.delta_min + (progress ** 2) * (self.delta_max - self.delta_min)
+        scale[2] *= 0.7   # z always stricter
+        scale[5] *= 1.3   # dt slightly freer
 
-        worker = self.worker_env.envs[0]
-        obs_dict = worker.env.unwrapped.obs_dict
+        goal_delta = raw_delta * scale
 
-        # Physics-based prediction
-        goal_pred = worker.predict_goal_from_state(obs_dict)
+        # current obs_dict from env0 is fine (they are independent per env though)
+        # For multi-env training you may want per-env goal_pred, but keep it simple first.
+        worker0 = self.worker_env.envs[0]
+        obs_dict0 = worker0.env.unwrapped.obs_dict
 
-        # Final goal sent to worker
+        # Physics-based predicted goal (normalized)
+        goal_pred = worker0.predict_goal_from_state(obs_dict0)
+
+        # Final normalized goal
         goal_final = np.clip(goal_pred + goal_delta, -1.0, 1.0)
-        self.worker_env.env_method("set_goal", goal_final, indices=0)
+
+        self.worker_env.env_method("set_goal", goal_final)
 
         # --------------------------------------------------
-        # 2) Run frozen worker
+        # 2) Run frozen worker for decision_interval steps
         # --------------------------------------------------
         goal_success_any = False
         env_success_any = False
+        last_infos = None
+        last_dones = None
 
         for _ in range(self.decision_interval):
-            obs_1d = np.asarray(self._worker_obs[0], dtype=np.float32)
+            obs_batch = np.asarray(self._worker_obs, dtype=np.float32)  # (n_envs, obs_dim)
 
-            worker_action, _ = self.worker_model.predict(
-                obs_1d, deterministic=True
+            worker_actions, _ = self.worker_model.predict(
+                obs_batch, deterministic=True
             )
 
-            obs, _, dones, infos = self.worker_env.step(worker_action[None])
+            obs, _, dones, infos = self.worker_env.step(worker_actions)
             self._worker_obs = obs
             self.current_step += 1
 
-            info = infos[0]
-            goal_success_any |= bool(info.get("is_goal_success"))
-            env_success_any |= bool(info.get("is_success"))
+            last_infos = infos
+            last_dones = dones
 
-            if dones[0]:
+            # aggregate success across envs
+            for info in infos:
+                goal_success_any |= bool(info.get("is_goal_success", 0.0))
+                env_success_any |= bool(info.get("is_success", 0.0))
+
+            if np.any(dones):
                 break
 
         # --------------------------------------------------
@@ -158,7 +158,6 @@ class TableTennisManager(CustomEnv):
         # --------------------------------------------------
         self.success_buffer.append(1.0 if env_success_any else 0.0)
         success_rate = float(np.mean(self.success_buffer)) if self.success_buffer else 0.0
-
         delta_norm = float(np.linalg.norm(goal_delta))
 
         reward = self._reward_manager(
@@ -176,33 +175,30 @@ class TableTennisManager(CustomEnv):
 
         obs_out = self._build_obs()
 
+        info0 = {}
+        if last_infos and isinstance(last_infos, (list, tuple)) and len(last_infos) > 0:
+            if isinstance(last_infos[0], dict):
+                info0 = last_infos[0]
+
         info_out = {
             "goal_delta_norm": delta_norm,
             "goal_delta": goal_delta.copy(),
-            **(infos[0] if infos and isinstance(infos[0], dict) else {})
+            "goal_final": goal_final.copy(),
+            **info0,
         }
 
         return obs_out, float(reward), terminated, truncated, info_out
 
-    # --------------------------------------------------
-    # Observation
-    # --------------------------------------------------
     def _build_obs(self) -> np.ndarray:
-        worker_obs = np.asarray(
-            self._worker_obs[0], dtype=np.float32
-        ).reshape(self.worker_obs_dim)
+        worker_obs = np.asarray(self._worker_obs[0], dtype=np.float32).reshape(self.worker_obs_dim)
 
         t_frac = np.array(
             [self.current_step / max(1, self.max_episode_steps)],
             dtype=np.float32,
         )
 
-        obs = np.hstack([worker_obs, t_frac])
-        return obs
+        return np.hstack([worker_obs, t_frac])
 
-    # --------------------------------------------------
-    # Manager Reward (FINAL, ALIGNED)
-    # --------------------------------------------------
     def _reward_manager(
         self,
         *,
@@ -211,29 +207,15 @@ class TableTennisManager(CustomEnv):
         success_rate: float,
         delta_norm: float,
     ) -> float:
-        """
-        Manager reward:
-        - env_success dominates
-        - goal_success is a bridge
-        - success_rate stabilizes
-        - delta_norm lightly regularizes
-        """
+        r = -0.05
 
-        r = -0.05  # living cost
-
-        # --- FINAL TASK ---
         if env_success:
             r += 8.0
-            return r  # stop credit leakage
+            return float(r)
 
-        # --- BRIDGE SIGNAL ---
         if goal_success:
             r += 1.5
 
-        # --- STABILITY (weak) ---
         r += 0.2 * success_rate
-
-        # --- REGULARIZATION ---
         r -= 0.1 * (delta_norm ** 2)
-
         return float(r)

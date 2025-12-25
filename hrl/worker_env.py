@@ -151,6 +151,9 @@ class TableTennisWorker(CustomEnv):
             goal_phys[5] += np.random.normal(0.0, self.goal_noise_scale * 0.5)
 
         return self._norm_goal(goal_phys)
+    
+    def get_progress(self):
+        return float(self.progress)
 
     # ==================================================
     # Gym API
