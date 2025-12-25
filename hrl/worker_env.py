@@ -275,6 +275,9 @@ class TableTennisWorker(CustomEnv):
         # ==================================================
         # 1.5) Impulse damping (anti-throw)
         # ==================================================
+        if self.prev_paddle_vel is None:
+            self.prev_paddle_vel = np.asarray(obs_dict["paddle_vel"], dtype=np.float32)
+            
         paddle_vel = np.asarray(obs_dict["paddle_vel"], dtype=np.float32)
         paddle_speed = np.linalg.norm(paddle_vel)
 
@@ -338,8 +341,10 @@ class TableTennisWorker(CustomEnv):
             reach_err < self.reach_thr
             and time_err < self.time_thr
             and cos_sim > self.paddle_ori_thr
-        )
-        if self.allow_hard_success and success:
+        )  
+        hard_success = bool(self.allow_hard_success and success)
+        
+        if hard_success:
             reward += self.success_bonus
 
         logs = {
@@ -348,10 +353,11 @@ class TableTennisWorker(CustomEnv):
             "cos_sim": cos_sim,
             "time_err": time_err,
             "is_goal_soft_success": float(soft_success),
-            "is_goal_success": float(success),
+            "is_goal_hard_raw": float(success),
+            "is_goal_success": float(hard_success),
         }
 
-        return reward, success, logs
+        return reward, hard_success, logs
 
     # ------------------------------------------------
     # Helpers
