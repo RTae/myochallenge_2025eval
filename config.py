@@ -52,6 +52,17 @@ class Config:
     ppo_hidden_dim: int = getenv("PPO_HIDDEN_DIM", 64, int)
 
     # ==================================================
+    # SAC
+    # ==================================================
+    sac_n_steps: int = getenv("SAC_N_STEPS", 2048, int)
+    sac_batch_size: int = getenv("SAC_BATCH_SIZE", 64, int)
+
+    sac_lr: float = getenv("SAC_LR", 3e-4, float)
+
+    sac_tau: float = getenv("SAC_TAU", 0.02, float)
+    sac_gamma: float = getenv("SAC_GAMMA", 0.98, float)
+
+    # ==================================================
     # Evaluation & Video
     # ==================================================
     eval_freq: int = getenv("EVAL_FREQ", 500_000, int)
