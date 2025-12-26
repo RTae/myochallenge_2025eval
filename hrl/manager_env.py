@@ -19,13 +19,8 @@ class TableTennisManager(CustomEnv):
         worker_obs (worker_obs_dim) + normalized time (1)
 
     Action:
-<<<<<<< HEAD
         a ∈ [-1, 1]^6
         → interpreted as Δgoal_norm (small correction in normalized space)
-=======
-        action ∈ [-1, 1]^6
-        → interpreted as Δgoal (small correction)
->>>>>>> a84d04e (merge : train code)
     """
 
     def __init__(
@@ -65,11 +60,7 @@ class TableTennisManager(CustomEnv):
             dtype=np.float32,
         )
 
-<<<<<<< HEAD
         # Action: Δgoal_norm
-=======
-        # Action: Δgoal (normalized)
->>>>>>> a84d04e (merge : train code)
         self.action_space = gym.spaces.Box(
             low=-1.0,
             high=1.0,
@@ -77,7 +68,6 @@ class TableTennisManager(CustomEnv):
             dtype=np.float32,
         )
 
-<<<<<<< HEAD
         self.delta_min = np.array(
             [0.02, 0.02, 0.015, 0.02, 0.02, 0.04],
             dtype=np.float32,
@@ -85,27 +75,11 @@ class TableTennisManager(CustomEnv):
 
         self.delta_max = np.array(
             [0.06, 0.06, 0.05, 0.06, 0.06, 0.12],
-=======
-        self.delta_scale = np.array(
-            [
-                0.15,  # Δx
-                0.15,  # Δy
-                0.10,  # Δz
-                0.10,  # Δnx
-                0.10,  # Δny
-                0.20,  # Δdt
-            ],
->>>>>>> a84d04e (merge : train code)
             dtype=np.float32,
         )
 
         self.current_step = 0
         self._worker_obs = None
-<<<<<<< HEAD
-=======
-
-        # Smoothed success statistics (weak stabilizer only)
->>>>>>> a84d04e (merge : train code)
         self.success_buffer = deque(maxlen=int(success_buffer_len))
 
     @property
@@ -125,18 +99,8 @@ class TableTennisManager(CustomEnv):
         return self._build_obs(), {}
 
     def step(self, action: np.ndarray):
-<<<<<<< HEAD
         # --------------------------------------------------
         # 1) Build goal correction (normalized space)
-=======
-        """
-        action ∈ [-1, 1]^6
-        Interpreted as scaled Δgoal correction
-        """
-
-        # --------------------------------------------------
-        # 1) Scale and apply Δgoal
->>>>>>> a84d04e (merge : train code)
         # --------------------------------------------------
         raw_delta = np.clip(
             np.asarray(action, dtype=np.float32).reshape(6,),
@@ -149,7 +113,6 @@ class TableTennisManager(CustomEnv):
             )
         )
 
-<<<<<<< HEAD
         # quadratic schedule
         scale = self.delta_min + (progress ** 2) * (self.delta_max - self.delta_min)
         scale[2] *= 0.7   # z always stricter
@@ -169,33 +132,14 @@ class TableTennisManager(CustomEnv):
         goal_final = np.clip(goal_pred + goal_delta, -1.0, 1.0)
 
         self.worker_env.env_method("set_goal", goal_final)
-=======
-        goal_delta = raw_delta * self.delta_scale
-
-        worker = self.worker_env.envs[0]
-        obs_dict = worker.env.unwrapped.obs_dict
-
-        # Physics-based prediction
-        goal_pred = worker.predict_goal_from_state(obs_dict)
-
-        # Final goal sent to worker
-        goal_final = np.clip(goal_pred + goal_delta, -1.0, 1.0)
-        self.worker_env.env_method("set_goal", goal_final, indices=0)
->>>>>>> a84d04e (merge : train code)
 
         # --------------------------------------------------
         # 2) Run frozen worker for decision_interval steps
         # --------------------------------------------------
         goal_success_any = False
         env_success_any = False
-<<<<<<< HEAD
         last_infos = None
         last_dones = None
-=======
-
-        for _ in range(self.decision_interval):
-            obs_1d = np.asarray(self._worker_obs[0], dtype=np.float32)
->>>>>>> a84d04e (merge : train code)
 
         for _ in range(self.decision_interval):
             obs_batch = np.asarray(self._worker_obs, dtype=np.float32)  # (n_envs, obs_dim)
@@ -208,7 +152,6 @@ class TableTennisManager(CustomEnv):
             self._worker_obs = obs
             self.current_step += 1
 
-<<<<<<< HEAD
             last_infos = infos
             last_dones = dones
 
@@ -218,13 +161,6 @@ class TableTennisManager(CustomEnv):
                 env_success_any |= bool(info.get("is_success", 0.0))
 
             if np.any(dones):
-=======
-            info = infos[0]
-            goal_success_any |= bool(info.get("is_goal_success"))
-            env_success_any |= bool(info.get("is_success"))
-
-            if dones[0]:
->>>>>>> a84d04e (merge : train code)
                 break
 
         # --------------------------------------------------
@@ -271,17 +207,8 @@ class TableTennisManager(CustomEnv):
             dtype=np.float32,
         )
 
-<<<<<<< HEAD
         return np.hstack([worker_obs, t_frac])
 
-=======
-        obs = np.hstack([worker_obs, t_frac])
-        return obs
-
-    # --------------------------------------------------
-    # Manager Reward (FINAL, ALIGNED)
-    # --------------------------------------------------
->>>>>>> a84d04e (merge : train code)
     def _reward_manager(
         self,
         *,
@@ -290,41 +217,15 @@ class TableTennisManager(CustomEnv):
         success_rate: float,
         delta_norm: float,
     ) -> float:
-<<<<<<< HEAD
         r = -0.05
-=======
-        """
-        Manager reward:
-        - env_success dominates
-        - goal_success is a bridge
-        - success_rate stabilizes
-        - delta_norm lightly regularizes
-        """
-
-        r = -0.05  # living cost
->>>>>>> a84d04e (merge : train code)
 
         # --- FINAL TASK ---
         if env_success:
             r += 8.0
-<<<<<<< HEAD
             return float(r)
 
         if goal_success:
             r += 1.5
-=======
-            return r  # stop credit leakage
-
-        # --- BRIDGE SIGNAL ---
-        if goal_success:
-            r += 1.5
-
-        # --- STABILITY (weak) ---
-        r += 0.2 * success_rate
-
-        # --- REGULARIZATION ---
-        r -= 0.1 * (delta_norm ** 2)
->>>>>>> a84d04e (merge : train code)
 
         r += 0.2 * success_rate
         
