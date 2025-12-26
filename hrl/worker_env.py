@@ -298,10 +298,17 @@ class TableTennisWorker(CustomEnv):
         reward += 0.3 * vel_gate * np.exp(-safe_impulse ** 2)
 
         # --------------------------------------------------
-        # Coupled reach–orientation shaping (KEY FIX)
+        # Coupled reach–orientation shaping
         # --------------------------------------------------
-        reward += 0.8 * reach_w * ori_pos               # correct alignment near goal
-        reward -= 0.4 * reach_w * (1.0 - ori_pos)       # anti-cheat: wrong orientation
+        # only reward when oriented correctly 
+        ori_gate = ori_pos ** 2
+        # reward for being both close & oriented
+        reward += 1.0 * reach_w * ori_gate
+        # penalize being close but mis-oriented
+        reward -= 0.6 * reach_w * (1.0 - ori_pos)
+
+        if reach_err < 0.15 and ori_pos < 0.4:
+            reward -= 0.5
 
         # --------------------------------------------------
         # Timing shaping
@@ -344,7 +351,7 @@ class TableTennisWorker(CustomEnv):
         reward = float(np.clip(reward, -5.0, 20.0))
 
         # --------------------------------------------------
-        # Logs (IMPORTANT for debugging)
+        # Logs
         # --------------------------------------------------
         logs = {
             "reach_err": reach_err,
