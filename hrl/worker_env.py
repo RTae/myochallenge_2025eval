@@ -341,7 +341,7 @@ class TableTennisWorker(CustomEnv):
         reward += 0.25 * vel_gate * np.exp(-safe_impulse ** 2)
 
         # ==================================================
-        # 🔑 Orientation only matters when close
+        # Orientation only matters when close
         # ==================================================
         close_gate = np.exp(-6.0 * reach_err)
 
