@@ -134,23 +134,61 @@ class TableTennisWorker(CustomEnv):
         return np.clip((g - self.goal_center) / self.goal_half_range, -1.0, 1.0)
 
     def predict_goal_from_state(self, obs_dict):
+        # --------------------------------------------------
+        # 1) Predict ball–paddle intersection
+        # --------------------------------------------------
         pred_pos, n_ideal = self._predict(obs_dict)
+        # pred_pos: (x, y, z) where ball should be hit
+        # n_ideal : ideal paddle normal at impact
 
-        err_x = obs_dict["paddle_pos"][0] - obs_dict["ball_pos"][0]
-        vx = max(obs_dict["ball_vel"][0], 0.5)
-        dt = np.clip(err_x / vx, 0.05, 1.5)
+        # --------------------------------------------------
+        # 2) Time-to-contact
+        # --------------------------------------------------
+        # Distance from current ball position to predicted contact plane
+        dx = pred_pos[0] - obs_dict["ball_pos"][0]
 
+        # Robust x-velocity (avoid division explosion)
+        vx = obs_dict["ball_vel"][0]
+        vx = np.sign(vx) * max(abs(vx), 0.5)
+
+        # Time until ball reaches predicted x-plane
+        dt = dx / vx
+        dt = np.clip(dt, 0.05, 1.5)
+
+        # --------------------------------------------------
+        # 3) Orientation target (packed)
+        # --------------------------------------------------
         nx, ny = self._pack_normal_xy(n_ideal)
 
+        # --------------------------------------------------
+        # 4) Assemble PHYSICAL goal
+        # --------------------------------------------------
         goal_phys = np.array(
-            [pred_pos[0], pred_pos[1], pred_pos[2], nx, ny, dt],
+            [
+                pred_pos[0],  # x_hit
+                pred_pos[1],  # y_hit
+                pred_pos[2],  # z_hit
+                nx,           # paddle normal x
+                ny,           # paddle normal y
+                dt,           # time-to-plane
+            ],
             dtype=np.float32,
         )
 
+        # --------------------------------------------------
+        # 5) Curriculum noise (optional, SAFE)
+        # --------------------------------------------------
         if self.goal_noise_scale > 0.0:
-            goal_phys[:3] += np.random.normal(0.0, self.goal_noise_scale, size=3)
-            goal_phys[5] += np.random.normal(0.0, self.goal_noise_scale * 0.5)
+            goal_phys[:3] += np.random.normal(
+                0.0, self.goal_noise_scale, size=3
+            )
+            goal_phys[5] += np.random.normal(
+                0.0, self.goal_noise_scale * 0.5
+            )
 
+        # --------------------------------------------------
+        # 6) Normalize to [-1, 1] goal space
+        # --------------------------------------------------
         return self._norm_goal(goal_phys)
     
     def get_progress(self):
