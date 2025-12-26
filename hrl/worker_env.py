@@ -20,12 +20,17 @@ class TableTennisWorker(CustomEnv):
     """
     Goal-conditioned low-level controller (Phase 2 worker)
 
+<<<<<<< HEAD
     State (18):
+=======
+    State :
+>>>>>>> a84d04e (merge : train code)
         - ball_vel (3)
         - paddle_normal (3)
         - paddle_vel (3)
         - rel_goal_pos (3)
         - ball_xy (2)
+<<<<<<< HEAD
         - time_frac (1)
         - time_to_goal (1)
         - paddle_touch (1)
@@ -37,6 +42,17 @@ class TableTennisWorker(CustomEnv):
         - target_time_to_plane (1)
 
     Observation: 18 + 6 = 24
+=======
+        - time (1)
+
+    Goal :
+        - target_ball_pos (3)
+        - target_paddle_normal (2)
+        - target_time_to_plane (1)
+        
+    Observation :
+        state + goal (9 + 6 = 15)
+>>>>>>> a84d04e (merge : train code)
     """
 
     def __init__(self, config: Config):
@@ -52,7 +68,11 @@ class TableTennisWorker(CustomEnv):
             [0.6, 0.6, 0.5, 0.8, 0.5, 0.35], dtype=np.float32
         )
 
+<<<<<<< HEAD
         self.state_dim = 18
+=======
+        self.state_dim = 9
+>>>>>>> a84d04e (merge : train code)
         self.goal_dim = 6
         self.observation_dim = self.state_dim + self.goal_dim
 
@@ -63,9 +83,15 @@ class TableTennisWorker(CustomEnv):
             dtype=np.float32,
         )
 
+<<<<<<< HEAD
         # ==================================================
         # Runtime
         # ==================================================
+=======
+        # -------------------------------
+        # Runtime
+        # -------------------------------
+>>>>>>> a84d04e (merge : train code)
         self.current_goal: Optional[np.ndarray] = None
         self.goal_start_time: Optional[float] = None
 
@@ -73,7 +99,14 @@ class TableTennisWorker(CustomEnv):
         self.prev_paddle_vel = None
         self.prev_paddle_vel_obs = None
         self._prev_paddle_contact = False
+        
+        # ==================================================
+        # Goal noise 
+        # ==================================================
+        self.goal_noise_scale = 0.0 
+        self.progress = 0.0
 
+<<<<<<< HEAD
         # ==================================================
         # Curriculum state
         # ==================================================
@@ -113,6 +146,37 @@ class TableTennisWorker(CustomEnv):
     # ==================================================
     # Prediction
     # ==================================================
+=======
+        # -------------------------------
+        # Success thresholds
+        # -------------------------------
+        self.reach_thr_base = 0.25
+        self.time_thr_base = 0.40
+        self.paddle_ori_thr_base = 0.65
+        
+        self.reach_thr = self.reach_thr_base
+        self.time_thr = self.time_thr_base
+        self.paddle_ori_thr = self.paddle_ori_thr_base
+        self.success_bonus = 30.0
+
+        self.max_time = 3.0
+
+    # ------------------------------------------------
+    # External control from callback
+    # ------------------------------------------------
+    def set_goal_noise_scale(self, scale: float):
+        self.goal_noise_scale = float(np.clip(scale, 0.0, 0.2))
+        
+    def set_progress(self, progress: float):
+        self.progress = float(np.clip(progress, 0.0, 1.0))
+        self.reach_thr      = self.reach_thr_base - 0.10 * progress
+        self.time_thr       = self.time_thr_base - 0.20 * progress
+        self.paddle_ori_thr = self.paddle_ori_thr_base + 0.25 * progress
+
+    # ------------------------------------------------
+    # Prediction
+    # ------------------------------------------------
+>>>>>>> a84d04e (merge : train code)
     def _predict(self, obs_dict):
         pred_pos, paddle_ori_ideal = predict_ball_trajectory(
             ball_pos=obs_dict["ball_pos"],
@@ -122,9 +186,15 @@ class TableTennisWorker(CustomEnv):
         n_ideal = quat_to_paddle_normal(paddle_ori_ideal)
         return pred_pos, n_ideal
 
+<<<<<<< HEAD
     # ==================================================
     # Goal API
     # ==================================================
+=======
+    # ------------------------------------------------
+    # Goal API
+    # ------------------------------------------------
+>>>>>>> a84d04e (merge : train code)
     def set_goal(self, goal_norm):
         goal_norm = np.clip(goal_norm, -1.0, 1.0)
         self.current_goal = self.goal_center + goal_norm * self.goal_half_range
@@ -134,6 +204,7 @@ class TableTennisWorker(CustomEnv):
         return np.clip((g - self.goal_center) / self.goal_half_range, -1.0, 1.0)
 
     def predict_goal_from_state(self, obs_dict):
+<<<<<<< HEAD
         # --------------------------------------------------
         # 1) Predict ball–paddle intersection
         # --------------------------------------------------
@@ -178,6 +249,25 @@ class TableTennisWorker(CustomEnv):
         # --------------------------------------------------
         # 5) Curriculum noise (optional, SAFE)
         # --------------------------------------------------
+=======
+        """
+        Deterministic physics-based goal (manager uses this).
+        NO noise here.
+        """
+        pred_pos, n_ideal = self._predict(obs_dict)
+
+        err_x = obs_dict["paddle_pos"][0] - obs_dict["ball_pos"][0]
+        vx = max(obs_dict["ball_vel"][0], 0.5)
+        dt = np.clip(err_x / vx, 0.05, 1.5)
+
+        nx, ny = self._pack_normal_xy(n_ideal)
+
+        goal_phys = np.array(
+            [pred_pos[0], pred_pos[1], pred_pos[2], nx, ny, dt],
+            dtype=np.float32,
+        )
+
+>>>>>>> a84d04e (merge : train code)
         if self.goal_noise_scale > 0.0:
             goal_phys[:3] += np.random.normal(
                 0.0, self.goal_noise_scale, size=3
@@ -186,6 +276,7 @@ class TableTennisWorker(CustomEnv):
                 0.0, self.goal_noise_scale * 0.5
             )
 
+<<<<<<< HEAD
         # --------------------------------------------------
         # 6) Normalize to [-1, 1] goal space
         # --------------------------------------------------
@@ -197,11 +288,19 @@ class TableTennisWorker(CustomEnv):
     # ==================================================
     # Gym API
     # ==================================================
+=======
+        return self._norm_goal(goal_phys)
+
+    # ------------------------------------------------
+    # Gym API
+    # ------------------------------------------------
+>>>>>>> a84d04e (merge : train code)
     def reset(self, seed=None, options=None):
         obs, info = super().reset(seed=seed)
         obs_dict = self.env.unwrapped.obs_dict
 
         self._prev_paddle_contact = False
+<<<<<<< HEAD
         self.prev_paddle_vel = np.zeros(3, dtype=np.float32)
         self.prev_paddle_vel_obs = None
 
@@ -210,6 +309,14 @@ class TableTennisWorker(CustomEnv):
 
         self.prev_reach_err = np.linalg.norm(
             obs_dict["paddle_pos"] - self.current_goal[:3]
+=======
+        goal = self.predict_goal_from_state(obs_dict)
+        self.set_goal(goal)
+
+        paddle_pos = obs_dict["paddle_pos"]
+        self.prev_reach_err = np.linalg.norm(
+            paddle_pos - self.current_goal[:3]
+>>>>>>> a84d04e (merge : train code)
         )
 
         return self._build_obs(obs_dict), info
@@ -223,6 +330,7 @@ class TableTennisWorker(CustomEnv):
 
         info.update(logs)
         return self._build_obs(obs_dict), float(reward), terminated, truncated, info
+<<<<<<< HEAD
     
     def _build_obs(self, obs_dict):
         paddle_n = quat_to_paddle_normal(obs_dict["paddle_ori"])
@@ -275,16 +383,53 @@ class TableTennisWorker(CustomEnv):
     # ==================================================
     # Reward
     # ==================================================
+=======
+
+    # ------------------------------------------------
+    # Observation
+    # ------------------------------------------------
+    def _build_obs(self, obs_dict):
+        paddle_n = quat_to_paddle_normal(obs_dict["paddle_ori"])
+        paddle_n = paddle_n / (np.linalg.norm(paddle_n) + 1e-8)
+
+        ball_vel = np.asarray(obs_dict["ball_vel"], dtype=np.float32) / 5.0
+        ball_xy  = np.asarray(obs_dict["ball_pos"][:2], dtype=np.float32) / 2.0
+        time_frac = np.asarray(
+            [float(obs_dict["time"]) / self.max_time],
+            dtype=np.float32
+        )
+
+        state = np.concatenate(
+            [ball_vel, paddle_n, ball_xy, time_frac],
+            axis=0
+        )
+
+        obs = np.concatenate(
+            [state, self.current_goal.astype(np.float32)],
+            axis=0
+        )
+
+        return np.clip(obs, -3.0, 3.0)
+
+    # ------------------------------------------------
+    # Reward
+    # ------------------------------------------------
+>>>>>>> a84d04e (merge : train code)
     def _compute_reward(self, obs_dict):
         paddle_pos = obs_dict["paddle_pos"]
         goal_pos = self.current_goal[:3]
 
         # ==================================================
+<<<<<<< HEAD
         # Reach error
+=======
+        # 1) Reach progress
+>>>>>>> a84d04e (merge : train code)
         # ==================================================
         reach_err = np.linalg.norm(paddle_pos - goal_pos)
         reach_delta = self.prev_reach_err - reach_err
         self.prev_reach_err = reach_err
+<<<<<<< HEAD
 
         lateral_err = np.linalg.norm((paddle_pos - goal_pos)[1:])
 
@@ -365,21 +510,72 @@ class TableTennisWorker(CustomEnv):
 
         # ==================================================
         # Success conditions
+=======
+        reward = 2.0 * np.clip(reach_delta, -0.05, 0.05)
+
+        # ==================================================
+        # 1.5) Velocity damping (anti-throw)
+        # ==================================================
+        paddle_vel = np.linalg.norm(obs_dict["paddle_vel"])
+        vel_gate = np.exp(-2.0 * reach_err)
+        reward -= vel_gate * 0.15 * paddle_vel
+
+        # ==================================================
+        # 2) Orientation shaping
+        # ==================================================
+        paddle_n = quat_to_paddle_normal(obs_dict["paddle_ori"])
+        paddle_n /= np.linalg.norm(paddle_n) + 1e-8
+        goal_n = self._unpack_normal_xy(self.current_goal[3], self.current_goal[4])
+        cos_sim = float(np.dot(paddle_n, goal_n))
+        reward += np.exp(-3.0 * reach_err) * np.clip(cos_sim, 0.0, 1.0)
+
+        # ==================================================
+        # 3) Timing shaping
+        # ==================================================
+        t_now = obs_dict["time"]
+        t_target = self.goal_start_time + self.current_goal[5]
+        dt = t_now - t_target
+        reward -= (0.2 if dt < 0 else 0.6) * min(abs(dt), 1.0)
+        time_err = abs(dt)
+
+        # ==================================================
+        # 4) Contact reward (timed)
+        # ==================================================
+        touching = obs_dict["touching_info"][0] > 0.5
+        if touching and not self._prev_paddle_contact:
+            contact_quality = np.exp(-3.0 * time_err)
+            reward += 3.0 * contact_quality
+        self._prev_paddle_contact = touching
+
+        # ==================================================
+        # 5) Soft success
+>>>>>>> a84d04e (merge : train code)
         # ==================================================
         soft_success = (
             reach_err < 2.5 * self.reach_thr
             and time_err < 2.0 * self.time_thr
             and cos_sim > self.paddle_ori_thr - 0.2
+<<<<<<< HEAD
             and safe_impulse < 1.8
         )
 
         if soft_success:
             reward += 2.0 + np.clip(reach_delta, 0.0, 0.05)
 
+=======
+        )
+        if soft_success:
+            reward += 2.0 * np.exp(-2.0 * reach_err)
+
+        # ==================================================
+        # 6) Hard success
+        # ==================================================
+>>>>>>> a84d04e (merge : train code)
         success = (
             reach_err < self.reach_thr
             and time_err < self.time_thr
             and cos_sim > self.paddle_ori_thr
+<<<<<<< HEAD
             and safe_impulse < 1.5
         )
 
@@ -408,6 +604,26 @@ class TableTennisWorker(CustomEnv):
     # ==================================================
     # Helpers
     # ==================================================
+=======
+        )
+        if success:
+            reward += self.success_bonus
+
+        logs = {
+            "reach_err": reach_err,
+            "reach_delta": reach_delta,
+            "cos_sim": cos_sim,
+            "time_err": time_err,
+            "is_goal_soft_success": float(soft_success),
+            "is_goal_success": float(success),
+        }
+
+        return reward, success, logs
+
+    # ------------------------------------------------
+    # Helpers
+    # ------------------------------------------------
+>>>>>>> a84d04e (merge : train code)
     def _pack_normal_xy(self, n):
         if n[0] > 0:
             n = -n
