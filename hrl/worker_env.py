@@ -280,7 +280,7 @@ class TableTennisWorker(CustomEnv):
         goal_pos = self.current_goal[:3]
 
         # ==================================================
-        # Reach error & progress
+        # Reach error
         # ==================================================
         reach_err = np.linalg.norm(paddle_pos - goal_pos)
         reach_delta = self.prev_reach_err - reach_err
@@ -288,14 +288,14 @@ class TableTennisWorker(CustomEnv):
 
         lateral_err = np.linalg.norm((paddle_pos - goal_pos)[1:])
 
-        # --- Base reach shaping (dense & stable) ---
+        # Base reach shaping (dominant early signal)
         reward = 2.0 * np.clip(reach_delta, -0.05, 0.05)
-        reward += 0.5 * np.exp(-3.0 * reach_err) * np.exp(-2.0 * lateral_err)
+        reward += 0.6 * np.exp(-3.0 * reach_err) * np.exp(-2.0 * lateral_err)
 
         reach_w = np.exp(-3.0 * reach_err)
 
         # ==================================================
-        # Velocity & impulse (ANTI-THROW, SMOOTH)
+        # Velocity & impulse (ANTI-THROW)
         # ==================================================
         paddle_vel = obs_dict["paddle_vel"]
         vel_delta = paddle_vel - self.prev_paddle_vel
@@ -308,8 +308,7 @@ class TableTennisWorker(CustomEnv):
         # ==================================================
         t_now = obs_dict["time"]
         t_target = self.goal_start_time + self.current_goal[5]
-        dt = t_now - t_target
-        time_err = abs(dt)
+        time_err = abs(t_now - t_target)
 
         # ==================================================
         # Orientation
@@ -324,35 +323,34 @@ class TableTennisWorker(CustomEnv):
         ori_pos = np.clip(cos_sim, 0.0, 1.0)
 
         # ==================================================
-        # Coupled damping
+        # Damping (distance-aware, orientation-safe)
         # ==================================================
-        # Damping gate
         vel_gate = np.exp(-2.0 * reach_err) * np.exp(-2.0 * time_err)
-        # Increase damping when mis-oriented
-        vel_gate *= (1.0 + (1.0 - ori_pos))
 
-        # Apply damping penalties, when near target
         reward -= vel_gate * (
-            0.08 * np.linalg.norm(paddle_vel) +
-            0.18 * safe_impulse
+            0.06 * np.linalg.norm(paddle_vel) +
+            0.15 * safe_impulse
         )
 
         reward += 0.25 * vel_gate * np.exp(-safe_impulse ** 2)
 
         # ==================================================
-        # Coupled reach–orientation shaping
+        # 🔑 Orientation only matters when close
         # ==================================================
-        # Reward alignment ONLY when near target
-        reward += 1.2 * reach_w * ori_pos
+        close_gate = np.exp(-6.0 * reach_err)
 
-        # Strong penalty for being close but mis-oriented
-        reward -= 0.8 * reach_w * (1.0 - ori_pos) ** 2
+        # Reward correct alignment near goal
+        reward += 1.2 * close_gate * ori_pos
 
-        # Extra push when very close but still misaligned
-        reward -= 0.6 * np.exp(-10.0 * reach_err) * (1.0 - ori_pos)
+        # Penalize wrong orientation ONLY when very close
+        reward -= 0.6 * close_gate * (1.0 - ori_pos) ** 2
+
+        # Gentle late-stage precision push
+        if reach_err < 0.12:
+            reward += 0.3 * (ori_pos ** 2)
 
         # ==================================================
-        # Timing shaping
+        # Timing shaping (smooth, symmetric)
         # ==================================================
         reward += 0.5 * np.exp(-4.0 * time_err)
         reward -= 0.45 * np.tanh(time_err)
@@ -392,17 +390,14 @@ class TableTennisWorker(CustomEnv):
         reward = float(np.clip(reward, -5.0, 20.0))
 
         # ==================================================
-        # Logs
+        # Logs (these are the ones that matter)
         # ==================================================
         logs = {
             "reach_err": reach_err,
-            "reach_delta": reach_delta,
             "cos_sim": cos_sim,
             "ori_pos": ori_pos,
-            "reach_w": reach_w,
-            "reach_ori_product": float(reach_w * ori_pos),
+            "reach_ori_product": float(close_gate * ori_pos),
             "time_err": time_err,
-            "lateral_err": lateral_err,
             "impulse": impulse,
             "is_goal_soft_success": float(soft_success),
             "is_goal_success": float(hard_success),
