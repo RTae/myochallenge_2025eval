@@ -274,7 +274,7 @@ class TableTennisWorker(CustomEnv):
         time_err = abs(dt)
 
         # ==================================================
-        # Orientation (CRITICAL FIX)
+        # Orientation
         # ==================================================
         paddle_n = quat_to_paddle_normal(obs_dict["paddle_ori"])
         paddle_n /= np.linalg.norm(paddle_n) + 1e-8
@@ -302,7 +302,7 @@ class TableTennisWorker(CustomEnv):
         reward += 0.25 * vel_gate * np.exp(-safe_impulse ** 2)
 
         # ==================================================
-        # Coupled reach–orientation shaping (NO COLLAPSE)
+        # Coupled reach–orientation shaping
         # ==================================================
         # Reward alignment ONLY when near target
         reward += 1.2 * reach_w * ori_pos
@@ -314,7 +314,7 @@ class TableTennisWorker(CustomEnv):
         reward -= 0.6 * np.exp(-10.0 * reach_err) * (1.0 - ori_pos)
 
         # ==================================================
-        # Timing shaping (smooth, symmetric)
+        # Timing shaping
         # ==================================================
         reward += 0.5 * np.exp(-4.0 * time_err)
         reward -= 0.45 * np.tanh(time_err)
@@ -354,7 +354,7 @@ class TableTennisWorker(CustomEnv):
         reward = float(np.clip(reward, -5.0, 20.0))
 
         # ==================================================
-        # Logs (MUST WATCH THESE)
+        # Logs
         # ==================================================
         logs = {
             "reach_err": reach_err,
