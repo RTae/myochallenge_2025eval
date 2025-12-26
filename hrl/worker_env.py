@@ -396,7 +396,7 @@ class TableTennisWorker(CustomEnv):
         reward = float(np.clip(reward, -5.0, 20.0))
 
         # ==================================================
-        # Logs (these are the ones that matter)
+        # Logs
         # ==================================================
         logs = {
             "reach_err": reach_err,
