@@ -238,55 +238,94 @@ class TableTennisWorker(CustomEnv):
     # Reward
     # ==================================================
     def _compute_reward(self, obs_dict):
-        
         paddle_pos = obs_dict["paddle_pos"]
         goal_pos = self.current_goal[:3]
 
+        # --------------------------------------------------
+        # Reach error & progress
+        # --------------------------------------------------
         reach_err = np.linalg.norm(paddle_pos - goal_pos)
         reach_delta = self.prev_reach_err - reach_err
         self.prev_reach_err = reach_err
 
-        # Reward for reaching close to the goal position
-        reward = 2.0 * np.clip(reach_delta, -0.05, 0.05)
+        lateral_err = np.linalg.norm((paddle_pos - goal_pos)[1:])
 
+        # Base reach shaping
+        reward = 2.0 * np.clip(reach_delta, -0.05, 0.05)
+        reward += 0.5 * np.exp(-3.0 * reach_err) * np.exp(-2.0 * lateral_err)
+
+        # --------------------------------------------------
+        # Velocity & impulse (anti-throw)
+        # --------------------------------------------------
         paddle_vel = obs_dict["paddle_vel"]
         vel_delta = paddle_vel - self.prev_paddle_vel
         impulse = np.linalg.norm(vel_delta)
+        safe_impulse = np.clip(impulse, 0.0, 2.0)
         self.prev_paddle_vel = paddle_vel
 
+        # --------------------------------------------------
+        # Timing
+        # --------------------------------------------------
         t_now = obs_dict["time"]
         t_target = self.goal_start_time + self.current_goal[5]
         dt = t_now - t_target
         time_err = abs(dt)
 
-        vel_gate = np.exp(-2.0 * reach_err) * np.exp(-2.0 * time_err)
-        
-        # Penalty for high paddle velocity and impulse
-        # -= 0.10 for velocity, -= 0.25 for impulse
-        reward -= vel_gate * (0.10 * np.linalg.norm(paddle_vel) + 0.25 * impulse)
-
+        # --------------------------------------------------
+        # Orientation
+        # --------------------------------------------------
         paddle_n = quat_to_paddle_normal(obs_dict["paddle_ori"])
         paddle_n /= np.linalg.norm(paddle_n) + 1e-8
-        goal_n = self._unpack_normal_xy(self.current_goal[3], self.current_goal[4])
+        goal_n = self._unpack_normal_xy(
+            self.current_goal[3], self.current_goal[4]
+        )
         cos_sim = float(np.dot(paddle_n, goal_n))
+        ori_pos = np.clip(cos_sim, 0.0, 1.0)
 
-        # Reward for paddle orientation alignment
-        # += exp(-3 * reach_err) * clip(cos_sim, 0, 1)
-        reward += np.exp(-3.0 * reach_err) * np.clip(cos_sim, 0.0, 1.0)
-        
-        # Penalty for timing error, if early get lower penalty, if late higher penalty
-        # -= 0.2 if early, -= 0.6 if late
-        reward -= (0.2 if dt < 0 else 0.6) * min(abs(dt), 1.0)
+        reach_w = np.exp(-3.0 * reach_err)
 
+        # --------------------------------------------------
+        # Coupled damping (ANTI-THROW, ORI-AWARE)
+        # --------------------------------------------------
+        vel_gate = np.exp(-2.0 * reach_err) * np.exp(-2.0 * time_err)
+        vel_gate *= (0.5 + 0.5 * ori_pos)  # wrong ori = stronger damping
+
+        reward -= vel_gate * (
+            0.08 * np.linalg.norm(paddle_vel) +
+            0.18 * safe_impulse
+        )
+
+        reward += 0.3 * vel_gate * np.exp(-safe_impulse ** 2)
+
+        # --------------------------------------------------
+        # Coupled reach–orientation shaping (KEY FIX)
+        # --------------------------------------------------
+        reward += 0.8 * reach_w * ori_pos               # correct alignment near goal
+        reward -= 0.4 * reach_w * (1.0 - ori_pos)       # anti-cheat: wrong orientation
+
+        # --------------------------------------------------
+        # Timing shaping
+        # --------------------------------------------------
+        time_scale = 0.35 if dt < 0 else 0.55
+        reward += 0.5 * np.exp(-4.0 * time_err)
+        reward -= time_scale * np.tanh(time_err)
+
+        # --------------------------------------------------
+        # Contact reward
+        # --------------------------------------------------
         touching = obs_dict["touching_info"][0] > 0.5
         if touching and not self._prev_paddle_contact:
             reward += 3.0 * np.exp(-3.0 * time_err)
         self._prev_paddle_contact = touching
 
+        # --------------------------------------------------
+        # Success conditions
+        # --------------------------------------------------
         soft_success = (
             reach_err < 2.5 * self.reach_thr
             and time_err < 2.0 * self.time_thr
             and cos_sim > self.paddle_ori_thr - 0.2
+            and safe_impulse < 1.8
         )
         if soft_success:
             reward += 2.0 + np.clip(reach_delta, 0.0, 0.05)
@@ -295,6 +334,7 @@ class TableTennisWorker(CustomEnv):
             reach_err < self.reach_thr
             and time_err < self.time_thr
             and cos_sim > self.paddle_ori_thr
+            and safe_impulse < 1.5
         )
         hard_success = self.allow_hard_success and success
 
@@ -303,11 +343,17 @@ class TableTennisWorker(CustomEnv):
 
         reward = float(np.clip(reward, -5.0, 20.0))
 
+        # --------------------------------------------------
+        # Logs (IMPORTANT for debugging)
+        # --------------------------------------------------
         logs = {
             "reach_err": reach_err,
             "reach_delta": reach_delta,
             "cos_sim": cos_sim,
             "time_err": time_err,
+            "lateral_err": lateral_err,
+            "impulse": impulse,
+            "reach_ori_product": float(reach_w * ori_pos),
             "is_goal_soft_success": float(soft_success),
             "is_goal_success": float(hard_success),
         }
