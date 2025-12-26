@@ -394,7 +394,7 @@ class TableTennisWorker(CustomEnv):
             reward += self.success_bonus
 
         reward = float(np.clip(reward, -5.0, 20.0))
-
+    
         # ==================================================
         # Logs
         # ==================================================
@@ -407,6 +407,7 @@ class TableTennisWorker(CustomEnv):
             "impulse": impulse,
             "is_goal_soft_success": float(soft_success),
             "is_goal_success": float(hard_success),
+            "cos_sim_near": float(cos_sim if reach_err < self.reach_thr else 0.0),
         }
 
         return reward, hard_success, logs
