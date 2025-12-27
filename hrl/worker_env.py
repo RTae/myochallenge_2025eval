@@ -149,8 +149,7 @@ class TableTennisWorker(CustomEnv):
 
         # Only compute time when ball is actually moving toward plane
         if abs(vx) > 1e-3 and (dx * vx) > 0.0:
-            dt = dx / vx
-            dt = abs(dt)
+            dt = abs(dx / vx)
         else:
             # Fallback: "far in time" instead of fake small dt
             dt = 1.5
@@ -209,6 +208,7 @@ class TableTennisWorker(CustomEnv):
 
         goal = self.predict_goal_from_state(obs_dict)
         self.set_goal(goal)
+        self.prev_reach_err = None
 
         self.prev_reach_err = np.linalg.norm(
             obs_dict["paddle_pos"] - self.current_goal[:3]
@@ -356,10 +356,12 @@ class TableTennisWorker(CustomEnv):
         # ==================================================
         # HARD impulse penalty when close (CRITICAL FIX)
         # ==================================================
+        close_time_gate = float(np.exp(-3.0 * time_err))  # ~1 when on-time, small when off-time
+
         if reach_err < 0.20:
-            reward -= 0.9 * safe_impulse
+            reward -= close_time_gate * 0.9 * safe_impulse
         if reach_err < 0.10:
-            reward -= 1.3 * safe_impulse
+            reward -= close_time_gate * 1.3 * safe_impulse
 
         # ==================================================
         # Orientation shaping (no collapse)
