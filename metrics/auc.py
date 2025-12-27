@@ -19,12 +19,6 @@ def load_tb_scalar(logdir, tag):
     values = np.array([e.value for e in events])
     return steps, values
 
-def smooth_values(values, window=10):
-    """Apply moving average smoothing"""
-    if window <= 1:
-        return values
-    return np.convolve(values, np.ones(window)/window, mode='same')
-
 def normalize_auc(auc, optimal_reward=1.0, max_steps=1e6):
     """Normalize AUC by optimal performance and time"""
     return auc / (optimal_reward * max_steps)
@@ -33,20 +27,18 @@ def compute_auc(steps, values):
     """
     Compute Area Under Curve using trapezoidal rule.
     """
-    return np.trapz(values, steps)
+    duration = steps[-1] - steps[0]
+    return np.trapz(values, steps) / duration
 
 
 if __name__ == "__main__":
-    logdir = "./logs/exp"
-    tag = "rollout/ep_rew_mean"
+    logdir = "./logs/SAC_LATTICE/sac_lattice_42/manager/SAC_1"
+    tag = "eval/mean_reward"
     
     steps, values = load_tb_scalar(logdir, tag)
     
-    # Apply smoothing
-    values_smooth = smooth_values(values, window=10)
-    
     # Compute AUC
-    auc = compute_auc(steps, values_smooth)
+    auc = compute_auc(steps, values)
     
     # Optional normalization
     # norm_auc = normalize_auc(auc, optimal_reward=1000, max_steps=steps[-1])
