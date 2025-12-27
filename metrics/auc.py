@@ -1,6 +1,15 @@
 import numpy as np
 from tensorboard.backend.event_processing import event_accumulator
 
+# ppo = 240.92, 222.10, 260.26
+# ppo-hrl = 
+# ppo-lattice=
+# ppo-lattice-hrl=
+
+# sac = 342.62, 368.32, 454.22
+# sac-hrl = 3.37
+# sac-lattice = 204.20
+
 def load_tb_scalar(logdir, tag):
     """
     Load (step, value) pairs from TensorBoard logs.
@@ -32,7 +41,7 @@ def compute_auc(steps, values):
 
 
 if __name__ == "__main__":
-    logdir = "./logs/SAC_LATTICE/sac_lattice_42/manager/SAC_1"
+    logdir = "./logs/PPO_LATTICE/ppo_lattice44/RecurrentPPO_1"
     tag = "eval/mean_reward"
     
     steps, values = load_tb_scalar(logdir, tag)
