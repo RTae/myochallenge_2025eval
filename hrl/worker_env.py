@@ -358,10 +358,9 @@ class TableTennisWorker(CustomEnv):
         # ==================================================
         close_time_gate = float(np.exp(-3.0 * time_err))  # ~1 when on-time, small when off-time
 
-        if reach_err < 0.20:
-            reward -= close_time_gate * 0.9 * safe_impulse
-        if reach_err < 0.10:
-            reward -= close_time_gate * 1.3 * safe_impulse
+        if reach_err < 0.25:
+            close_factor = (0.25 - reach_err) / 0.25  # ∈ [0,1]
+            reward -= close_time_gate * close_factor * 0.8 * safe_impulse
 
         # ==================================================
         # Orientation shaping (no collapse)
@@ -413,9 +412,9 @@ class TableTennisWorker(CustomEnv):
         if soft_success:
             reward += 1.5 + np.clip(reach_delta, 0.0, 0.03)
 
-            # NO violent motion after soft success
-            reward -= 0.8 * max(0.0, v_norm - 0.45)
-            reward -= 0.8 * safe_impulse
+            # Allow small corrective motion after success
+            reward -= 0.5 * max(0.0, v_norm - 0.55)
+            reward -= 0.4 * max(0.0, safe_impulse - 0.25)
 
         success = (
             reach_err < self.reach_thr
