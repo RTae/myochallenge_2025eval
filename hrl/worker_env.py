@@ -75,12 +75,6 @@ class TableTennisWorker(CustomEnv):
         self._prev_paddle_contact = False
         
         # ==================================================
-        # Goal noise 
-        # ==================================================
-        self.goal_noise_scale = 0.0 
-        self.progress = 0.0
-
-        # ==================================================
         # Curriculum state
         # ==================================================
         self.goal_noise_scale = 0.0
@@ -154,8 +148,9 @@ class TableTennisWorker(CustomEnv):
         vx = float(obs_dict["ball_vel"][0])
 
         # Only compute time when ball is actually moving toward plane
-        if dx > 0.0 and vx > 1e-3:
-            dt = dx / max(vx, 0.5)
+        if abs(vx) > 1e-3 and (dx * vx) > 0.0:
+            dt = dx / vx
+            dt = abs(dt)
         else:
             # Fallback: "far in time" instead of fake small dt
             dt = 1.5
@@ -255,9 +250,14 @@ class TableTennisWorker(CustomEnv):
         )
 
         vel_delta = paddle_vel - (
-            self.prev_paddle_vel_obs if self.prev_paddle_vel_obs is not None else paddle_vel
+            self.prev_paddle_vel_obs
+            if self.prev_paddle_vel_obs is not None
+            else paddle_vel
         )
-        impulse_obs = np.array([np.tanh(np.linalg.norm(vel_delta))], dtype=np.float32)
+        impulse_obs = np.array(
+            [np.tanh(np.linalg.norm(vel_delta))],
+            dtype=np.float32,
+        )
         self.prev_paddle_vel_obs = paddle_vel
 
         state = np.concatenate(
@@ -290,6 +290,7 @@ class TableTennisWorker(CustomEnv):
         # Reach error
         # ==================================================
         reach_err = float(np.linalg.norm(paddle_pos - goal_pos))
+
         if self.prev_reach_err is None:
             self.prev_reach_err = reach_err
         reach_delta = float(self.prev_reach_err - reach_err)
@@ -297,26 +298,28 @@ class TableTennisWorker(CustomEnv):
 
         lateral_err = float(np.linalg.norm((paddle_pos - goal_pos)[1:]))
 
-        # Base reach shaping
-        reward = 2.0 * np.clip(reach_delta, -0.05, 0.05)
-        reward += 0.6 * np.exp(-3.0 * reach_err) * np.exp(-2.0 * lateral_err)
+        # Faster convergence toward the goal
+        reward = 3.0 * np.clip(reach_delta, -0.05, 0.05)
+        reward += 0.8 * np.exp(-4.0 * reach_err) * np.exp(-2.5 * lateral_err)
 
-        reach_w = float(np.exp(-3.0 * reach_err))
-        ori_w   = float(np.exp(-1.2 * reach_err))  # slower decay: orientation matters earlier
+        reach_w = float(np.exp(-4.0 * reach_err))
+        ori_w   = float(np.exp(-1.5 * reach_err))
 
         # ==================================================
-        # Velocity & impulse (ANTI-THROW)
+        # Velocity & impulse
         # ==================================================
         paddle_vel = obs_dict["paddle_vel"]
+
+        # Reward impulse state (UNSCALED, physics space)
         if self.prev_paddle_vel is None:
-            self.prev_paddle_vel = np.zeros(3, dtype=np.float32)
+            self.prev_paddle_vel = paddle_vel.copy()
 
         vel_delta = paddle_vel - self.prev_paddle_vel
-        impulse = float(np.linalg.norm(vel_delta))          # ||Δv||
+        impulse = float(np.linalg.norm(vel_delta))
         safe_impulse = float(np.clip(impulse, 0.0, 2.0))
         self.prev_paddle_vel = paddle_vel.copy()
 
-        v_norm = float(np.linalg.norm(paddle_vel))          # ||v||  (THIS closes the exploit)
+        v_norm = float(np.linalg.norm(paddle_vel))
 
         # ==================================================
         # Timing
@@ -331,13 +334,15 @@ class TableTennisWorker(CustomEnv):
         paddle_n = quat_to_paddle_normal(obs_dict["paddle_ori"])
         paddle_n = paddle_n / (np.linalg.norm(paddle_n) + 1e-8)
 
-        goal_n = self._unpack_normal_xy(self.current_goal[3], self.current_goal[4])
+        goal_n = self._unpack_normal_xy(
+            self.current_goal[3], self.current_goal[4]
+        )
 
         cos_sim = float(np.clip(np.dot(paddle_n, goal_n), -1.0, 1.0))
         ori_pos = float(max(cos_sim, 0.0))  # [0, 1]
 
         # ==================================================
-        # Damping (general smoothness)
+        # Global smoothness damping
         # ==================================================
         vel_gate = (
             np.exp(-2.0 * reach_err)
@@ -345,36 +350,52 @@ class TableTennisWorker(CustomEnv):
             * (1.0 + 0.5 * (1.0 - ori_pos))
         )
 
-        # Penalize both speed + acceleration (but mild globally)
-        reward -= float(vel_gate) * (0.05 * v_norm + 0.12 * safe_impulse)
-        reward += float(0.20 * vel_gate * np.exp(-(safe_impulse ** 2)))
+        reward -= vel_gate * (0.06 * v_norm + 0.15 * safe_impulse)
+        reward += 0.25 * vel_gate * np.exp(-safe_impulse ** 2)
 
         # ==================================================
-        # Orientation shaping (early + late)
+        # HARD impulse penalty when close (CRITICAL FIX)
         # ==================================================
-        # Early: teach orientation while approaching
-        reward += 0.35 * ori_w * ori_pos
-        reward -= 0.15 * ori_w * (1.0 - ori_pos)
+        if reach_err < 0.20:
+            reward -= 0.9 * safe_impulse
+        if reach_err < 0.10:
+            reward -= 1.3 * safe_impulse
 
-        # Late precision when close
-        reward += 0.85 * reach_w * ori_pos
-        reward -= 0.55 * reach_w * (1.0 - ori_pos) ** 2
+        # ==================================================
+        # Orientation shaping (no collapse)
+        # ==================================================
+        reward += 0.4 * ori_w * ori_pos
+        reward -= 0.2 * ori_w * (1.0 - ori_pos)
+
+        reward += 1.0 * reach_w * ori_pos
+        reward -= 0.7 * reach_w * (1.0 - ori_pos) ** 2
 
         if reach_err < 0.15:
-            reward += 0.35 * (ori_pos ** 2)
+            reward += 0.4 * (ori_pos ** 2)
 
         # ==================================================
         # Timing shaping
         # ==================================================
-        reward += 0.5 * np.exp(-4.0 * time_err)
-        reward -= 0.45 * np.tanh(time_err)
+        reward += 0.6 * np.exp(-4.0 * time_err)
+        reward -= 0.5 * np.tanh(time_err)
 
         # ==================================================
-        # Contact reward (one-time)
+        # Stability-gated contact reward (ANTI-SLAP)
         # ==================================================
         touching = float(obs_dict["touching_info"][0]) > 0.5
+
+        stable_contact = (
+            v_norm < 0.40
+            and safe_impulse < 0.40
+            and ori_pos > 0.60
+        )
+
         if touching and not self._prev_paddle_contact:
-            reward += 3.0 * np.exp(-3.0 * time_err)
+            if stable_contact:
+                reward += 3.0 * np.exp(-3.0 * time_err)
+            else:
+                reward -= 1.2  # slap / throw penalty
+
         self._prev_paddle_contact = touching
 
         # ==================================================
@@ -384,38 +405,31 @@ class TableTennisWorker(CustomEnv):
             reach_err < 2.5 * self.reach_thr
             and time_err < 2.0 * self.time_thr
             and cos_sim > self.paddle_ori_thr - 0.2
-            and safe_impulse < 1.8
+            and safe_impulse < 1.5
         )
 
-        # Soft success bonus + penalties
-        # If soft success is achieved, we further refine the behavior
         if soft_success:
-            reward += 1.2 + np.clip(reach_delta, 0.0, 0.03)
+            reward += 1.5 + np.clip(reach_delta, 0.0, 0.03)
 
-            # Absolute speed penalty
-            reward -= 0.35 * max(0.0, v_norm - 0.60)
-
-            # Strong penalty for fast motion when misoriented
-            reward -= 0.80 * max(0.0, v_norm - 0.40) * (1.0 - ori_pos)
-
-            # Extra stability: discourage any jerks after success
-            reward -= 0.60 * safe_impulse
+            # NO violent motion after soft success
+            reward -= 0.8 * max(0.0, v_norm - 0.45)
+            reward -= 0.8 * safe_impulse
 
         success = (
             reach_err < self.reach_thr
             and time_err < self.time_thr
             and cos_sim > self.paddle_ori_thr
-            and safe_impulse < 1.5
+            and safe_impulse < 1.2
         )
 
         hard_success = self.allow_hard_success and success
         if hard_success:
             reward += self.success_bonus
 
-        reward = float(np.clip(reward, -5.0, 20.0))
+        reward = float(np.clip(reward, -6.0, 20.0))
 
         # ==================================================
-        # Logs (add v_norm to verify the fix)
+        # Logs (WATCH THESE)
         # ==================================================
         logs = {
             "reach_err": reach_err,
@@ -426,9 +440,9 @@ class TableTennisWorker(CustomEnv):
             "time_err": time_err,
             "impulse": impulse,
             "paddle_speed": v_norm,
+            "stable_contact": float(stable_contact),
             "is_goal_soft_success": float(soft_success),
             "is_goal_success": float(hard_success),
-            "cos_sim_near": float(cos_sim if reach_err < self.reach_thr else 0.0),
         }
 
         return reward, hard_success, logs
