@@ -219,17 +219,13 @@ class TableTennisManager(CustomEnv):
     ) -> float:
         r = -0.05
 
-        # --- FINAL TASK ---
         if env_success:
             r += 8.0
-            return float(r)
 
-        if goal_success:
-            r += 1.5
-
-        r += 0.2 * success_rate
+        r += 1.0 * float(goal_success)
+        r += 0.4 * success_rate
         
         delta_norm = min(delta_norm, 0.2)
-        r -= 0.1 * (delta_norm ** 2)
+        r -= 0.2 * np.tanh(delta_norm / 0.1)
         
         return float(r)

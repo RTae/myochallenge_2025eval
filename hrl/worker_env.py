@@ -299,7 +299,7 @@ class TableTennisWorker(CustomEnv):
         lateral_err = float(np.linalg.norm((paddle_pos - goal_pos)[1:]))
 
         # Faster convergence toward the goal
-        reward = 3.0 * np.clip(reach_delta, -0.05, 0.05)
+        reward = 1.5 * np.clip(reach_delta, -0.05, 0.05)
         reward += 0.8 * np.exp(-4.0 * reach_err) * np.exp(-2.5 * lateral_err)
 
         reach_w = float(np.exp(-4.0 * reach_err))
@@ -358,9 +358,8 @@ class TableTennisWorker(CustomEnv):
         # ==================================================
         close_time_gate = float(np.exp(-3.0 * time_err))  # ~1 when on-time, small when off-time
 
-        if reach_err < 0.25:
-            close_factor = (0.25 - reach_err) / 0.25  # ∈ [0,1]
-            reward -= close_time_gate * close_factor * 0.8 * safe_impulse
+        close_gate = np.exp(-10.0 * reach_err)
+        reward -= close_gate * close_time_gate * 0.6 * safe_impulse
 
         # ==================================================
         # Orientation shaping (no collapse)
@@ -427,7 +426,7 @@ class TableTennisWorker(CustomEnv):
         if hard_success:
             reward += self.success_bonus
 
-        reward = float(np.clip(reward, -6.0, 20.0))
+        reward = float(reward)
 
         # ==================================================
         # Logs (WATCH THESE)
