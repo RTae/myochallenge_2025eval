@@ -23,7 +23,7 @@ from loguru import logger
 def load_worker_model(path: str):
     return RecurrentPPO.load(
             path,
-            device="auto",
+            device="cuda",
             policy=LatticeRecurrentActorCriticPolicy, 
     )
 
@@ -44,8 +44,8 @@ def main():
     cfg = Config()
     prepare_experiment_directory(cfg)
 
-    worker_total_timesteps = 10_000_000
-    manager_total_timesteps = 2_000_000
+    worker_total_timesteps = 2_000_000
+    manager_total_timesteps = 500_000
 
     # ==================================================
     # LOAD paths
@@ -95,7 +95,7 @@ def main():
             env=worker_env,
             verbose=1,
             tensorboard_log=os.path.join(cfg.logdir),
-            device='auto',
+            device='cuda',
             batch_size=32,
             n_steps=128,
             learning_rate=cfg.ppo_lr,
@@ -127,7 +127,7 @@ def main():
             env=worker_env,
             verbose=1,
             tensorboard_log=os.path.join(cfg.logdir),
-            device='auto',
+            device='cuda',
             batch_size=32,
             n_steps=128,
             learning_rate=cfg.ppo_lr,
