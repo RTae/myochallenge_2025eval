@@ -22,7 +22,7 @@ from loguru import logger
 def load_worker_model(path: str):
     return SAC.load(
             path,
-            device="cpu",
+            device="cuda",
             policy=LatticeSACPolicy, 
     )
 
@@ -75,140 +75,140 @@ def main():
     # # ==================================================
     # # WORKER
     # # ==================================================
-    # cfg.logdir = WORKER_DIR
+    cfg.logdir = WORKER_DIR
 
-    # # ---- Build training env exactly like your original ----
-    # worker_env = build_worker_vec(cfg=cfg, num_envs=cfg.num_envs)
+    # ---- Build training env exactly like your original ----
+    worker_env = build_worker_vec(cfg=cfg, num_envs=cfg.num_envs)
 
-    # # ---- If LOAD_WORKER_ENV_PATH exists, load VecNormalize stats onto worker_env ----
-    # worker_env = resume_vecnormalize_on_training_env(
-    #     worker_env,
-    #     LOAD_WORKER_ENV_PATH,
-    #     training=True,
-    #     norm_reward=False,
-    # )
+    # ---- If LOAD_WORKER_ENV_PATH exists, load VecNormalize stats onto worker_env ----
+    worker_env = resume_vecnormalize_on_training_env(
+        worker_env,
+        LOAD_WORKER_ENV_PATH,
+        training=True,
+        norm_reward=False,
+    )
 
-    # # ---- Build model: load if provided else create new ----
-    # worker_resumed = bool(LOAD_WORKER_MODEL_PATH and os.path.exists(LOAD_WORKER_MODEL_PATH))
+    # ---- Build model: load if provided else create new ----
+    worker_resumed = bool(LOAD_WORKER_MODEL_PATH and os.path.exists(LOAD_WORKER_MODEL_PATH))
 
-    # if worker_resumed:
-    #     logger.info(f"[Worker] Loading pretrained model from: {LOAD_WORKER_MODEL_PATH}")
+    if worker_resumed:
+        logger.info(f"[Worker] Loading pretrained model from: {LOAD_WORKER_MODEL_PATH}")
 
-    #     worker_model = SAC(
-    #         LOAD_WORKER_MODEL_PATH,
-    #         policy=LatticeSACPolicy,
-    #         env=worker_env,
-    #         device='cpu',
-    #         learning_rate=cfg.sac_lr,
-    #         tensorboard_log=os.path.join(cfg.logdir),
-    #         batch_size=cfg.sac_batch_size,
-    #         tau=cfg.sac_tau,
-    #         gamma=cfg.sac_gamma,
-    #         # action_noise=None,
-    #         # replay_buffer_class=None,
-    #         ent_coef="auto",
-    #         target_update_interval=1,
-    #         target_entropy="auto",
-    #         # use_sde=False,
-    #         # sde_sample_freq=1,
-    #         train_freq=64,
-    #         gradient_steps=64,
-    #         seed=cfg.seed,
-    #         policy_kwargs=dict(
-    #             use_lattice=True,
-    #             use_expln=True,
-    #             log_std_init=1.0,
-    #             std_clip=(1e-3, 1),
-    #             expln_eps=1e-6,
-    #             clip_mean=None,
-    #             std_reg=1e-4
-    #     ),)
+        worker_model = SAC(
+            LOAD_WORKER_MODEL_PATH,
+            policy=LatticeSACPolicy,
+            env=worker_env,
+            device='cuda',
+            learning_rate=cfg.sac_lr,
+            tensorboard_log=os.path.join(cfg.logdir),
+            batch_size=cfg.sac_batch_size,
+            tau=cfg.sac_tau,
+            gamma=cfg.sac_gamma,
+            # action_noise=None,
+            # replay_buffer_class=None,
+            ent_coef="auto",
+            target_update_interval=1,
+            target_entropy="auto",
+            # use_sde=False,
+            # sde_sample_freq=1,
+            train_freq=64,
+            gradient_steps=64,
+            seed=cfg.seed,
+            policy_kwargs=dict(
+                use_lattice=True,
+                use_expln=True,
+                log_std_init=1.0,
+                std_clip=(1e-3, 1),
+                expln_eps=1e-6,
+                clip_mean=None,
+                std_reg=1e-4
+        ),)
 
-    # else:
-    #     logger.info("[Worker] No pretrained worker model given/found. Training from scratch.")        
-    #     worker_model = SAC(
-    #         policy=LatticeSACPolicy,
-    #         env=worker_env,
-    #         device='cpu',
-    #         learning_rate=cfg.sac_lr,
-    #         tensorboard_log=os.path.join(cfg.logdir),
-    #         batch_size=cfg.sac_batch_size,
-    #         tau=cfg.sac_tau,
-    #         gamma=cfg.sac_gamma,
-    #         # action_noise=None,
-    #         # replay_buffer_class=None,
-    #         ent_coef="auto",
-    #         target_update_interval=1,
-    #         target_entropy="auto",
-    #         # use_sde=False,
-    #         # sde_sample_freq=1,
-    #         train_freq=64,
-    #         gradient_steps=64,
-    #         seed=cfg.seed,
-    #         policy_kwargs=dict(
-    #             use_lattice=True,
-    #             use_expln=True,
-    #             log_std_init=1.0,
-    #             std_clip=(1e-3, 1),
-    #             expln_eps=1e-6,
-    #             clip_mean=None,
-    #             std_reg=1e-4
-    #     ),)
+    else:
+        logger.info("[Worker] No pretrained worker model given/found. Training from scratch.")        
+        worker_model = SAC(
+            policy=LatticeSACPolicy,
+            env=worker_env,
+            device='cuda',
+            learning_rate=cfg.sac_lr,
+            tensorboard_log=os.path.join(cfg.logdir),
+            batch_size=cfg.sac_batch_size,
+            tau=cfg.sac_tau,
+            gamma=cfg.sac_gamma,
+            # action_noise=None,
+            # replay_buffer_class=None,
+            ent_coef="auto",
+            target_update_interval=1,
+            target_entropy="auto",
+            # use_sde=False,
+            # sde_sample_freq=1,
+            train_freq=64,
+            gradient_steps=64,
+            seed=cfg.seed,
+            policy_kwargs=dict(
+                use_lattice=True,
+                use_expln=True,
+                log_std_init=1.0,
+                std_clip=(1e-3, 1),
+                expln_eps=1e-6,
+                clip_mean=None,
+                std_reg=1e-4
+        ),)
 
-    # # ---- Worker evaluation ----
-    # eval_worker_env = build_worker_vec(cfg=cfg, num_envs=1)
+    # ---- Worker evaluation ----
+    eval_worker_env = build_worker_vec(cfg=cfg, num_envs=1)
 
-    # if LOAD_WORKER_ENV_PATH:
-    #     eval_worker_env = resume_vecnormalize_on_training_env(
-    #         eval_worker_env,
-    #         LOAD_WORKER_ENV_PATH,
-    #         training=False,
-    #         norm_reward=False,
-    #     )
+    if LOAD_WORKER_ENV_PATH:
+        eval_worker_env = resume_vecnormalize_on_training_env(
+            eval_worker_env,
+            LOAD_WORKER_ENV_PATH,
+            training=False,
+            norm_reward=False,
+        )
 
-    # if isinstance(eval_worker_env, VecNormalize):
-    #     eval_worker_env.training = False
-    #     eval_worker_env.norm_reward = False
+    if isinstance(eval_worker_env, VecNormalize):
+        eval_worker_env.training = False
+        eval_worker_env.norm_reward = False
 
-    # eval_worker_cb = EvalCallback(
-    #     eval_worker_env,
-    #     best_model_save_path=os.path.join(cfg.logdir, "best"),
-    #     log_path=os.path.join(cfg.logdir, "eval"),
-    #     eval_freq=int(cfg.eval_freq // cfg.num_envs),
-    #     n_eval_episodes=cfg.eval_episodes,
-    #     deterministic=True,
-    #     render=False,
-    # )
+    eval_worker_cb = EvalCallback(
+        eval_worker_env,
+        best_model_save_path=os.path.join(cfg.logdir, "best"),
+        log_path=os.path.join(cfg.logdir, "eval"),
+        eval_freq=int(cfg.eval_freq // cfg.num_envs),
+        n_eval_episodes=cfg.eval_episodes,
+        deterministic=True,
+        render=False,
+    )
 
-    # # ---- Worker video ---
-    # video_worker_cb = VideoCallback(
-    #     env_func=TableTennisWorker,
-    #     env_args={"config": cfg},
-    #     cfg=cfg,
-    #     predict_fn=make_predict_fn(worker_model),
-    # )
+    # ---- Worker video ---
+    video_worker_cb = VideoCallback(
+        env_func=TableTennisWorker,
+        env_args={"config": cfg},
+        cfg=cfg,
+        predict_fn=make_predict_fn(worker_model),
+    )
 
-    # logger.info("Starting WORKER training...")
-    # logger.info(f"Worker total timesteps: {worker_total_timesteps}")
+    logger.info("Starting WORKER training...")
+    logger.info(f"Worker total timesteps: {worker_total_timesteps}")
 
-    # worker_model.learn(
-    #     total_timesteps=worker_total_timesteps,
-    #     reset_num_timesteps=not worker_resumed,  # continue curves if resumed
-    #     callback=CallbackList([eval_worker_cb, info_cb, video_worker_cb]),
-    # )
+    worker_model.learn(
+        total_timesteps=worker_total_timesteps,
+        reset_num_timesteps=not worker_resumed,  # continue curves if resumed
+        callback=CallbackList([eval_worker_cb, info_cb, video_worker_cb]),
+    )
 
-    # # ---- Save worker to SAVE paths  ----
-    # worker_model.save(SAVE_WORKER_MODEL_PATH)
-    # if isinstance(worker_env, VecNormalize):
-    #     worker_env.save(SAVE_WORKER_ENV_PATH)
-    # else:
-    #     logger.warning("[Worker] Training env is not VecNormalize; skipping vecnormalize save.")
+    # ---- Save worker to SAVE paths  ----
+    worker_model.save(SAVE_WORKER_MODEL_PATH)
+    if isinstance(worker_env, VecNormalize):
+        worker_env.save(SAVE_WORKER_ENV_PATH)
+    else:
+        logger.warning("[Worker] Training env is not VecNormalize; skipping vecnormalize save.")
 
-    # logger.info(f"Saved WORKER model to: {SAVE_WORKER_MODEL_PATH}")
-    # logger.info(f"Saved WORKER VecNormalize to: {SAVE_WORKER_ENV_PATH}")
+    logger.info(f"Saved WORKER model to: {SAVE_WORKER_MODEL_PATH}")
+    logger.info(f"Saved WORKER VecNormalize to: {SAVE_WORKER_ENV_PATH}")
 
-    # worker_env.close()
-    # eval_worker_env.close()
+    worker_env.close()
+    eval_worker_env.close()
 
     # ==================================================
     # MANAGER
