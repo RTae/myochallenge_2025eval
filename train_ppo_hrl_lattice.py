@@ -12,6 +12,7 @@ from callbacks.infologger_callback import InfoLoggerCallback
 from callbacks.video_callback import VideoCallback
 from hrl.worker_env import TableTennisWorker
 from hrl.manager_env import TableTennisManager
+from hrl.noise_ann_cb import WorkerNoiseAnnealCallback
 from utils import make_predict_fn, prepare_experiment_directory, resume_vecnormalize_on_training_env
 from loguru import logger
 from torch import nn
@@ -103,9 +104,10 @@ def main():
         "n_epochs": cfg.ppo_epochs,
 
         # ---------------------------
-        # Learning Rate Scheduler
+        # Scheduler
         # ---------------------------
-        "learning_rate": lambda progress: cfg.ppo_lr * 0.5 * (1 + math.cos(math.pi * progress)),
+        "learning_rate": lambda p: cfg.ppo_lr * 0.5 * (1 + math.cos(math.pi * p)),
+        "clip_range": lambda p: cfg.ppo_clip_range * p,
 
         # ---------------------------
         # PPO Hyperparameters
@@ -198,6 +200,13 @@ def main():
         env_args={"config": cfg},
         cfg=cfg,
         predict_fn=make_predict_fn(worker_model),
+    )
+    
+    ann_worker_cb = WorkerNoiseAnnealCallback(
+        worker_env=worker_env,
+        check_freq=50_000 // cfg.num_envs,
+        log_every_steps=1_000_000,
+        verbose=1,
     )
 
     logger.info("Starting WORKER training...")
