@@ -47,16 +47,6 @@ class TableTennisWorker(CustomEnv):
     def __init__(self, config: Config):
         super().__init__(config)
 
-        # ==================================================
-        # Goal normalization
-        # ==================================================
-        self.goal_center = np.array(
-            [0.0, 0.0, 0.1, 0.0, 0.0, 0.45], dtype=np.float32
-        )
-        self.goal_half_range = np.array(
-            [0.6, 0.6, 0.5, 0.8, 0.5, 0.35], dtype=np.float32
-        )
-
         self.state_dim = 434
         self.goal_dim = 6
         self.observation_dim = self.state_dim + self.goal_dim
@@ -75,8 +65,6 @@ class TableTennisWorker(CustomEnv):
         self.goal_start_time: Optional[float] = None
 
         self.prev_reach_err: Optional[float] = None
-        self.prev_paddle_vel = None
-        self.prev_paddle_vel_obs = None
         self._prev_paddle_contact = False
         
         # ==================================================
@@ -246,12 +234,10 @@ class TableTennisWorker(CustomEnv):
     # Gym API
     # ==================================================
     def reset(self, seed=None, options=None):
-        obs, info = super().reset(seed=seed)
+        _, info = super().reset(seed=seed)
         obs_dict = self.env.unwrapped.obs_dict
 
         self._prev_paddle_contact = False
-        self.prev_paddle_vel = np.zeros(3, dtype=np.float32)
-        self.prev_paddle_vel_obs = None
 
         goal = self.predict_goal_from_state(obs_dict)
         self.set_goal(goal)
