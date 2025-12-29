@@ -41,13 +41,13 @@ class TableTennisWorker(CustomEnv):
         - target_paddle_normal (2)
         - target_time_to_plane (1)
 
-    Observation: 434 + 6 = 440
+    Observation: 428 + 6 = 434
     """
 
     def __init__(self, config: Config):
         super().__init__(config)
 
-        self.state_dim = 434
+        self.state_dim = 428
         self.goal_dim = 6
         self.observation_dim = self.state_dim + self.goal_dim
 
@@ -237,7 +237,7 @@ class TableTennisWorker(CustomEnv):
             self._flat(self.current_goal),
         ], axis=0)
         
-        assert obs.shape == (self.observation_dim,), "Invalid observation shape"
+        assert obs.shape == (self.observation_dim,), f"Invalid observation shape {obs.shape}, expected {self.observation_dim}"
 
         return obs
 
