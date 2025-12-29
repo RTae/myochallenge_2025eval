@@ -20,7 +20,7 @@ def main():
         env=env,
         verbose=1,
         tensorboard_log=os.path.join(cfg.logdir),
-        device='auto',
+        device='cuda',
         batch_size=32,
         n_steps=128,
         learning_rate=cfg.ppo_lr,
