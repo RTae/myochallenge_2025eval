@@ -102,18 +102,18 @@ def main():
         "max_grad_norm": cfg.ppo_max_grad_norm,
         "vf_coef": 0.835671,
         "n_epochs": cfg.ppo_epochs,
-        "use_sde": False,
+        "use_sde": True,
         "sde_sample_freq": 1,
         "clip_range_vf": cfg.ppo_clip_range,
         "seed": cfg.seed,
         "policy_kwargs": dict(
             use_lattice=True,
             use_expln=True,
+            full_std=True,
             ortho_init=False,
             log_std_init=0.0,
             std_clip=(1e-3, 10),
             expln_eps=1e-6,
-            full_std=False,
             std_reg=0.0,
         )
     }
