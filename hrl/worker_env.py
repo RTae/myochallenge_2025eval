@@ -94,6 +94,9 @@ class TableTennisWorker(CustomEnv):
 
         self.success_bonus = 10.0
         self.max_time = 3.0
+        
+        self.dt_min = 0.05
+        self.dt_max = 1.50
 
     # ==================================================
     # Curriculum hooks (called by callback)
@@ -109,6 +112,24 @@ class TableTennisWorker(CustomEnv):
 
     def set_allow_hard_success(self, flag: bool):
         self.allow_hard_success = bool(flag)
+        
+    # ==================================================
+    # Helpers
+    # ==================================================
+    def _pack_normal_xy(self, n):
+        if n[0] > 0:
+            n = -n
+        return float(n[0]), float(n[1])
+
+    def _unpack_normal_xy(self, nx, ny):
+        r2 = nx * nx + ny * ny
+        if r2 > 0.999:
+            s = 0.999 / np.sqrt(r2)
+            nx *= s
+            ny *= s
+        nz = np.sqrt(max(1.0 - nx * nx - ny * ny, 0.0))
+        n = np.array([nx, ny, nz], dtype=np.float32)
+        return safe_unit(n, np.array(OWD, dtype=np.float32))
 
     # ==================================================
     # Prediction
@@ -132,6 +153,51 @@ class TableTennisWorker(CustomEnv):
 
     def _norm_goal(self, g):
         return np.clip((g - self.goal_center) / self.goal_half_range, -1.0, 1.0)
+    
+    def _compute_dt(
+        self,
+        ball_pos: np.ndarray,
+        ball_vel: np.ndarray,
+        paddle_pos: np.ndarray,
+    ) -> float:
+        """
+        Robust time-to-paddle-plane estimator.
+
+        Returns a safe dt in [self.dt_min, self.dt_max].
+        """
+
+        # ------------------------------------------------
+        # Geometry (x-plane interception)
+        # ------------------------------------------------
+        dx = float(paddle_pos[0] - ball_pos[0])
+        vx = float(ball_vel[0])
+
+        # ------------------------------------------------
+        # Direction & speed checks
+        # ------------------------------------------------
+        # Ball must be moving toward paddle plane
+        moving_toward = (dx * vx) > 0.0
+
+        # Avoid division by tiny velocity
+        if abs(vx) < 1e-3 or not moving_toward:
+            # Ball is not coming toward paddle → "far future"
+            return float(self.dt_max)
+
+        # ------------------------------------------------
+        # Nominal time
+        # ------------------------------------------------
+        dt = dx / vx
+
+        # Numerical safety
+        if not np.isfinite(dt):
+            return float(self.dt_max)
+
+        dt = abs(dt)
+
+        # ------------------------------------------------
+        # Final clamp
+        # ------------------------------------------------
+        return float(np.clip(dt, self.dt_min, self.dt_max))
 
     def predict_goal_from_state(self, obs_dict):
         # --------------------------------------------------
@@ -446,201 +512,3 @@ class TableTennisWorker(CustomEnv):
         }
 
         return reward, hard_success, logs
-
-    # ==================================================
-    # Helpers
-    # ==================================================
-    def _pack_normal_xy(self, n):
-        if n[0] > 0:
-            n = -n
-        return float(n[0]), float(n[1])
-
-    def _unpack_normal_xy(self, nx, ny):
-        r2 = nx * nx + ny * ny
-        if r2 > 0.999:
-            s = 0.999 / np.sqrt(r2)
-            nx *= s
-            ny *= s
-        nz = np.sqrt(max(1.0 - nx * nx - ny * ny, 0.0))
-        n = np.array([nx, ny, nz], dtype=np.float32)
-        return safe_unit(n, np.array(OWD, dtype=np.float32))
-
-    # ------------------------------------------------
-    # Prediction wrapper
-    # ------------------------------------------------
-    def _predict(self, obs_dict):
-        pred_pos, paddle_ori_ideal = predict_ball_trajectory(
-            ball_pos=obs_dict["ball_pos"],
-            ball_vel=obs_dict["ball_vel"],
-            paddle_pos=obs_dict["paddle_pos"],
-        )
-        n_ideal = quat_to_paddle_normal(paddle_ori_ideal)
-        return pred_pos, n_ideal
-
-    # ------------------------------------------------
-    # Goal API
-    # ------------------------------------------------
-    def set_goal(self, goal_norm):
-        goal_norm = np.clip(goal_norm, -1.0, 1.0)
-        self.current_goal = self.goal_center + goal_norm * self.goal_half_range
-        self.goal_start_time = float(self.env.unwrapped.obs_dict["time"])
-
-    def _norm_goal(self, g):
-        return np.clip((g - self.goal_center) / self.goal_half_range, -1.0, 1.0)
-
-    def _sample_goal(self, obs_dict):
-        pred_pos, n_ideal = self._predict(obs_dict)
-        dt = self._compute_dt(
-            obs_dict["ball_pos"],
-            obs_dict["ball_vel"],
-            obs_dict["paddle_pos"],
-        )
-
-        pos_noise = np.random.normal(0, self.pos_noise_scale)
-        n_noise = np.random.normal(0, self.normal_noise_scale, size=3)
-        time_noise = np.random.normal(0, self.time_noise_scale)
-
-        n = safe_unit(n_ideal + n_noise, np.array(OWD, dtype=np.float32))
-        nx, ny = self._pack_normal_xy(n)
-
-        goal_phys = np.array(
-            [
-                pred_pos[0] + pos_noise[0],
-                pred_pos[1] + pos_noise[1],
-                pred_pos[2] + pos_noise[2],
-                nx,
-                ny,
-                np.clip(dt + time_noise, self.dt_min, self.dt_max),
-            ],
-            dtype=np.float32,
-        )
-
-        goal_phys = np.clip(
-            goal_phys,
-            self.goal_center - self.goal_half_range,
-            self.goal_center + self.goal_half_range,
-        )
-        return self._norm_goal(goal_phys)
-
-    def predict_goal_from_state(self, obs_dict):
-        pred_pos, n_ideal = self._predict(obs_dict)
-        dt = self._compute_dt(
-            obs_dict["ball_pos"],
-            obs_dict["ball_vel"],
-            obs_dict["paddle_pos"],
-        )
-        nx, ny = self._pack_normal_xy(n_ideal)
-        goal_phys = np.array(
-            [pred_pos[0], pred_pos[1], pred_pos[2], nx, ny, dt],
-            dtype=np.float32,
-        )
-        return self._norm_goal(goal_phys)
-
-    # ------------------------------------------------
-    # Gym API
-    # ------------------------------------------------
-    def reset(self, seed=None, options=None):
-        obs, info = super().reset(seed=seed)
-        obs_dict = self.env.unwrapped.obs_dict
-
-        self._prev_paddle_contact = False
-        self.set_goal(self._sample_goal(obs_dict))
-        self.prev_reach_err = float(np.linalg.norm(obs_dict["reach_err"]))
-
-        return self._build_obs(obs_dict), info
-
-    def step(self, action):
-        obs, base_reward, terminated, truncated, info = super().step(action)
-        obs_dict = info["obs_dict"]
-
-        hit = self._detect_paddle_hit(obs_dict)
-        reward, success, reach_err, vel_norm, time_err, cos_sim = self._compute_reward(obs_dict, hit)
-
-        reward += 0.05 * base_reward
-        self.prev_reach_err = reach_err
-
-        info.update(
-            {
-                "worker/reach_err": reach_err,
-                "worker/vel_norm": vel_norm,
-                "worker/time_err": time_err,
-                "worker/cos_sim": cos_sim,
-                "worker/dt_target": float(self.current_goal[5]),
-                "worker/is_goal_success": bool(success),
-                "worker/is_paddle_hit": bool(hit),
-            }
-        )
-
-        return self._build_obs(obs_dict), float(reward), terminated, truncated, info
-
-    # ------------------------------------------------
-    # Observation
-    # ------------------------------------------------
-    def _build_obs(self, obs_dict):
-        reach_err = np.asarray(obs_dict["reach_err"], dtype=np.float32) / 2.0
-        ball_vel  = np.asarray(obs_dict["ball_vel"], dtype=np.float32) / 5.0
-
-        paddle_n = quat_to_paddle_normal(obs_dict["paddle_ori"])
-        paddle_n /= np.linalg.norm(paddle_n) + 1e-8
-
-        ball_xy = np.asarray(obs_dict["ball_pos"][:2], dtype=np.float32) / 2.0
-        t = np.asarray([float(obs_dict["time"])], dtype=np.float32) / self.max_time
-
-        state = np.hstack([reach_err, ball_vel, paddle_n, ball_xy, t])
-        obs = np.hstack([state, self.current_goal])
-        return np.clip(obs, -3.0, 3.0)
-
-    # ------------------------------------------------
-    # Reward
-    # ------------------------------------------------
-    def _compute_reward(self, obs_dict, hit):
-        reach_err = float(np.linalg.norm(obs_dict["reach_err"]))
-        reach_err_n = reach_err / 2.0
-        vel_norm = float(np.linalg.norm(obs_dict["paddle_vel"]))
-
-        t_now = float(obs_dict["time"])
-        target_time = self.goal_start_time + self.current_goal[5]
-        time_err = min(abs(t_now - target_time), 1.0)
-
-        paddle_n = quat_to_paddle_normal(obs_dict["paddle_ori"])
-        paddle_n /= np.linalg.norm(paddle_n) + 1e-8
-        goal_n = self._unpack_normal_xy(self.current_goal[3], self.current_goal[4])
-        cos_sim = float(np.clip(np.dot(paddle_n, goal_n), -1.0, 1.0))
-
-        reach_w = np.exp(-(time_err / 0.18) ** 2)          
-        align_w = 0.6 * np.exp(-3.0 * reach_err_n)
-
-        vel_w = 0.2 + 0.8 * reach_w
-
-        reward = (
-            reach_w * (
-                1.2 * np.exp(-2.0 * reach_err_n)
-                + 0.8 * (1.0 - np.clip(reach_err_n, 0, 1))
-                + align_w * cos_sim
-            )
-            - 0.2 * vel_w * vel_norm
-            - 0.3 * time_err
-        )
-
-        success = (
-            reach_err < self.reach_thr
-            and vel_norm < self.vel_thr
-            and time_err < self.time_thr
-            and cos_sim > self.paddle_ori_thr
-        )
-
-        if success:
-            reward += self.success_bonus
-        if hit:
-            reward += 0.3
-
-        return reward, success, reach_err, vel_norm, time_err, cos_sim
-
-    # ------------------------------------------------
-    # Hit detection
-    # ------------------------------------------------
-    def _detect_paddle_hit(self, obs_dict):
-        touching = np.asarray(obs_dict["touching_info"], dtype=np.float32)
-        hit = bool(touching[0] > 0.5 and not self._prev_paddle_contact)
-        self._prev_paddle_contact = touching[0] > 0.5
-        return hit
