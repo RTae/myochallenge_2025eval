@@ -146,8 +146,8 @@ def main():
             # ===== Pi & V Network Sizes =====
             net_arch=[
                 dict(
-                    pi=[256, 256],   # policy layers
-                    vf=[256, 256],   # value layers
+                    pi=[512, 512],   # policy layers
+                    vf=[512, 512],   # value layers
                 )
             ],
             activation_fn=nn.Tanh,  # smooth control

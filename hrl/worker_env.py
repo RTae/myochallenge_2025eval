@@ -29,7 +29,7 @@ class TableTennisWorker(CustomEnv):
         - paddle_pos (3)
         - paddle_vel (3)
         - paddle_ori (4)
-        - padde_ori_err (4)
+        - paddle_ori_err (4)
         - reach_err (3)
         - palm_pos (3)
         - palm_err (3)
@@ -203,8 +203,11 @@ class TableTennisWorker(CustomEnv):
         return goal_phys
     
     def _build_obs(self, obs_dict):
+        # Bound a time in each tral
+        time = obs_dict["time"] - self.goal_start_time
+        
         obs = np.concatenate([
-            np.array([obs_dict["time"]], dtype=np.float32),
+            np.array([time], dtype=np.float32),
 
             obs_dict["pelvis_pos"],
             obs_dict["body_qpos"],
@@ -252,8 +255,9 @@ class TableTennisWorker(CustomEnv):
     def step(self, action):
         _, base_reward, terminated, truncated, info = super().step(action)
         obs_dict = info["obs_dict"]
+        rwd_dict = info["rwd_dict"]
 
-        reward, success, logs = self._compute_reward(obs_dict)
+        reward, _, logs = self._compute_reward(obs_dict, rwd_dict)
         reward += 0.05 * base_reward
 
         info.update(logs)
@@ -306,7 +310,7 @@ class TableTennisWorker(CustomEnv):
         # palm_dist is distance between palm and paddle (high -> weird posture)
         palm_dist = float(rwd_dict.get("palm_dist", 0.0))
         # penalize large palm-to-paddle gap
-        reward -= 0.6 * palm_dist
+        reward -= 0.3 * palm_dist
 
         # --------------------------------------------------
         # TORSO UPRIGHT ENCOURAGEMENT
