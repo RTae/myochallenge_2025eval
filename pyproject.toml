@@ -30,6 +30,7 @@ dependencies = [
     "torch>=2.8.0",
     "typer>=0.19.2",
     "deprl>=0.3.2",
+    "ipykernel>=7.1.0",
 ]
 
 [[tool.uv.index]] 

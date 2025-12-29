@@ -28,10 +28,10 @@ from lattice.distributions import (
     LatticeNoiseDistribution,
     LatticeStateDependentNoiseDistribution,
 )
-from sb3_contrib.common.recurrent.policies import RecurrentActorCriticPolicy
+from stable_baselines3.common.policies import ActorCriticPolicy
 
 
-class LatticeRecurrentActorCriticPolicy(RecurrentActorCriticPolicy):
+class LatticeActorCriticPolicy(ActorCriticPolicy):
     def __init__(
         self,
         observation_space,
