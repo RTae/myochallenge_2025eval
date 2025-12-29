@@ -252,7 +252,7 @@ class TableTennisWorker(CustomEnv):
         goal_n = self._unpack_normal_xy(self.current_goal[3], self.current_goal[4])
         cos_sim = float(np.clip(np.dot(paddle_n, goal_n), -1.0, 1.0))
 
-        reach_w = np.exp(-(time_err / 0.18) ** 2)                 # try 0.12/0.18/0.25
+        reach_w = np.exp(-(time_err / 0.18) ** 2)          
         align_w = 0.6 * np.exp(-3.0 * reach_err_n)
 
         vel_w = 0.2 + 0.8 * reach_w
