@@ -86,72 +86,50 @@ def main():
 
     # ---- Build model: load if provided else create new ----
     worker_resumed = bool(LOAD_WORKER_MODEL_PATH and os.path.exists(LOAD_WORKER_MODEL_PATH))
+    
+    worker_args = {
+        "env": worker_env,
+        "verbose": 1,
+        "tensorboard_log": os.path.join(cfg.logdir),
+        "device": 'cuda',
+        "batch_size": 32,
+        "n_steps": 128,
+        "learning_rate": cfg.ppo_lr,
+        "ent_coef": 3.62109e-06,
+        "clip_range": cfg.ppo_clip_range,
+        "gamma": cfg.ppo_gamma,
+        "gae_lambda": cfg.ppo_lambda,
+        "max_grad_norm": cfg.ppo_max_grad_norm,
+        "vf_coef": 0.835671,
+        "n_epochs": cfg.ppo_epochs,
+        "use_sde": False,
+        "sde_sample_freq": 1,
+        "clip_range_vf": cfg.ppo_clip_range,
+        "seed": cfg.seed,
+        "policy_kwargs": dict(
+            use_lattice=True,
+            use_expln=True,
+            ortho_init=False,
+            log_std_init=0.0,
+            std_clip=(1e-3, 10),
+            expln_eps=1e-6,
+            full_std=False,
+            std_reg=0.0,
+        )
+    }
 
     if worker_resumed:
         logger.info(f"[Worker] Loading pretrained model from: {LOAD_WORKER_MODEL_PATH}")
         worker_model = RecurrentPPO.load(
             LOAD_WORKER_MODEL_PATH,
             policy=LatticeRecurrentActorCriticPolicy, 
-            env=worker_env,
-            verbose=1,
-            tensorboard_log=os.path.join(cfg.logdir),
-            device='cuda',
-            batch_size=32,
-            n_steps=128,
-            learning_rate=cfg.ppo_lr,
-            ent_coef=3.62109e-06,
-            clip_range=cfg.ppo_clip_range,
-            gamma=cfg.ppo_gamma,
-            gae_lambda=cfg.ppo_lambda,
-            max_grad_norm=cfg.ppo_max_grad_norm,
-            vf_coef=0.835671,
-            n_epochs=cfg.ppo_epochs,
-            use_sde=False,
-            sde_sample_freq=1,
-            clip_range_vf=cfg.ppo_clip_range,
-            seed=cfg.seed,
-            policy_kwargs=dict(
-                use_lattice=True,
-                use_expln=True,
-                ortho_init=False,
-                log_std_init=0.0,
-                std_clip=(1e-3, 10),
-                expln_eps=1e-6,
-                full_std=False,
-                std_reg=0.0,
-            )
+            **worker_args
         )
     else:
         logger.info("[Worker] No pretrained worker model given/found. Training from scratch.")        
-        worker_model = RecurrentPPO(policy=LatticeRecurrentActorCriticPolicy, 
-            env=worker_env,
-            verbose=1,
-            tensorboard_log=os.path.join(cfg.logdir),
-            device='cuda',
-            batch_size=32,
-            n_steps=128,
-            learning_rate=cfg.ppo_lr,
-            ent_coef=3.62109e-06,
-            clip_range=cfg.ppo_clip_range,
-            gamma=cfg.ppo_gamma,
-            gae_lambda=cfg.ppo_lambda,
-            max_grad_norm=cfg.ppo_max_grad_norm,
-            vf_coef=0.835671,
-            n_epochs=cfg.ppo_epochs,
-            use_sde=False,
-            sde_sample_freq=1,
-            clip_range_vf=cfg.ppo_clip_range,
-            seed=cfg.seed,
-            policy_kwargs=dict(
-                use_lattice=True,
-                use_expln=True,
-                ortho_init=False,
-                log_std_init=0.0,
-                std_clip=(1e-3, 10),
-                expln_eps=1e-6,
-                full_std=False,
-                std_reg=0.0,
-            )
+        worker_model = RecurrentPPO(
+            policy=LatticeRecurrentActorCriticPolicy,
+            **worker_args
         )
 
     # ---- Worker evaluation ----
@@ -235,44 +213,36 @@ def main():
     )
 
     manager_resumed = bool(LOAD_MANAGER_MODEL_PATH and os.path.exists(LOAD_MANAGER_MODEL_PATH))
+    
+    manager_args = {
+        "device":"cpu",
+        "verbose":1,
+        "tensorboard_log":cfg.logdir,
+        "n_steps":128,
+        "batch_size":256,
+        "learning_rate":1e-4,
+        "gamma":0.995,
+        "gae_lambda":0.97,
+        "clip_range":cfg.ppo_clip_range,
+        "n_epochs":cfg.ppo_epochs,
+        "max_grad_norm":cfg.ppo_max_grad_norm,
+        "policy_kwargs":dict(net_arch=[256, 256]),
+        "seed":cfg.seed,
+    }
 
     if manager_resumed:
         logger.info(f"[Manager] Loading pretrained model from: {LOAD_MANAGER_MODEL_PATH}")
         manager_model = PPO.load(
             LOAD_MANAGER_MODEL_PATH,
             env=manager_env,
-            device="cpu",
-            verbose=1,
-            tensorboard_log=cfg.logdir,
-            n_steps=128,
-            batch_size=256,
-            learning_rate=1e-4,
-            gamma=0.995,
-            gae_lambda=0.97,
-            clip_range=cfg.ppo_clip_range,
-            n_epochs=cfg.ppo_epochs,
-            max_grad_norm=cfg.ppo_max_grad_norm,
-            policy_kwargs=dict(net_arch=[256, 256]),
-            seed=cfg.seed,
+            **manager_args
         )
     else:
         logger.info("[Manager] No pretrained manager model given/found. Training from scratch.")
         manager_model = PPO(
             "MlpPolicy",
             manager_env,
-            device="cpu",
-            verbose=1,
-            tensorboard_log=cfg.logdir,
-            n_steps=128,
-            batch_size=256,
-            learning_rate=1e-4,
-            gamma=0.995,
-            gae_lambda=0.97,
-            clip_range=cfg.ppo_clip_range,
-            n_epochs=cfg.ppo_epochs,
-            max_grad_norm=cfg.ppo_max_grad_norm,
-            policy_kwargs=dict(net_arch=[256, 256]),
-            seed=cfg.seed,
+            **manager_args
         )
 
     # ---- Manager evaluation ----
