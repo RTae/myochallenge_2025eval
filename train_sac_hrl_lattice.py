@@ -64,10 +64,8 @@ def main():
     os.makedirs(WORKER_DIR, exist_ok=True)
     os.makedirs(MANAGER_DIR, exist_ok=True)
 
-    # SAVE_WORKER_MODEL_PATH = os.path.join(WORKER_DIR, "worker_model.pkl")
-    # SAVE_WORKER_ENV_PATH = os.path.join(WORKER_DIR, "vecnormalize.pkl")
-    SAVE_WORKER_MODEL_PATH: Optional[str] = "logs/exp16/worker/worker_model.pkl"
-    SAVE_WORKER_ENV_PATH: Optional[str] = "logs/exp16/worker/vecnormalize.pkl"
+    SAVE_WORKER_MODEL_PATH = os.path.join(WORKER_DIR, "worker_model.pkl")
+    SAVE_WORKER_ENV_PATH = os.path.join(WORKER_DIR, "vecnormalize.pkl")
     SAVE_MANAGER_MODEL_PATH = os.path.join(MANAGER_DIR, "manager_model.pkl")
 
     info_cb = InfoLoggerCallback()
