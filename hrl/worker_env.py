@@ -201,37 +201,45 @@ class TableTennisWorker(CustomEnv):
             )
 
         return goal_phys
-    
-    def _build_obs(self, obs_dict):
-        # Bound a time in each tral
-        time = obs_dict["time"] - self.goal_start_time
         
+    def _flat(self, x):
+        return np.asarray(x, dtype=np.float32).reshape(-1)
+
+    def _build_obs(self, obs_dict):
+        # time relative to goal start
+        time = np.array(
+            [obs_dict["time"] - self.goal_start_time],
+            dtype=np.float32,
+        )
+
         obs = np.concatenate([
-            np.array([time], dtype=np.float32),
+            self._flat(time),
 
-            obs_dict["pelvis_pos"],
-            obs_dict["body_qpos"],
-            obs_dict["body_qvel"],
+            self._flat(obs_dict["pelvis_pos"]),
+            self._flat(obs_dict["body_qpos"]),
+            self._flat(obs_dict["body_qvel"]),
 
-            obs_dict["ball_pos"],
-            obs_dict["ball_vel"],
+            self._flat(obs_dict["ball_pos"]),
+            self._flat(obs_dict["ball_vel"]),
 
-            obs_dict["paddle_pos"],
-            obs_dict["paddle_vel"],
-            obs_dict["paddle_ori"],
-            obs_dict["padde_ori_err"],
+            self._flat(obs_dict["paddle_pos"]),
+            self._flat(obs_dict["paddle_vel"]),
+            self._flat(obs_dict["paddle_ori"]),
+            self._flat(obs_dict["padde_ori_err"]),
 
-            obs_dict["reach_err"],
-            obs_dict["palm_pos"],
-            obs_dict["palm_err"],
+            self._flat(obs_dict["reach_err"]),
+            self._flat(obs_dict["palm_pos"]),
+            self._flat(obs_dict["palm_err"]),
 
-            obs_dict["touching_info"],
-            obs_dict["act"],
+            self._flat(obs_dict["touching_info"]),
+            self._flat(obs_dict["act"]),
 
-            self.current_goal,
+            self._flat(self.current_goal),
         ], axis=0)
+        
+        assert obs.shape == (self.observation_dim,), "Invalid observation shape"
 
-        return obs.astype(np.float32)
+        return obs
 
     # ==================================================
     # Gym API
