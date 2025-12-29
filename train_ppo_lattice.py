@@ -16,7 +16,8 @@ def main():
     prepare_experiment_directory(cfg)
             
     env = create_default_env(cfg, num_envs=cfg.num_envs)
-    model = RecurrentPPO(policy=LatticeRecurrentActorCriticPolicy, 
+    model = RecurrentPPO(
+        policy=LatticeRecurrentActorCriticPolicy, 
         env=env,
         verbose=1,
         tensorboard_log=os.path.join(cfg.logdir),

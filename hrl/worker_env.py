@@ -420,9 +420,9 @@ class TableTennisWorker(CustomEnv):
         reward += 0.25 * vel_gate * np.exp(-safe_impulse ** 2)
 
         # ==================================================
-        # HARD impulse penalty when close (CRITICAL FIX)
+        # HARD impulse penalty when close
         # ==================================================
-        close_time_gate = float(np.exp(-3.0 * time_err))  # ~1 when on-time, small when off-time
+        close_time_gate = float(np.exp(-3.0 * time_err))
 
         close_gate = np.exp(-10.0 * reach_err)
         reward -= close_gate * close_time_gate * 0.6 * safe_impulse
