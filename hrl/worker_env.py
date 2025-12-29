@@ -208,7 +208,7 @@ class TableTennisWorker(CustomEnv):
         # n_ideal : ideal paddle normal
 
         # --------------------------------------------------
-        # 2) Time-to-contact (ROBUST + SAFE)
+        # 2) Time-to-contact
         # --------------------------------------------------
         dx = float(pred_pos[0] - obs_dict["ball_pos"][0])
         vx = float(obs_dict["ball_vel"][0])
