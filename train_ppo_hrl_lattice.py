@@ -156,8 +156,11 @@ def main():
     }
     
     # Log hyperparameters
+    logger.info("#"*100)
+    logger.info("Worker hyperparameters:")
+    logger.info("#"*100)
     for k, v in worker_args.items():
-        logger.info(f"[Worker] Hyperparameter: {k} = {v}")
+        logger.info(f"{k} = {v}")
 
     if worker_resumed:
         logger.info(f"[Worker] Loading pretrained model from: {LOAD_WORKER_MODEL_PATH}")
@@ -260,10 +263,6 @@ def main():
         max_episode_steps=cfg.episode_len,
     )
     
-    # Log hyperparameters
-    for k, v in manager_args.items():
-        logger.info(f"[Manager] Hyperparameter: {k} = {v}")
-
     manager_resumed = bool(LOAD_MANAGER_MODEL_PATH and os.path.exists(LOAD_MANAGER_MODEL_PATH))
     
     manager_args = {
@@ -281,6 +280,13 @@ def main():
         "policy_kwargs":dict(net_arch=[256, 256]),
         "seed":cfg.seed,
     }
+    
+    logger.info("#"*100)
+    logger.info("Manager hyperparameters:")
+    logger.info("#"*100)
+    for k, v in manager_args.items():
+        logger.info(f"{k} = {v}")
+
 
     if manager_resumed:
         logger.info(f"[Manager] Loading pretrained model from: {LOAD_MANAGER_MODEL_PATH}")

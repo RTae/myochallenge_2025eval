@@ -357,7 +357,7 @@ class TableTennisWorker(CustomEnv):
         reward += 0.4 * torso_up
 
         # ==================================================
-        # MOTION SMOOTHNESS (ONLY NEAR CONTACT WINDOW)
+        # MOTION SMOOTHNESS
         # ==================================================
         paddle_vel = obs_dict["paddle_vel"]
         v_norm = float(np.linalg.norm(paddle_vel))
@@ -431,7 +431,7 @@ class TableTennisWorker(CustomEnv):
             "ori_term": ori_term,
             "time_err": time_err,
             "dt": dt,
-            "palm_dist": palm_dist,
+            "palm_dist": palm_closeness,
             "torso_up": torso_up,
             "paddle_speed": v_norm,
             "env_solved": float(env_solved),
