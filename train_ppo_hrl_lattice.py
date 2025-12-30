@@ -154,6 +154,10 @@ def main():
             activation_fn=nn.Tanh,  # smooth control
         ),
     }
+    
+    # Log hyperparameters
+    for k, v in worker_args.items():
+        logger.info(f"[Worker] Hyperparameter: {k} = {v}")
 
     if worker_resumed:
         logger.info(f"[Worker] Loading pretrained model from: {LOAD_WORKER_MODEL_PATH}")
