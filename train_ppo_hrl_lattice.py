@@ -259,6 +259,10 @@ def main():
         decision_interval=5,
         max_episode_steps=cfg.episode_len,
     )
+    
+    # Log hyperparameters
+    for k, v in manager_args.items():
+        logger.info(f"[Manager] Hyperparameter: {k} = {v}")
 
     manager_resumed = bool(LOAD_MANAGER_MODEL_PATH and os.path.exists(LOAD_MANAGER_MODEL_PATH))
     
