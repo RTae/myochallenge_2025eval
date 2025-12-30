@@ -90,9 +90,6 @@ class TableTennisWorker(CustomEnv):
         self.time_thr = self.time_thr_base
         self.paddle_ori_thr = self.paddle_ori_thr_base
 
-        self.success_bonus = 10.0
-        self.max_time = 3.0
-
     # ==================================================
     # Curriculum hooks (called by callback)
     # ==================================================
@@ -295,13 +292,13 @@ class TableTennisWorker(CustomEnv):
         reward = 0.0
 
         # --------------------------------------------------
-        # APPROACH (PRIMARY SIGNAL)
+        # APPROACH (PRIMARY SHAPING)
         # --------------------------------------------------
-        reward += 2.0 * np.clip(reach_delta, -0.05, 0.05)
-        reward += 1.0 * np.exp(-3.0 * reach_err)
+        reward += 1.2 * np.clip(reach_delta, -0.05, 0.05)
+        reward += 0.6 * np.exp(-3.0 * reach_err)
 
         if reach_err > 0.25:
-            reward += 0.4 * np.linalg.norm(obs_dict["paddle_vel"])
+            reward += 0.25 * np.linalg.norm(obs_dict["paddle_vel"])
 
         # ==================================================
         # ORIENTATION
@@ -313,61 +310,54 @@ class TableTennisWorker(CustomEnv):
         )
 
         cos_sim = float(np.clip(np.dot(paddle_n, goal_n), 0.0, 1.0))
-        reward += 0.6 * cos_sim * np.exp(-2.0 * reach_err)
+        reward += 0.4 * cos_sim * np.exp(-2.0 * reach_err)
 
         # ==================================================
-        # TIMING (SIMPLE + STABLE)
+        # TIMING
         # ==================================================
         dt = self.goal_start_time + self.current_goal[5] - obs_dict["time"]
 
-        # reward being close to correct time
-        reward += 0.5 * np.exp(-4.0 * abs(dt))
-
-        # punish lateness only
+        reward += 0.3 * np.exp(-4.0 * abs(dt))
         if dt < 0.0:
-            reward -= 1.0 * abs(dt)
+            reward -= 0.6 * abs(dt)
 
         # ==================================================
         # POSTURE
         # ==================================================
-        palm_dist = rwd_dict.get("palm_dist", 0.0)
-        reward -= 0.3 * float(palm_dist)
-        torso_up = rwd_dict.get("torso_up", 0.0)
-        reward += 0.4 * float(torso_up)
+        reward -= 0.2 * float(rwd_dict.get("palm_dist", 0.0))
+        reward += 0.25 * float(rwd_dict.get("torso_up", 0.0))
 
         # ==================================================
-        # CONTACT
+        # CONTACT EVENT (KEY SPARSE SIGNAL)
         # ==================================================
         touching = float(obs_dict["touching_info"][0]) > 0.5
         v_norm = float(np.linalg.norm(obs_dict["paddle_vel"]))
         is_contact = False
+
         if touching and not self._prev_paddle_contact:
-            if dt >= 0.0 and cos_sim > 0.6 and v_norm < 0.6:
-                reward += 10
+            if dt >= -0.05 and cos_sim > 0.6 and v_norm < 0.6:
+                reward += 2.5
                 is_contact = True
             else:
-                reward -= 1.0
+                reward -= 0.8
 
         self._prev_paddle_contact = touching
 
         # ==================================================
-        # ENV SUCCESS
+        # ENV SUCCESS (TERMINAL)
         # ==================================================
-        env_solved = rwd_dict.get("solved", False)
-        if bool(env_solved):
-            reward += 100.0
+        env_solved = bool(rwd_dict.get("solved", False))
+        if env_solved:
+            reward += 18.0
 
         # ==================================================
-        # GOAL SUCCESS
+        # GOAL SUCCESS (LOG ONLY)
         # ==================================================
-        success = (
+        goal_success = (
             reach_err < self.reach_thr
             and 0.0 <= dt <= self.time_thr
             and cos_sim > self.paddle_ori_thr
         )
-
-        if success:
-            reward += self.success_bonus
 
         # ==================================================
         # LOGS
@@ -377,12 +367,10 @@ class TableTennisWorker(CustomEnv):
             "reach_delta": reach_delta,
             "cos_sim": cos_sim,
             "dt": dt,
-            "palm_dist": palm_dist,
-            "torso_up": torso_up,
             "paddle_speed": v_norm,
             "is_contact": float(is_contact),
             "is_env_success": float(env_solved),
-            "is_goal_success": float(success),
+            "is_goal_success": float(goal_success),  # metric only
         }
 
-        return float(reward), success, logs
+        return float(reward), False, logs
