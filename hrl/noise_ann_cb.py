@@ -50,7 +50,7 @@ class WorkerNoiseAnnealCallback(BaseCallback):
         infos = self.locals.get("infos", [])
         if infos:
             soft_successes = [
-                float(info.get("is_goal_soft_success", 0.0))
+                float(info.get("is_goal_success", 0.0))
                 for info in infos
             ]
             mean_soft = float(np.mean(soft_successes))
