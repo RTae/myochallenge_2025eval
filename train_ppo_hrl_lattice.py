@@ -86,7 +86,7 @@ def main():
 
     # ---- Build model: load if provided else create new ----
     worker_resumed = bool(LOAD_WORKER_MODEL_PATH and os.path.exists(LOAD_WORKER_MODEL_PATH))
-    
+
     worker_args = {
         # ---------------------------
         # Env + VecNormalize
@@ -99,7 +99,7 @@ def main():
         # ---------------------------
         # PPO Batch & Rollout Settings
         # ---------------------------
-        "batch_size": 512,
+        "batch_size": 256,
         "n_steps": 128,
         "n_epochs": cfg.ppo_epochs,
 
