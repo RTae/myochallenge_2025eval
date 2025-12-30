@@ -287,7 +287,6 @@ def main():
     for k, v in manager_args.items():
         logger.info(f"{k} = {v}")
 
-
     if manager_resumed:
         logger.info(f"[Manager] Loading pretrained model from: {LOAD_MANAGER_MODEL_PATH}")
         manager_model = PPO.load(
