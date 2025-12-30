@@ -324,15 +324,18 @@ class TableTennisWorker(CustomEnv):
         # ==================================================
         # POSTURE
         # ==================================================
-        plam_dist = rwd_dict.get("palm_dist", 0.0)
+        palm_dist = rwd_dict.get("palm_dist", 0.0)
         torso_up = rwd_dict.get("torso_up", 0.0)
-        reward -= 0.2 * float(plam_dist)
+        reward -= 0.2 * float(palm_dist)
         reward += 0.25 * float(torso_up)
 
         # ==================================================
-        # CONTACT EVENT (KEY SPARSE SIGNAL)
+        # CONTACT + RULE PENALTIES
         # ==================================================
-        touching = float(obs_dict["touching_info"][0]) > 0.5
+        touch_vec = obs_dict["touching_info"]
+
+        paddle_hit   = touch_vec[0] > 0
+
         v_norm = float(np.linalg.norm(obs_dict["paddle_vel"]))
         is_contact = False
 
@@ -342,16 +345,12 @@ class TableTennisWorker(CustomEnv):
             and cos_sim > self.paddle_ori_thr
         )
 
-        if touching and not self._prev_paddle_contact:
+        if paddle_hit and not self._prev_paddle_contact:
             if goal_aligned and v_norm < 0.6:
-                # GOOD table-tennis hit
                 reward += 2.5
                 is_contact = True
-            else:
-                # Penalize sloppy or mistimed hits
-                reward -= 1.0
 
-        self._prev_paddle_contact = touching
+        self._prev_paddle_contact = paddle_hit
 
         # ==================================================
         # ENV SUCCESS (TERMINAL)
@@ -369,7 +368,7 @@ class TableTennisWorker(CustomEnv):
             "cos_sim": cos_sim,
             "dt": dt,
             "paddle_speed": v_norm,
-            "palm_dist": float(plam_dist),
+            "palm_dist": float(palm_dist),
             "torso_up": float(torso_up),
             "is_contact": float(is_contact),
             "is_goal_success": float(goal_aligned),
