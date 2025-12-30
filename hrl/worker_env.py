@@ -343,7 +343,7 @@ class TableTennisWorker(CustomEnv):
         is_contact = False
         if touching and not self._prev_paddle_contact:
             if dt >= 0.0 and cos_sim > 0.6 and v_norm < 0.6:
-                reward += 2.0
+                reward += 10
                 is_contact = True
             else:
                 reward -= 1.0
@@ -351,11 +351,11 @@ class TableTennisWorker(CustomEnv):
         self._prev_paddle_contact = touching
 
         # ==================================================
-        # ENV SUCCESS (SPARSE)
+        # ENV SUCCESS
         # ==================================================
         env_solved = rwd_dict.get("solved", False)
         if bool(env_solved):
-            reward += 6.0
+            reward += 100.0
 
         # ==================================================
         # GOAL SUCCESS
