@@ -395,7 +395,7 @@ class TableTennisWorker(CustomEnv):
             env_solved
             and touching
             and not self._prev_paddle_contact
-            and dt > -self.time_thr
+            and 0.0 <= dt <= self.time_thr
             and ori_term > self.paddle_ori_thr
             and v_norm < 0.6
         ):
@@ -406,9 +406,10 @@ class TableTennisWorker(CustomEnv):
         # ==================================================
         # GOAL SUCCESS
         # ==================================================
+        # Reach within threshold, at correct time, good orientation
         success = (
             reach_err < self.reach_thr
-            and dt > -self.time_thr
+            and 0.0 <= dt <= self.time_thr
             and ori_term > self.paddle_ori_thr
         )
 
