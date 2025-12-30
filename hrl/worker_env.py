@@ -77,8 +77,11 @@ class TableTennisWorker(CustomEnv):
         # Success thresholds (curriculum-controlled)
         # ==================================================
         self.reach_thr_base = 0.25
-        self.time_thr_base = 0.40
-        self.paddle_ori_thr_base = 0.73
+        self.reach_max_delta = 0.15
+        self.time_thr_base = 0.35
+        self.time_max_delta = 0.15
+        self.paddle_ori_thr_base = 0.70
+        self.paddle_ori_max_delta = 0.25
 
         self.reach_thr = self.reach_thr_base
         self.time_thr = self.time_thr_base
@@ -97,10 +100,16 @@ class TableTennisWorker(CustomEnv):
         self.goal_noise_scale = float(np.clip(scale, 0.0, 0.2))
 
     def set_progress(self, progress: float):
-        self.progress = float(np.clip(progress, 0.0, 1.0))
-        self.reach_thr = self.reach_thr_base - 0.10 * progress
-        self.time_thr = self.time_thr_base - 0.20 * progress
-        self.paddle_ori_thr = self.paddle_ori_thr_base + 0.25 * progress
+        p = float(np.clip(progress, 0.0, 1.0))
+
+        self.reach_thr = self.reach_thr_base - self.reach_max_delta * p
+        self.time_thr  = self.time_thr_base  - self.time_max_delta  * p
+
+        # Angle precision ramps late
+        angle_p = p ** 1.5
+        self.paddle_ori_thr = (
+            self.paddle_ori_thr_base + self.paddle_ori_max_delta * angle_p
+        )
         
     def get_progress(self):
         return float(self.progress)
@@ -287,7 +296,7 @@ class TableTennisWorker(CustomEnv):
         reward += 2.0 * np.clip(reach_delta, -0.1, 0.1)
         reward += 1.2 * np.exp(-4.0 * reach_err)
 
-        # Encourage speed when far (get there FAST)
+        # Encourage speed when far (GET THERE FAST)
         if reach_err > 0.25:
             reward += 0.6 * np.linalg.norm(obs_dict["paddle_vel"])
 
@@ -348,29 +357,34 @@ class TableTennisWorker(CustomEnv):
             reward += 2.0 * np.exp(-3.0 * time_err) if stable_contact else -1.0
 
         # --------------------------------------------------
-        # CONTACT QUALITY BONUS (KEY ADDITION)
+        # CONTACT QUALITY BONUS (ANGLE + TIMING)
         # --------------------------------------------------
         if touching and not self._prev_paddle_contact:
-            # Angle quality (squared → sharp preference)
             align_bonus = max(cos_sim, 0.0) ** 2
-
-            # Timing quality
             time_bonus = np.exp(-4.0 * time_err)
 
-            # Stability gate (no slapping)
-            stability_gate = (
-                v_norm < 0.6
-                and align_bonus > 0.5
-            )
+            if v_norm < 0.6 and align_bonus > 0.5:
+                reward += 2.5 * align_bonus * time_bonus
 
-            if stability_gate:
-                contact_reward = 2.5 * align_bonus * time_bonus
-                reward += contact_reward
+        # --------------------------------------------------
+        # TASK-LEVEL SUCCESS BONUS (BALL CROSSES NET)
+        # --------------------------------------------------
+        env_solved = bool(rwd_dict.get("solved", False))
+
+        if (
+            env_solved
+            and touching
+            and not self._prev_paddle_contact
+            and ori_term > self.paddle_ori_thr + self.paddle_ori_max_delta
+            and time_err < self.time_thr + self.time_max_delta
+            and v_norm < 0.6
+        ):
+            reward += 6.0  # BIG sparse bonus for correct table-tennis hit
 
         self._prev_paddle_contact = touching
 
         # --------------------------------------------------
-        # HARD SUCCESS
+        # HARD SUCCESS (WORKER GOAL)
         # --------------------------------------------------
         success = (
             reach_err < self.reach_thr
@@ -393,7 +407,7 @@ class TableTennisWorker(CustomEnv):
             "palm_dist": palm_dist,
             "torso_up": torso_up,
             "paddle_speed": v_norm,
-            "contact": float(touching),
+            "env_solved": float(env_solved),
             "is_goal_success": float(success),
         }
 
