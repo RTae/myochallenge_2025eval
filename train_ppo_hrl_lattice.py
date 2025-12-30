@@ -99,14 +99,14 @@ def main():
         # ---------------------------
         # PPO Batch & Rollout Settings
         # ---------------------------
-        "batch_size": 32,
-        "n_steps": 128,
+        "batch_size": 64,
+        "n_steps": 1024,
         "n_epochs": cfg.ppo_epochs,
 
         # ---------------------------
         # Scheduler
         # ---------------------------
-        "learning_rate": lambda p: cfg.ppo_lr * 0.5 * (1 + math.cos(math.pi * p)),
+        "learning_rate": lambda p: cfg.ppo_lr * 0.5 * (1 + math.cos(math.pi * (1 - p))),
         "clip_range": lambda p: cfg.ppo_clip_range * p,
 
         # ---------------------------
@@ -215,7 +215,7 @@ def main():
     worker_model.learn(
         total_timesteps=worker_total_timesteps,
         reset_num_timesteps=not worker_resumed,  # continue curves if resumed
-        callback=CallbackList([eval_worker_cb, info_cb, video_worker_cb]),
+        callback=CallbackList([eval_worker_cb, info_cb, video_worker_cb, ann_worker_cb]),
     )
 
     # ---- Save worker to SAVE paths  ----
