@@ -281,11 +281,10 @@ class TableTennisWorker(CustomEnv):
     
     def _compute_reward(self, obs_dict, rwd_dict):
         # ==================================================
-        # PRIMARY GOAL ERRORS
+        # GEOMETRY
         # ==================================================
         paddle_pos = obs_dict["paddle_pos"]
         goal_pos = self.current_goal[:3]
-
         reach_err = float(np.linalg.norm(paddle_pos - goal_pos))
 
         if self.prev_reach_err is None:
@@ -296,126 +295,75 @@ class TableTennisWorker(CustomEnv):
         reward = 0.0
 
         # --------------------------------------------------
-        # FAST APPROACH SHAPING
+        # APPROACH (PRIMARY SIGNAL)
         # --------------------------------------------------
-        # Encourage reducing distance quickly
-        reward += 2.0 * np.clip(reach_delta, -0.1, 0.1)
-        reward += 1.2 * np.exp(-4.0 * reach_err)
+        reward += 2.0 * np.clip(reach_delta, -0.05, 0.05)
+        reward += 1.0 * np.exp(-3.0 * reach_err)
 
-        # Encourage speed only when far
         if reach_err > 0.25:
-            reward += 0.6 * np.linalg.norm(obs_dict["paddle_vel"])
+            reward += 0.4 * np.linalg.norm(obs_dict["paddle_vel"])
 
         # ==================================================
-        # ORIENTATION TOWARD GOAL
+        # ORIENTATION
         # ==================================================
         paddle_n = quat_to_paddle_normal(obs_dict["paddle_ori"])
         paddle_n /= np.linalg.norm(paddle_n) + 1e-8
-
         goal_n = self._unpack_normal_xy(
             self.current_goal[3], self.current_goal[4]
         )
 
-        cos_sim = float(np.clip(np.dot(paddle_n, goal_n), -1.0, 1.0))
-        ori_term = max(cos_sim, 0.0)
-
-        # Orientation matters more when close
-        reward += 0.8 * ori_term * np.exp(-2.0 * reach_err)
+        cos_sim = float(np.clip(np.dot(paddle_n, goal_n), 0.0, 1.0))
+        reward += 0.6 * cos_sim * np.exp(-2.0 * reach_err)
 
         # ==================================================
-        # TIMING
+        # TIMING (SIMPLE + STABLE)
         # ==================================================
-        t_now = float(obs_dict["time"])
-        t_goal = self.goal_start_time + self.current_goal[5]
+        dt = self.goal_start_time + self.current_goal[5] - obs_dict["time"]
 
-        dt = t_goal - t_now   # >0 early, <0 late
-        time_err = abs(dt)    # for logging only
+        # reward being close to correct time
+        reward += 0.5 * np.exp(-4.0 * abs(dt))
 
-        # Sharp peak near correct hit time
-        reward += 0.6 * np.exp(-6.0 * abs(dt))
-
-        # Penalize lateness strongly
+        # punish lateness only
         if dt < 0.0:
-            reward -= 1.5 * (abs(dt) ** 1.5)
-
-        # Mild penalty for being *too* early (hovering)
-        elif dt > 0.25:
-            reward -= 0.1 * (dt - 0.25)
+            reward -= 1.0 * abs(dt)
 
         # ==================================================
-        # PALM–PADDLE DISTANCE (ANTI-THROW)
+        # POSTURE
         # ==================================================
-        palm_closeness = float(rwd_dict.get("palm_dist", 1.0))
-        palm_penalty = 1.0 - palm_closeness   # 0 when close, 1 when far
-
-        reward -= 0.3 * palm_penalty
-
-        # ==================================================
-        # TORSO UPRIGHT ENCOURAGEMENT
-        # ==================================================
-        torso_up = float(rwd_dict.get("torso_up", 0.0))
-        reward += 0.4 * torso_up
+        palm_dist = rwd_dict.get("palm_dist", 0.0)
+        reward -= 0.3 * float(palm_dist)
+        torso_up = rwd_dict.get("torso_up", 0.0)
+        reward += 0.4 * float(torso_up)
 
         # ==================================================
-        # MOTION SMOOTHNESS
-        # ==================================================
-        paddle_vel = obs_dict["paddle_vel"]
-        v_norm = float(np.linalg.norm(paddle_vel))
-
-        if abs(dt) < 0.2:
-            reward -= 0.1 * v_norm
-
-        # ==================================================
-        # CONTACT EVENTS
+        # CONTACT
         # ==================================================
         touching = float(obs_dict["touching_info"][0]) > 0.5
-
-        # -----------------------------
-        # Stable contact reward
-        # -----------------------------
-        stable_contact = (v_norm < 0.6 and ori_term > 0.6)
-
+        v_norm = float(np.linalg.norm(obs_dict["paddle_vel"]))
+        is_contact = False
         if touching and not self._prev_paddle_contact:
-            if dt >= -0.05 and stable_contact:
-                reward += 2.0 * np.exp(-4.0 * abs(dt))
+            if dt >= 0.0 and cos_sim > 0.6 and v_norm < 0.6:
+                reward += 2.0
+                is_contact = True
             else:
                 reward -= 1.0
-
-        # -----------------------------
-        # Contact quality bonus
-        # -----------------------------
-        if touching and not self._prev_paddle_contact:
-            align_bonus = ori_term ** 2
-            time_bonus = np.exp(-4.0 * abs(dt)) if dt >= -0.05 else 0.0
-
-            if v_norm < 0.6 and align_bonus > 0.5:
-                reward += 2.5 * align_bonus * time_bonus
-
-        # ==================================================
-        # ENV SUCCESS
-        # ==================================================
-        env_solved = bool(rwd_dict.get("solved", False))
-
-        if (
-            env_solved
-            and touching
-            and not self._prev_paddle_contact
-            and 0.0 <= dt <= self.time_thr
-            and ori_term > self.paddle_ori_thr
-            and v_norm < 0.6
-        ):
-            reward += 6.0  # sparse table-tennis success bonus
 
         self._prev_paddle_contact = touching
 
         # ==================================================
+        # ENV SUCCESS (SPARSE)
+        # ==================================================
+        env_solved = rwd_dict.get("solved", False)
+        if bool(env_solved):
+            reward += 6.0
+
+        # ==================================================
         # GOAL SUCCESS
         # ==================================================
-        # Reach within threshold, at correct time, good orientation
         success = (
             reach_err < self.reach_thr
             and 0.0 <= dt <= self.time_thr
-            and ori_term > self.paddle_ori_thr
+            and cos_sim > self.paddle_ori_thr
         )
 
         if success:
@@ -428,13 +376,12 @@ class TableTennisWorker(CustomEnv):
             "reach_err": reach_err,
             "reach_delta": reach_delta,
             "cos_sim": cos_sim,
-            "ori_term": ori_term,
-            "time_err": time_err,
             "dt": dt,
-            "palm_dist": palm_closeness,
+            "palm_dist": palm_dist,
             "torso_up": torso_up,
             "paddle_speed": v_norm,
-            "env_solved": float(env_solved),
+            "is_contact": float(is_contact),
+            "is_env_success": float(env_solved),
             "is_goal_success": float(success),
         }
 
