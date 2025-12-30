@@ -324,8 +324,10 @@ class TableTennisWorker(CustomEnv):
         # ==================================================
         # POSTURE
         # ==================================================
-        reward -= 0.2 * float(rwd_dict.get("palm_dist", 0.0))
-        reward += 0.25 * float(rwd_dict.get("torso_up", 0.0))
+        plam_dist = rwd_dict.get("palm_dist", 0.0)
+        torso_up = rwd_dict.get("torso_up", 0.0)
+        reward -= 0.2 * float(plam_dist)
+        reward += 0.25 * float(torso_up)
 
         # ==================================================
         # CONTACT EVENT (KEY SPARSE SIGNAL)
@@ -334,12 +336,20 @@ class TableTennisWorker(CustomEnv):
         v_norm = float(np.linalg.norm(obs_dict["paddle_vel"]))
         is_contact = False
 
+        goal_aligned = (
+            reach_err < self.reach_thr
+            and 0.0 <= dt <= self.time_thr
+            and cos_sim > self.paddle_ori_thr
+        )
+
         if touching and not self._prev_paddle_contact:
-            if dt >= -0.05 and cos_sim > 0.6 and v_norm < 0.6:
+            if goal_aligned and v_norm < 0.6:
+                # GOOD table-tennis hit
                 reward += 2.5
                 is_contact = True
             else:
-                reward -= 0.8
+                # Penalize sloppy or mistimed hits
+                reward -= 1.0
 
         self._prev_paddle_contact = touching
 
@@ -351,15 +361,6 @@ class TableTennisWorker(CustomEnv):
             reward += 18.0
 
         # ==================================================
-        # GOAL SUCCESS (LOG ONLY)
-        # ==================================================
-        goal_success = (
-            reach_err < self.reach_thr
-            and 0.0 <= dt <= self.time_thr
-            and cos_sim > self.paddle_ori_thr
-        )
-
-        # ==================================================
         # LOGS
         # ==================================================
         logs = {
@@ -368,9 +369,10 @@ class TableTennisWorker(CustomEnv):
             "cos_sim": cos_sim,
             "dt": dt,
             "paddle_speed": v_norm,
+            "palm_dist": float(plam_dist),
+            "torso_up": float(torso_up),
             "is_contact": float(is_contact),
-            "is_env_success": float(env_solved),
-            "is_goal_success": float(goal_success),  # metric only
+            "is_goal_success": float(goal_aligned),
         }
 
         return float(reward), False, logs
