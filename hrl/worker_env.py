@@ -78,7 +78,7 @@ class TableTennisWorker(CustomEnv):
         # ==================================================
         self.reach_thr_base = 0.25
         self.time_thr_base = 0.40
-        self.paddle_ori_thr_base = 0.65
+        self.paddle_ori_thr_base = 0.73
 
         self.reach_thr = self.reach_thr_base
         self.time_thr = self.time_thr_base
@@ -275,27 +275,36 @@ class TableTennisWorker(CustomEnv):
         goal_pos = self.current_goal[:3]
 
         reach_err = float(np.linalg.norm(paddle_pos - goal_pos))
-        # delta helps shape progress
+
         if self.prev_reach_err is None:
             self.prev_reach_err = reach_err
         reach_delta = self.prev_reach_err - reach_err
         self.prev_reach_err = reach_err
 
-        # base shaping: encourage reduction in goal distance
-        reward = 1.5 * np.clip(reach_delta, -0.05, 0.05)
+        reward = 0.0
+
+        # Encourage fast reduction in distance
+        reward += 2.0 * np.clip(reach_delta, -0.1, 0.1)
         reward += 1.2 * np.exp(-4.0 * reach_err)
+
+        # Encourage speed when far (get there FAST)
+        if reach_err > 0.25:
+            reward += 0.6 * np.linalg.norm(obs_dict["paddle_vel"])
 
         # --------------------------------------------------
         # ORIENTATION TOWARD GOAL
         # --------------------------------------------------
-        # (use dot product without env paddle_quat)
         paddle_n = quat_to_paddle_normal(obs_dict["paddle_ori"])
         paddle_n /= np.linalg.norm(paddle_n) + 1e-8
-        goal_n = self._unpack_normal_xy(self.current_goal[3], self.current_goal[4])
+
+        goal_n = self._unpack_normal_xy(
+            self.current_goal[3], self.current_goal[4]
+        )
+
         cos_sim = float(np.clip(np.dot(paddle_n, goal_n), -1.0, 1.0))
         ori_term = max(cos_sim, 0.0)
 
-        # orientation helps only when somewhat close
+        # Orientation matters more when closer
         reward += 0.8 * ori_term * np.exp(-2.0 * reach_err)
 
         # --------------------------------------------------
@@ -311,30 +320,21 @@ class TableTennisWorker(CustomEnv):
         # --------------------------------------------------
         # PALM–PADDLE DISTANCE (ANTI-THROW)
         # --------------------------------------------------
-        # palm_dist is distance between palm and paddle (high -> weird posture)
         palm_dist = float(rwd_dict.get("palm_dist", 0.0))
-        # penalize large palm-to-paddle gap
         reward -= 0.3 * palm_dist
 
         # --------------------------------------------------
         # TORSO UPRIGHT ENCOURAGEMENT
         # --------------------------------------------------
-        # torso_up is high when torso is upright (0–1)
-        # encourage a natural posture
         torso_up = float(rwd_dict.get("torso_up", 0.0))
         reward += 0.4 * torso_up
 
-        # # --------------------------------------------------
-        # # ACTION REGULARIZATION
-        # # --------------------------------------------------
-        # act_reg = float(rwd_dict.get("act_reg", 0.0))
-        # reward += 0.6 * act_reg  # env-provided small control penalty
-
         # --------------------------------------------------
-        # MOTION SMOOTHNESS PENALTY
+        # MOTION SMOOTHNESS PENALTY (ONLY WHEN CLOSE)
         # --------------------------------------------------
         paddle_vel = obs_dict["paddle_vel"]
         v_norm = float(np.linalg.norm(paddle_vel))
+
         close_gate = np.exp(-6.0 * reach_err) * np.exp(-3.0 * time_err)
         reward -= close_gate * 0.1 * v_norm
 
@@ -342,9 +342,31 @@ class TableTennisWorker(CustomEnv):
         # STABILITY-GATED CONTACT
         # --------------------------------------------------
         touching = float(obs_dict["touching_info"][0]) > 0.5
-        stable_contact = (v_norm < 0.40 and ori_term > 0.6)
+        stable_contact = (v_norm < 0.6 and ori_term > 0.6)
+
         if touching and not self._prev_paddle_contact:
             reward += 2.0 * np.exp(-3.0 * time_err) if stable_contact else -1.0
+
+        # --------------------------------------------------
+        # CONTACT QUALITY BONUS (KEY ADDITION)
+        # --------------------------------------------------
+        if touching and not self._prev_paddle_contact:
+            # Angle quality (squared → sharp preference)
+            align_bonus = max(cos_sim, 0.0) ** 2
+
+            # Timing quality
+            time_bonus = np.exp(-4.0 * time_err)
+
+            # Stability gate (no slapping)
+            stability_gate = (
+                v_norm < 0.6
+                and align_bonus > 0.5
+            )
+
+            if stability_gate:
+                contact_reward = 2.5 * align_bonus * time_bonus
+                reward += contact_reward
+
         self._prev_paddle_contact = touching
 
         # --------------------------------------------------
@@ -355,6 +377,7 @@ class TableTennisWorker(CustomEnv):
             and time_err < self.time_thr
             and ori_term > self.paddle_ori_thr
         )
+
         if success:
             reward += self.success_bonus
 
@@ -363,11 +386,14 @@ class TableTennisWorker(CustomEnv):
         # --------------------------------------------------
         logs = {
             "reach_err": reach_err,
+            "reach_delta": reach_delta,
             "cos_sim": cos_sim,
+            "ori_term": ori_term,
             "time_err": time_err,
             "palm_dist": palm_dist,
             "torso_up": torso_up,
             "paddle_speed": v_norm,
+            "contact": float(touching),
             "is_goal_success": float(success),
         }
 
