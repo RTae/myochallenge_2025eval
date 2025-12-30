@@ -44,11 +44,9 @@ class TableTennisWorker(CustomEnv):
     Observation: 428 + 6 = 434
     """
 
-    def __init__(self, config: Config, debug_draw: bool = False):
+    def __init__(self, config: Config):
         super().__init__(config)
         
-        self.debug_draw = debug_draw
-
         # ==================================================
         # Observation space
         # ==================================================
@@ -94,65 +92,6 @@ class TableTennisWorker(CustomEnv):
 
         self.success_bonus = 10.0
         self.max_time = 3.0
-        
-        self.dt_min = 0.05
-        self.dt_max = 1.50
-    
-    # =================================================
-    # Debug
-    # ==================================================
-    
-    def _draw_prediction_debug(self, pred_pos, n_ideal, dt):
-
-        viewer = getattr(self.env.unwrapped, "viewer", None)
-        if viewer is None:
-            raise RuntimeError("Viewer not initialized for debug drawing.")
-
-        # --------------------------------------------------
-        # COLOR BY TIMING ERROR
-        # dt > 0 : early
-        # dt < 0 : late
-        # --------------------------------------------------
-        if dt >= 0.0:
-            # green → yellow as it gets very early
-            alpha = np.clip(dt / 0.3, 0.0, 1.0)
-            color = np.array([
-                0.2 + 0.6 * alpha,   # R
-                1.0,                 # G
-                0.2,                 # B
-                0.8
-            ])
-        else:
-            # red → dark red as lateness increases
-            alpha = np.clip(-dt / 0.3, 0.0, 1.0)
-            color = np.array([
-                1.0,                 # R
-                0.2 * (1 - alpha),   # G
-                0.2 * (1 - alpha),   # B
-                0.8
-            ])
-
-        # --------------------------------------------------
-        # Predicted contact circle
-        # --------------------------------------------------
-        viewer.add_marker(
-            pos=pred_pos,
-            size=np.array([0.025, 0.025, 0.001]),
-            rgba=color,
-            type=viewer.mjviewer.const.GEOM_CYLINDER,
-        )
-
-        # --------------------------------------------------
-        # Predicted normal direction
-        # --------------------------------------------------
-        end = pred_pos + 0.15 * n_ideal
-        viewer.add_marker(
-            pos=(pred_pos + end) / 2,
-            size=np.array([0.003, 0.003, 0.15]),
-            rgba=color * np.array([0.7, 0.7, 0.7, 1.0]),
-            type=viewer.mjviewer.const.GEOM_CAPSULE,
-            mat=np.eye(3),
-        )
 
     # ==================================================
     # Curriculum hooks (called by callback)
@@ -337,18 +276,6 @@ class TableTennisWorker(CustomEnv):
         reward += 0.05 * base_reward
 
         info.update(logs)
-        
-        # --------------------------------------------------
-        # 6) Debug drawing
-        # --------------------------------------------------
-        if self.debug_draw:
-            goal_pos = self.current_goal[:3]
-            goal_n = self._unpack_normal_xy(
-                self.current_goal[3], self.current_goal[4]
-            )
-            goal_time = self.goal_start_time + self.current_goal[5]
-            dt = goal_time - float(obs_dict["time"])
-            self._draw_prediction_debug(goal_pos, goal_n, dt)
         
         return self._build_obs(obs_dict), float(reward), terminated, truncated, info
     
