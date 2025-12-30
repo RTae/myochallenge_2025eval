@@ -44,9 +44,14 @@ class TableTennisWorker(CustomEnv):
     Observation: 428 + 6 = 434
     """
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, debug_draw: bool = False):
         super().__init__(config)
+        
+        self.debug_draw = debug_draw
 
+        # ==================================================
+        # Observation space
+        # ==================================================
         self.state_dim = 428
         self.goal_dim = 6
         self.observation_dim = self.state_dim + self.goal_dim
@@ -92,6 +97,62 @@ class TableTennisWorker(CustomEnv):
         
         self.dt_min = 0.05
         self.dt_max = 1.50
+    
+    # =================================================
+    # Debug
+    # ==================================================
+    
+    def _draw_prediction_debug(self, pred_pos, n_ideal, dt):
+
+        viewer = getattr(self.env.unwrapped, "viewer", None)
+        if viewer is None:
+            raise RuntimeError("Viewer not initialized for debug drawing.")
+
+        # --------------------------------------------------
+        # COLOR BY TIMING ERROR
+        # dt > 0 : early
+        # dt < 0 : late
+        # --------------------------------------------------
+        if dt >= 0.0:
+            # green → yellow as it gets very early
+            alpha = np.clip(dt / 0.3, 0.0, 1.0)
+            color = np.array([
+                0.2 + 0.6 * alpha,   # R
+                1.0,                 # G
+                0.2,                 # B
+                0.8
+            ])
+        else:
+            # red → dark red as lateness increases
+            alpha = np.clip(-dt / 0.3, 0.0, 1.0)
+            color = np.array([
+                1.0,                 # R
+                0.2 * (1 - alpha),   # G
+                0.2 * (1 - alpha),   # B
+                0.8
+            ])
+
+        # --------------------------------------------------
+        # Predicted contact circle
+        # --------------------------------------------------
+        viewer.add_marker(
+            pos=pred_pos,
+            size=np.array([0.025, 0.025, 0.001]),
+            rgba=color,
+            type=viewer.mjviewer.const.GEOM_CYLINDER,
+        )
+
+        # --------------------------------------------------
+        # Predicted normal direction
+        # --------------------------------------------------
+        end = pred_pos + 0.15 * n_ideal
+        viewer.add_marker(
+            pos=(pred_pos + end) / 2,
+            size=np.array([0.003, 0.003, 0.15]),
+            rgba=color * np.array([0.7, 0.7, 0.7, 1.0]),
+            type=viewer.mjviewer.const.GEOM_CAPSULE,
+            mat=np.eye(3),
+        )
 
     # ==================================================
     # Curriculum hooks (called by callback)
@@ -142,6 +203,7 @@ class TableTennisWorker(CustomEnv):
             paddle_pos=obs_dict["paddle_pos"],
         )
         n_ideal = quat_to_paddle_normal(paddle_ori_ideal)
+        
         return pred_pos, n_ideal
 
     # ==================================================
@@ -153,14 +215,14 @@ class TableTennisWorker(CustomEnv):
         
     def predict_goal_from_state(self, obs_dict):
         # --------------------------------------------------
-        # 1) Predict ball–paddle intersection
+        # Predict ball–paddle intersection
         # --------------------------------------------------
         pred_pos, n_ideal = self._predict(obs_dict)
         # pred_pos: (x, y, z)
         # n_ideal : ideal paddle normal
 
         # --------------------------------------------------
-        # 2) Time-to-contact
+        # Time-to-contact
         # --------------------------------------------------
         dx = float(pred_pos[0] - obs_dict["ball_pos"][0])
         vx = float(obs_dict["ball_vel"][0])
@@ -175,12 +237,12 @@ class TableTennisWorker(CustomEnv):
         dt = float(np.clip(dt, 0.05, 1.5))
 
         # --------------------------------------------------
-        # 3) Orientation target (packed)
+        # Orientation target (packed)
         # --------------------------------------------------
         nx, ny = self._pack_normal_xy(n_ideal)
 
         # --------------------------------------------------
-        # 4) Assemble PHYSICAL goal
+        # Assemble PHYSICAL goal
         # --------------------------------------------------
         goal_phys = np.array(
             [
@@ -195,7 +257,7 @@ class TableTennisWorker(CustomEnv):
         )
 
         # --------------------------------------------------
-        # 5) Curriculum noise (optional, SAFE)
+        # Curriculum noise
         # --------------------------------------------------
         if self.goal_noise_scale > 0.0:
             goal_phys[:3] += np.random.normal(
@@ -267,6 +329,7 @@ class TableTennisWorker(CustomEnv):
 
     def step(self, action):
         _, base_reward, terminated, truncated, info = super().step(action)
+        
         obs_dict = info["obs_dict"]
         rwd_dict = info["rwd_dict"]
 
@@ -274,6 +337,19 @@ class TableTennisWorker(CustomEnv):
         reward += 0.05 * base_reward
 
         info.update(logs)
+        
+        # --------------------------------------------------
+        # 6) Debug drawing
+        # --------------------------------------------------
+        if self.debug_draw:
+            goal_pos = self.current_goal[:3]
+            goal_n = self._unpack_normal_xy(
+                self.current_goal[3], self.current_goal[4]
+            )
+            goal_time = self.goal_start_time + self.current_goal[5]
+            dt = goal_time - float(obs_dict["time"])
+            self._draw_prediction_debug(goal_pos, goal_n, dt)
+        
         return self._build_obs(obs_dict), float(reward), terminated, truncated, info
     
     def _compute_reward(self, obs_dict, rwd_dict):
