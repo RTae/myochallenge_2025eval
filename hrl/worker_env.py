@@ -72,7 +72,6 @@ class TableTennisWorker(CustomEnv):
         # ==================================================
         self.goal_noise_scale = 0.0
         self.progress = 0.0
-        self.allow_hard_success = False
 
         # ==================================================
         # Success thresholds (curriculum-controlled)
@@ -102,9 +101,6 @@ class TableTennisWorker(CustomEnv):
         self.reach_thr = self.reach_thr_base - 0.10 * progress
         self.time_thr = self.time_thr_base - 0.20 * progress
         self.paddle_ori_thr = self.paddle_ori_thr_base + 0.25 * progress
-
-    def set_allow_hard_success(self, flag: bool):
-        self.allow_hard_success = bool(flag)
         
     def get_progress(self):
         return float(self.progress)
@@ -352,17 +348,6 @@ class TableTennisWorker(CustomEnv):
         self._prev_paddle_contact = touching
 
         # --------------------------------------------------
-        # SOFT SUCCESS SHAPING
-        # --------------------------------------------------
-        soft_success = (
-            reach_err < 2.5 * self.reach_thr
-            and time_err < 2.0 * self.time_thr
-            and ori_term > self.paddle_ori_thr - 0.2
-        )
-        if soft_success:
-            reward += 1.2
-
-        # --------------------------------------------------
         # HARD SUCCESS
         # --------------------------------------------------
         success = (
@@ -370,8 +355,7 @@ class TableTennisWorker(CustomEnv):
             and time_err < self.time_thr
             and ori_term > self.paddle_ori_thr
         )
-        hard_success = self.allow_hard_success and success
-        if hard_success:
+        if success:
             reward += self.success_bonus
 
         # --------------------------------------------------
@@ -384,8 +368,7 @@ class TableTennisWorker(CustomEnv):
             "palm_dist": palm_dist,
             "torso_up": torso_up,
             "paddle_speed": v_norm,
-            "is_goal_soft_success": float(soft_success),
-            "is_goal_success": float(hard_success),
+            "is_goal_success": float(success),
         }
 
-        return float(reward), hard_success, logs
+        return float(reward), success, logs

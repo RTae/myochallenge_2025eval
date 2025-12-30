@@ -89,9 +89,8 @@ class WorkerNoiseAnnealCallback(BaseCallback):
         # --------------------------------------------------
         # 6) Apply to all worker envs (SB3-safe)
         # --------------------------------------------------
-        self.worker_env.env_method("set_goal_noise_scale", noise_scale)
+        #self.worker_env.env_method("set_goal_noise_scale", noise_scale)
         self.worker_env.env_method("set_progress", progress)
-        self.worker_env.env_method("set_allow_hard_success", allow_hard)
         
         self.logger.record("info/soft_success_ema", self.success_ema)
         self.logger.record("info/progress", progress)
