@@ -345,8 +345,10 @@ class TableTennisWorker(CustomEnv):
         # ==================================================
         # PALM–PADDLE DISTANCE (ANTI-THROW)
         # ==================================================
-        palm_dist = float(rwd_dict.get("palm_dist", 0.0))
-        reward -= 0.3 * palm_dist
+        palm_closeness = float(rwd_dict.get("palm_dist", 1.0))
+        palm_penalty = 1.0 - palm_closeness   # 0 when close, 1 when far
+
+        reward -= 0.3 * palm_penalty
 
         # ==================================================
         # TORSO UPRIGHT ENCOURAGEMENT
