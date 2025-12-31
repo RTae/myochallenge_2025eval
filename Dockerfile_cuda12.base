@@ -1,0 +1,116 @@
+#################################################
+### Base image with Python 3.11 + uv           ##
+#################################################
+FROM nvidia/cuda:12.4.0-base-ubuntu22.04 AS python-base
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    UV_NO_CACHE=1 \
+    PYSETUP_PATH="/opt/pysetup" \
+    VENV_PATH="/opt/pysetup/.venv" \
+    CPATH="" \
+    PYTHONPATH=""
+
+# ------------------------------------------------
+# Restore Ubuntu 24.04 repositories
+# (needed for system deps, NOT for Python)
+# ------------------------------------------------
+RUN printf "deb http://archive.ubuntu.com/ubuntu noble main universe multiverse\n\
+deb http://archive.ubuntu.com/ubuntu noble-updates main universe multiverse\n\
+deb http://archive.ubuntu.com/ubuntu noble-security main universe multiverse\n" \
+> /etc/apt/sources.list
+
+# ------------------------------------------------
+# System dependencies ONLY (no Python here)
+# ------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    ca-certificates \
+    git \
+    \
+    libgl1-mesa-dev \
+    libglfw3 \
+    libglfw3-dev \
+    libglew-dev \
+    patchelf \
+    libosmesa6-dev \
+    libegl1 \
+    libglvnd-dev \
+    libxcb1 \
+    libxrandr2 \
+    libxinerama1 \
+    libxi6 \
+    \
+    ffmpeg \
+    vim \
+    less \
+    \
+    && rm -rf /var/lib/apt/lists/*
+
+# ------------------------------------------------
+# Install uv
+# ------------------------------------------------
+ARG UV_VERSION=0.8.22
+RUN curl -LsSf https://astral.sh/uv/${UV_VERSION}/install.sh | sh
+ENV PATH="/root/.local/bin:${PATH}"
+
+# ------------------------------------------------
+# Install Python 3.11 via uv (REQUIRED)
+# ------------------------------------------------
+RUN uv python install 3.11
+
+
+#################################################
+### builder-base: install project dependencies ##
+#################################################
+FROM python-base AS builder-base
+WORKDIR $PYSETUP_PATH
+
+# Install MuJoCo
+ENV MUJOCO_VERSION=3.3.0
+ENV MUJOCO_PATH=/root/.mujoco/mujoco-${MUJOCO_VERSION}
+ENV LD_LIBRARY_PATH=${MUJOCO_PATH}/bin:${LD_LIBRARY_PATH}
+ENV CPATH=${MUJOCO_PATH}/include:${CPATH}
+
+RUN mkdir -p /root/.mujoco && \
+    curl -L https://github.com/deepmind/mujoco/releases/download/${MUJOCO_VERSION}/mujoco-${MUJOCO_VERSION}-linux-x86_64.tar.gz \
+    | tar -xz -C /root/.mujoco
+
+# Copy dependency files (cache-friendly)
+COPY ./pyproject.toml ./uv.lock ./
+
+# ------------------------------------------------
+# Install dependencies using uv + Python 3.11
+# ------------------------------------------------
+RUN uv sync \
+    --no-dev \
+    --frozen \
+    --python 3.11 \
+    --directory $PYSETUP_PATH
+
+# Activate venv by default
+ENV VIRTUAL_ENV=$VENV_PATH
+ENV PATH="$VENV_PATH/bin:$PATH"
+
+
+#################################################
+### final runtime image                        ##
+#################################################
+FROM python-base AS runtime
+WORKDIR /app
+
+# MuJoCo runtime
+ENV MUJOCO_VERSION=3.3.0
+ENV MUJOCO_PATH=/root/.mujoco/mujoco-${MUJOCO_VERSION}
+ENV LD_LIBRARY_PATH=${MUJOCO_PATH}/bin:${LD_LIBRARY_PATH}
+
+COPY --from=builder-base /root/.mujoco $MUJOCO_PATH
+
+# Copy venv from builder stage
+COPY --from=builder-base $VENV_PATH $VENV_PATH
+
+# Default to venv python
+ENV VIRTUAL_ENV=$VENV_PATH
+ENV PATH="$VENV_PATH/bin:$PATH"
