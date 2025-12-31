@@ -297,44 +297,50 @@ class TableTennisWorker(CustomEnv):
         reward += 1.2 * np.clip(reach_delta, -0.05, 0.05)
         reward += 0.6 * np.exp(-3.0 * reach_err)
 
+        # Directional speed toward goal (NO thrash exploit)
         if reach_err > 0.25:
-            reward += 0.25 * np.linalg.norm(obs_dict["paddle_vel"])
+            v = np.asarray(obs_dict["paddle_vel"], dtype=np.float32)
+            to_goal = (goal_pos - paddle_pos).astype(np.float32)
+            to_goal_unit = to_goal / (np.linalg.norm(to_goal) + 1e-8)
+            v_toward = float(np.dot(v, to_goal_unit))  # negative if moving away
+            reward += 0.25 * np.clip(v_toward, 0.0, 2.0)
 
         # ==================================================
         # ORIENTATION
         # ==================================================
         paddle_n = quat_to_paddle_normal(obs_dict["paddle_ori"])
-        paddle_n /= np.linalg.norm(paddle_n) + 1e-8
-        goal_n = self._unpack_normal_xy(
-            self.current_goal[3], self.current_goal[4]
-        )
+        paddle_n = paddle_n / (np.linalg.norm(paddle_n) + 1e-8)
 
+        goal_n = self._unpack_normal_xy(self.current_goal[3], self.current_goal[4])
         cos_sim = float(np.clip(np.dot(paddle_n, goal_n), 0.0, 1.0))
+
         reward += 0.4 * cos_sim * np.exp(-2.0 * reach_err)
 
         # ==================================================
-        # TIMING
+        # TIMING (GATED BY DISTANCE)
         # ==================================================
-        dt = self.goal_start_time + self.current_goal[5] - obs_dict["time"]
+        dt = float(self.goal_start_time + self.current_goal[5] - obs_dict["time"])  # >0 early, <0 late
+        time_gate = float(np.exp(-2.0 * reach_err))
 
-        reward += 0.3 * np.exp(-4.0 * abs(dt))
+        reward += 0.3 * time_gate * np.exp(-4.0 * abs(dt))
         if dt < 0.0:
-            reward -= 0.6 * abs(dt)
+            reward -= 0.6 * time_gate * abs(dt)
 
         # ==================================================
-        # POSTURE
+        # POSTURE  (FIXED: palm_dist is closeness!)
         # ==================================================
-        palm_dist = rwd_dict.get("palm_dist", 0.0)
-        torso_up = rwd_dict.get("torso_up", 0.0)
-        reward -= 0.2 * float(palm_dist)
-        reward += 0.25 * float(torso_up)
+        palm_closeness = float(rwd_dict.get("palm_dist", 0.0))   # exp(-5 * dist)
+        palm_penalty = 1.0 - palm_closeness
+        reward -= 0.2 * palm_penalty
+
+        torso_up = float(rwd_dict.get("torso_up", 0.0))          # exp(-5 * torso_err)
+        reward += 0.25 * torso_up
 
         # ==================================================
-        # CONTACT + RULE PENALTIES
+        # CONTACT (ONE-SHOT BONUS)
         # ==================================================
         touch_vec = obs_dict["touching_info"]
-
-        paddle_hit   = touch_vec[0] > 0
+        paddle_hit = float(touch_vec[0]) > 0.5
 
         v_norm = float(np.linalg.norm(obs_dict["paddle_vel"]))
         is_contact = False
@@ -359,17 +365,14 @@ class TableTennisWorker(CustomEnv):
         if env_solved:
             reward += 18.0
 
-        # ==================================================
-        # LOGS
-        # ==================================================
         logs = {
             "reach_err": reach_err,
             "reach_delta": reach_delta,
             "cos_sim": cos_sim,
             "dt": dt,
             "paddle_speed": v_norm,
-            "palm_dist": float(palm_dist),
-            "torso_up": float(torso_up),
+            "palm_dist": palm_closeness,
+            "torso_up": torso_up,
             "is_contact": float(is_contact),
             "is_goal_success": float(goal_aligned),
         }
