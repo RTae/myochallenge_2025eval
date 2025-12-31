@@ -32,3 +32,7 @@ dependencies = [
     "deprl>=0.3.2",
     "ipykernel>=7.1.0",
 ]
+
+[[tool.uv.index]] 
+url = "https://pypi.org/simple" 
+default = true
