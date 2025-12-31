@@ -102,6 +102,7 @@ class TableTennisWorker(CustomEnv):
 
     def set_progress(self, progress: float):
         p = float(np.clip(progress, 0.0, 1.0))
+        self.progress = p
 
         self.reach_thr = self.reach_thr_base - self.reach_max_delta * p
         self.time_thr  = self.time_thr_base  - self.time_max_delta  * p
