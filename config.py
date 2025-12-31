@@ -17,7 +17,7 @@ class Config:
     # ==================================================
     # Environment
     # ==================================================
-    env_id: str = getenv("ENV_ID", "myoChallengeTableTennisP1-v0", str)
+    env_id: str = getenv("ENV_ID", "myoChallengeTableTennisP2-v0", str)
     seed: int = getenv("SEED", 42, int)
 
     # IMPORTANT: keep this small early
