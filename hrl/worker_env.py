@@ -86,9 +86,13 @@ class TableTennisWorker(CustomEnv):
         self.paddle_ori_thr_base = 0.70
         self.paddle_ori_max_delta = 0.25
 
-        self.reach_thr = self.reach_thr_base
-        self.time_thr = self.time_thr_base
-        self.paddle_ori_thr = self.paddle_ori_thr_base
+        self.reach_thr = self.reach_thr_base - self.reach_max_delta * self.progress
+        self.time_thr  = self.time_thr_base  - self.time_max_delta  * self.progress
+
+        angle_p = self.progress ** 1.5
+        self.paddle_ori_thr = (
+            self.paddle_ori_thr_base + self.paddle_ori_max_delta * angle_p
+        )
 
     # ==================================================
     # Curriculum hooks (called by callback)
@@ -296,7 +300,7 @@ class TableTennisWorker(CustomEnv):
         # 1) APPROACH
         # ==================================================
         # Always-on distance cost (far-field gradient)
-        reward += -0.25 * reach_err
+        reward += -0.15 * reach_err
 
         # Progress bonus (near-field)
         reward += 1.2 * np.clip(reach_delta, -0.05, 0.05)
@@ -344,6 +348,7 @@ class TableTennisWorker(CustomEnv):
         time_score  = np.exp(-6.0 * max(dt, 0.0))
 
         readiness = reach_score * angle_score * time_score
+        readiness = np.clip(readiness, 0.0, 1.0)
         reward += 0.5 * readiness
 
         # ==================================================
@@ -365,9 +370,9 @@ class TableTennisWorker(CustomEnv):
         is_contact = False
 
         goal_aligned = (
-            reach_err < self.reach_thr
-            and 0.0 <= dt <= self.time_thr
-            and cos_sim > self.paddle_ori_thr
+            reach_err < self.reach_thr * 1.3
+            and 0.0 <= dt <= self.time_thr * 1.3
+            and cos_sim > self.paddle_ori_thr - 0.1
         )
 
         if paddle_hit and not self._prev_paddle_contact:
@@ -382,6 +387,12 @@ class TableTennisWorker(CustomEnv):
         # ==================================================
         if bool(rwd_dict.get("solved", False)):
             reward += 18.0
+            
+        hard_aligned = (
+            reach_err < self.reach_thr
+            and 0.0 <= dt <= self.time_thr
+            and cos_sim > self.paddle_ori_thr
+        )
 
         # ==================================================
         # LOGS
@@ -396,7 +407,8 @@ class TableTennisWorker(CustomEnv):
             "palm_dist": palm_closeness,
             "torso_up": torso_up,
             "is_contact": float(is_contact),
-            "is_goal_success": float(goal_aligned),
+            "is_soft_goal_success": float(goal_aligned),
+            "is_goal_success": float(hard_aligned),
         }
 
         return float(reward), False, logs
