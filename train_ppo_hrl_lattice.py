@@ -4,8 +4,7 @@ from typing import Callable, Optional
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import EvalCallback, CallbackList
 from stable_baselines3.common.vec_env import VecNormalize
-from sb3_contrib import RecurrentPPO
-from lattice.ppo.policies import LatticeRecurrentActorCriticPolicy
+from lattice.ppo.policies import LatticeActorCriticPolicy
 
 from config import Config
 from env_factory import build_manager_vec, build_worker_vec
@@ -13,28 +12,29 @@ from callbacks.infologger_callback import InfoLoggerCallback
 from callbacks.video_callback import VideoCallback
 from hrl.worker_env import TableTennisWorker
 from hrl.manager_env import TableTennisManager
+from hrl.noise_ann_cb import WorkerNoiseAnnealCallback
 from utils import make_predict_fn, prepare_experiment_directory, resume_vecnormalize_on_training_env
 from loguru import logger
+from torch import nn
+import math
 
 
 # ==================================================
 # Worker loaders
 # ==================================================
 def load_worker_model(path: str):
-    return RecurrentPPO.load(
+    return PPO.load(
             path,
             device="cuda",
-            policy=LatticeRecurrentActorCriticPolicy, 
+            policy=LatticeActorCriticPolicy, 
     )
 
 
-def load_worker_vecnormalize(path: str, env_fn: Callable[[], TableTennisWorker]) -> VecNormalize:
+def load_worker_vecnormalize(path: str, venv: TableTennisWorker) -> VecNormalize:
     """
     Keep your existing interface for manager/video usage:
     load VecNormalize stats onto a fresh env built by env_fn.
     """
-    from stable_baselines3.common.vec_env import DummyVecEnv
-    venv = DummyVecEnv([env_fn])
     vecnorm = VecNormalize.load(path, venv)
     vecnorm.training = False
     vecnorm.norm_reward = False
@@ -44,8 +44,8 @@ def main():
     cfg = Config()
     prepare_experiment_directory(cfg)
 
-    worker_total_timesteps = 2_000_000
-    manager_total_timesteps = 500_000
+    worker_total_timesteps = 15_000_000
+    manager_total_timesteps = 2_000_000
 
     # ==================================================
     # LOAD paths
@@ -87,71 +87,93 @@ def main():
     # ---- Build model: load if provided else create new ----
     worker_resumed = bool(LOAD_WORKER_MODEL_PATH and os.path.exists(LOAD_WORKER_MODEL_PATH))
 
+    worker_args = {
+        # ---------------------------
+        # Env + VecNormalize
+        # ---------------------------
+        "env": worker_env,                # this should be a VecNormalize-wrapped env
+        "verbose": 1,
+        "tensorboard_log": os.path.join(cfg.logdir),
+        "device": "cuda",
+
+        # ---------------------------
+        # PPO Batch & Rollout Settings
+        # ---------------------------
+        "batch_size": 256,
+        "n_steps": 128,
+        "n_epochs": cfg.ppo_epochs,
+
+        # ---------------------------
+        # Scheduler
+        # ---------------------------
+        "learning_rate": lambda p: cfg.ppo_lr * 0.5 * (1 + math.cos(math.pi * (1 - p))),
+        "clip_range": lambda p: cfg.ppo_clip_range * p,
+
+        # ---------------------------
+        # PPO Hyperparameters
+        # ---------------------------
+        "ent_coef": 3.62109e-06,
+        "clip_range": cfg.ppo_clip_range,
+        "gamma": cfg.ppo_gamma,
+        "gae_lambda": cfg.ppo_lambda,
+        "max_grad_norm": cfg.ppo_max_grad_norm,
+        "vf_coef": 0.835671,
+        "clip_range_vf": cfg.ppo_clip_range,
+
+        # ---------------------------
+        # SDE Exploration
+        # ---------------------------
+        "use_sde": True,
+        "sde_sample_freq": 1,
+
+        # ---------------------------
+        # Reproducibility
+        # ---------------------------
+        "seed": cfg.seed,
+
+        # ---------------------------
+        # Policy Network Architecture
+        # ---------------------------
+        "policy_kwargs": dict(
+            # ===== Lattice Noise Settings =====
+            use_lattice=True,
+            use_expln=True,
+            full_std=False,
+            ortho_init=False,
+            log_std_init=-0.5,
+            std_clip=(1e-3, 10),
+            expln_eps=1e-6,
+            std_reg=0.0,
+
+            # ===== Pi & V Network Sizes =====
+            net_arch=
+                dict(
+                    pi=[512, 512],
+                    vf=[512, 512],
+                ),
+            activation_fn=nn.Tanh,  # smooth control
+        ),
+    }
+    
+    # Log hyperparameters
+    logger.info("#"*100)
+    logger.info("Worker hyperparameters:")
+    logger.info("#"*100)
+    for k, v in worker_args.items():
+        logger.info(f"{k} = {v}")
+
     if worker_resumed:
         logger.info(f"[Worker] Loading pretrained model from: {LOAD_WORKER_MODEL_PATH}")
-        worker_model = RecurrentPPO.load(
+        worker_model = PPO.load(
             LOAD_WORKER_MODEL_PATH,
-            policy=LatticeRecurrentActorCriticPolicy, 
-            env=worker_env,
-            verbose=1,
-            tensorboard_log=os.path.join(cfg.logdir),
-            device='cuda',
-            batch_size=32,
-            n_steps=128,
-            learning_rate=cfg.ppo_lr,
-            ent_coef=3.62109e-06,
-            clip_range=cfg.ppo_clip_range,
-            gamma=cfg.ppo_gamma,
-            gae_lambda=cfg.ppo_lambda,
-            max_grad_norm=cfg.ppo_max_grad_norm,
-            vf_coef=0.835671,
-            n_epochs=cfg.ppo_epochs,
-            use_sde=False,
-            sde_sample_freq=1,
-            clip_range_vf=cfg.ppo_clip_range,
-            seed=cfg.seed,
-            policy_kwargs=dict(
-                use_lattice=True,
-                use_expln=True,
-                ortho_init=False,
-                log_std_init=0.0,
-                std_clip=(1e-3, 10),
-                expln_eps=1e-6,
-                full_std=False,
-                std_reg=0.0,
-            )
+            policy=LatticeActorCriticPolicy, 
+            **worker_args
         )
     else:
         logger.info("[Worker] No pretrained worker model given/found. Training from scratch.")        
-        worker_model = RecurrentPPO(policy=LatticeRecurrentActorCriticPolicy, 
-            env=worker_env,
-            verbose=1,
-            tensorboard_log=os.path.join(cfg.logdir),
-            device='cuda',
-            batch_size=32,
-            n_steps=128,
-            learning_rate=cfg.ppo_lr,
-            ent_coef=3.62109e-06,
-            clip_range=cfg.ppo_clip_range,
-            gamma=cfg.ppo_gamma,
-            gae_lambda=cfg.ppo_lambda,
-            max_grad_norm=cfg.ppo_max_grad_norm,
-            vf_coef=0.835671,
-            n_epochs=cfg.ppo_epochs,
-            use_sde=False,
-            sde_sample_freq=1,
-            clip_range_vf=cfg.ppo_clip_range,
-            seed=cfg.seed,
-            policy_kwargs=dict(
-                use_lattice=True,
-                use_expln=True,
-                ortho_init=False,
-                log_std_init=0.0,
-                std_clip=(1e-3, 10),
-                expln_eps=1e-6,
-                full_std=False,
-                std_reg=0.0,
-            )
+        worker_model = PPO(
+            policy=LatticeActorCriticPolicy,
+            **worker_args
         )
 
     # ---- Worker evaluation ----
@@ -186,6 +208,13 @@ def main():
         cfg=cfg,
         predict_fn=make_predict_fn(worker_model),
     )
+    
+    ann_worker_cb = WorkerNoiseAnnealCallback(
+        worker_env=worker_env,
+        check_freq=50_000 // cfg.num_envs,
+        log_every_steps=1_000_000,
+        verbose=1,
+    )
 
     logger.info("Starting WORKER training...")
     logger.info(f"Worker total timesteps: {worker_total_timesteps}")
@@ -193,7 +222,7 @@ def main():
     worker_model.learn(
         total_timesteps=worker_total_timesteps,
         reset_num_timesteps=not worker_resumed,  # continue curves if resumed
-        callback=CallbackList([eval_worker_cb, info_cb, video_worker_cb]),
+        callback=CallbackList([eval_worker_cb, info_cb, video_worker_cb, ann_worker_cb]),
     )
 
     # ---- Save worker to SAVE paths  ----
@@ -220,7 +249,7 @@ def main():
 
     def worker_env_loader(path: str):
         # Manager loads a frozen worker env via VecNormalize + fresh env_fn
-        return load_worker_vecnormalize(path, lambda: TableTennisWorker(cfg))
+        return load_worker_vecnormalize(path, TableTennisWorker(cfg))
 
     # Manager should use the worker produced by this run
     manager_env = build_manager_vec(
@@ -233,46 +262,44 @@ def main():
         decision_interval=5,
         max_episode_steps=cfg.episode_len,
     )
-
+    
     manager_resumed = bool(LOAD_MANAGER_MODEL_PATH and os.path.exists(LOAD_MANAGER_MODEL_PATH))
+    
+    manager_args = {
+        "device":"cpu",
+        "verbose":1,
+        "tensorboard_log":cfg.logdir,
+        "n_steps":128,
+        "batch_size":256,
+        "learning_rate":1e-4,
+        "gamma":0.995,
+        "gae_lambda":0.97,
+        "clip_range":cfg.ppo_clip_range,
+        "n_epochs":cfg.ppo_epochs,
+        "max_grad_norm":cfg.ppo_max_grad_norm,
+        "policy_kwargs":dict(net_arch=[256, 256]),
+        "seed":cfg.seed,
+    }
+    
+    logger.info("#"*100)
+    logger.info("Manager hyperparameters:")
+    logger.info("#"*100)
+    for k, v in manager_args.items():
+        logger.info(f"{k} = {v}")
 
     if manager_resumed:
         logger.info(f"[Manager] Loading pretrained model from: {LOAD_MANAGER_MODEL_PATH}")
         manager_model = PPO.load(
             LOAD_MANAGER_MODEL_PATH,
             env=manager_env,
-            device="cpu",
-            verbose=1,
-            tensorboard_log=cfg.logdir,
-            n_steps=128,
-            batch_size=256,
-            learning_rate=1e-4,
-            gamma=0.995,
-            gae_lambda=0.97,
-            clip_range=cfg.ppo_clip_range,
-            n_epochs=cfg.ppo_epochs,
-            max_grad_norm=cfg.ppo_max_grad_norm,
-            policy_kwargs=dict(net_arch=[256, 256]),
-            seed=cfg.seed,
+            **manager_args
         )
     else:
         logger.info("[Manager] No pretrained manager model given/found. Training from scratch.")
         manager_model = PPO(
             "MlpPolicy",
             manager_env,
-            device="cpu",
-            verbose=1,
-            tensorboard_log=cfg.logdir,
-            n_steps=128,
-            batch_size=256,
-            learning_rate=1e-4,
-            gamma=0.995,
-            gae_lambda=0.97,
-            clip_range=cfg.ppo_clip_range,
-            n_epochs=cfg.ppo_epochs,
-            max_grad_norm=cfg.ppo_max_grad_norm,
-            policy_kwargs=dict(net_arch=[256, 256]),
-            seed=cfg.seed,
+            **manager_args
         )
 
     # ---- Manager evaluation ----

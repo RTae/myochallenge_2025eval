@@ -193,3 +193,6 @@ def predict_ball_trajectory(
         paddle_ori_ideal = quats_mujoco
 
     return pred_ball_pos, paddle_ori_ideal
+
+def as_1d(x):
+    return np.asarray(x, dtype=np.float32).reshape(-1)

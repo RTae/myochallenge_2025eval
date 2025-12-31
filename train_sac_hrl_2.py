@@ -1,7 +1,7 @@
 import os
 from typing import Callable, Optional
 
-from stable_baselines3 import PPO
+from stable_baselines3 import PPO, SAC
 from stable_baselines3.common.callbacks import EvalCallback, CallbackList
 from stable_baselines3.common.vec_env import VecNormalize
 
@@ -88,40 +88,38 @@ def main():
 
     if worker_resumed:
         logger.info(f"[Worker] Loading pretrained model from: {LOAD_WORKER_MODEL_PATH}")
-        worker_model = PPO.load(
+        worker_model = SAC.load(
             LOAD_WORKER_MODEL_PATH,
             env=worker_env,
             verbose=1,
             device="cpu",
             tensorboard_log=cfg.logdir,
-            n_steps=worker_n_steps,
-            batch_size=worker_batch_size,
+            buffer_size=2_000_000,
+            batch_size=256,
             learning_rate=3e-4,
-            gamma=0.97,
-            gae_lambda=cfg.ppo_lambda,
-            clip_range=cfg.ppo_clip_range,
-            n_epochs=cfg.ppo_epochs,
-            max_grad_norm=cfg.ppo_max_grad_norm,
-            policy_kwargs=dict(net_arch=[128, 128]),
+            tau=0.005,
+            gamma=0.99,
+            train_freq=1,
+            gradient_steps=1,
+            ent_coef="auto_0.2",
             seed=cfg.seed,
         )
     else:
         logger.info("[Worker] No pretrained worker model given/found. Training from scratch.")
-        worker_model = PPO(
+        worker_model = SAC(
             "MlpPolicy",
             worker_env,
             verbose=1,
             device="cpu",
             tensorboard_log=cfg.logdir,
-            n_steps=1024,
-            batch_size=worker_batch_size,
+            buffer_size=2_000_000,
+            batch_size=256,
             learning_rate=3e-4,
-            gamma=0.97,
-            gae_lambda=cfg.ppo_lambda,
-            clip_range=cfg.ppo_clip_range,
-            n_epochs=cfg.ppo_epochs,
-            max_grad_norm=cfg.ppo_max_grad_norm,
-            policy_kwargs=dict(net_arch=[128, 128]),
+            tau=0.005,
+            gamma=0.99,
+            train_freq=1,
+            gradient_steps=1,
+            ent_coef="auto_0.2",
             seed=cfg.seed,
         )
 
@@ -223,15 +221,11 @@ def main():
             device="cpu",
             verbose=1,
             tensorboard_log=cfg.logdir,
-            n_steps=manager_n_steps,
-            batch_size=manager_batch_size,
+            buffer_size=1_000_000,
+            batch_size=256,
             learning_rate=1e-4,
             gamma=0.995,
-            gae_lambda=0.97,
-            clip_range=cfg.ppo_clip_range,
-            n_epochs=cfg.ppo_epochs,
-            max_grad_norm=cfg.ppo_max_grad_norm,
-            policy_kwargs=dict(net_arch=[256, 256]),
+            ent_coef="auto_0.05",
             seed=cfg.seed,
         )
     else:
@@ -242,15 +236,11 @@ def main():
             device="cpu",
             verbose=1,
             tensorboard_log=cfg.logdir,
-            n_steps=128,
-            batch_size=manager_batch_size,
+            buffer_size=1_000_000,
+            batch_size=256,
             learning_rate=1e-4,
             gamma=0.995,
-            gae_lambda=0.97,
-            clip_range=cfg.ppo_clip_range,
-            n_epochs=cfg.ppo_epochs,
-            max_grad_norm=cfg.ppo_max_grad_norm,
-            policy_kwargs=dict(net_arch=[256, 256]),
+            ent_coef="auto_0.05",
             seed=cfg.seed,
         )
 

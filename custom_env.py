@@ -5,12 +5,20 @@ from config import Config
 
 
 class CustomEnv(gym.Env):
-    metadata = {"render_modes": []}
+    metadata = {
+        "render_modes": ["human", "rgb_array"],
+    }
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, render_mode: Optional[str] = None):
         super().__init__()
         self.config = config
-        self.env = gym.make(config.env_id, max_episode_steps=config.episode_len)
+        self.render_mode = render_mode
+
+        self.env = gym.make(
+            config.env_id,
+            max_episode_steps=config.episode_len,
+            render_mode=render_mode,
+        )
 
         self.observation_space = self.env.observation_space
         self.action_space = self.env.action_space

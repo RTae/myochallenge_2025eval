@@ -1,8 +1,8 @@
 from stable_baselines3.common.callbacks import CallbackList, EvalCallback
 from callbacks.infologger_callback import InfoLoggerCallback
 from callbacks.video_callback import VideoCallback
-from sb3_contrib import RecurrentPPO
-from lattice.ppo.policies import LatticeRecurrentActorCriticPolicy
+from lattice.ppo.policies import LatticeActorCriticPolicy
+from stable_baselines3 import PPO
 from config import Config
 from loguru import logger
 import os
@@ -16,7 +16,8 @@ def main():
     prepare_experiment_directory(cfg)
             
     env = create_default_env(cfg, num_envs=cfg.num_envs)
-    model = RecurrentPPO(policy=LatticeRecurrentActorCriticPolicy, 
+    model = PPO(
+        policy=LatticeActorCriticPolicy, 
         env=env,
         verbose=1,
         tensorboard_log=os.path.join(cfg.logdir),
