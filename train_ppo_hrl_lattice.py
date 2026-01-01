@@ -46,8 +46,8 @@ def main():
     cfg = Config()
     prepare_experiment_directory(cfg)
 
-    worker_total_timesteps = 20_000_000
-    manager_total_timesteps = 5_000_000
+    worker_total_timesteps = 1_000_000
+    manager_total_timesteps = 100_000
 
     # ==================================================
     # LOAD paths
@@ -101,9 +101,9 @@ def main():
         # ---------------------------
         # PPO Batch & Rollout Settings
         # ---------------------------
-        "batch_size": 512,
-        "n_steps": 64,
-        "n_epochs": cfg.ppo_epochs,
+        "batch_size": 128,
+        "n_steps": 256,
+        "n_epochs": 5,
 
         # ---------------------------
         # Scheduler
@@ -150,10 +150,11 @@ def main():
             # ===== Pi & V Network Sizes =====
             net_arch=
                 dict(
-                    pi=[512, 512],
-                    vf=[512, 512],
+                    pi=[256, 256],
+                    vf=[256, 256],
                 ),
             activation_fn=nn.Tanh,  # smooth control
+            lstm_hidden_size=128,
         ),
     }
     

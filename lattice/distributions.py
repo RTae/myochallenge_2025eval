@@ -312,8 +312,6 @@ class LatticeStateDependentNoiseDistribution(StateDependentNoiseDistribution):
             # ============================================================
             # 1. NAN GUARDS (Input Sanitization)
             # ============================================================
-            # The traceback showed 'mean_actions' contained NaNs.
-            # We must fix this BEFORE anything else, or Normal() will crash.
             if torch.isnan(mean_actions).any() or torch.isinf(mean_actions).any():
                 # Replace NaNs with 0.0 (do nothing) and Infs with finite bounds
                 mean_actions = torch.nan_to_num(mean_actions, nan=0.0, posinf=10.0, neginf=-10.0)
@@ -341,7 +339,7 @@ class LatticeStateDependentNoiseDistribution(StateDependentNoiseDistribution):
             sigma_mat[:, range(self.action_dim), range(self.action_dim)] += latent_ind_variance
             
             # ============================================================
-            # 2. MATRIX STABILIZATION (Cholesky Safety)
+            # 2. MATRIX STABILIZATION
             # ============================================================
             # Ensure symmetry (numerical errors can make it asymmetric)
             sigma_mat = 0.5 * (sigma_mat + sigma_mat.transpose(-1, -2))

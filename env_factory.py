@@ -19,13 +19,17 @@ def make_subproc_env(num_envs: int, thunk_fn: Callable):
 def build_worker_vec(cfg: Config, num_envs: int) -> VecNormalize:
     def make_env(rank: int):
         def _init():
+            import torch
+            # Prevent threads from fighting over CPU resources
+            torch.set_num_threads(1)
+            
             env = TableTennisWorker(cfg)
             return env
         return _init
     
     logger.info(f"Creating {num_envs} low-level environments")
     venv = make_subproc_env(num_envs, make_env)
-    venv = VecMonitor(venv, info_keywords=("is_success"))
+    venv = VecMonitor(venv, info_keywords=("is_success",))
     return VecNormalize(venv, norm_obs=True, norm_reward=False)
 
 
@@ -74,7 +78,7 @@ def build_manager_vec(
 
     logger.info(f"Creating {num_envs} high-level environments")
     venv = make_subproc_env(num_envs, make_env)
-    venv = VecMonitor(venv, info_keywords=("is_success"))
+    venv = VecMonitor(venv, info_keywords=("is_success",))
 
     return VecNormalize(venv, norm_obs=False, norm_reward=False)
 
