@@ -60,8 +60,10 @@ class TableTennisWorker(CustomEnv):
         # Runtime
         # ==================================================
         self.current_goal: Optional[np.ndarray] = None
+        # Store the Manager's deviation strategy
+        self.manager_delta: np.ndarray = np.zeros(self.goal_dim, dtype=np.float32)
+        
         self.goal_start_time: Optional[float] = None
-
         self.prev_reach_err: Optional[float] = None
         self._prev_paddle_contact = False
         
@@ -117,8 +119,22 @@ class TableTennisWorker(CustomEnv):
         )
         return pred_pos, paddle_ori_ideal
 
-    def set_goal(self, goal_phys: np.ndarray):
-        self.current_goal = goal_phys
+    def set_goal(self, goal_phys: np.ndarray, delta: Optional[np.ndarray] = None):
+        """
+        Sets the current goal.
+        
+        Args:
+            goal_phys: The full 8D goal vector (Base + Delta).
+            delta: The explicit Manager Delta (optional). 
+                   If None (Low-level training), we assume 0.
+        """
+        self.current_goal = goal_phys.astype(np.float32)
+        
+        if delta is not None:
+            self.manager_delta = delta.astype(np.float32)
+        else:
+            self.manager_delta = np.zeros(self.goal_dim, dtype=np.float32)
+            
         self.goal_start_time = float(self.env.unwrapped.obs_dict["time"])
         
     def predict_goal_from_state(self, obs_dict):
@@ -150,7 +166,6 @@ class TableTennisWorker(CustomEnv):
 
         if self.goal_noise_scale > 0.0:
             goal_phys[:3] += np.random.normal(0.0, self.goal_noise_scale, size=3)
-            # Apply noise to time estimate
             goal_phys[7] += np.random.normal(0.0, self.goal_noise_scale * 0.5)
 
         return goal_phys
@@ -159,52 +174,48 @@ class TableTennisWorker(CustomEnv):
         return np.asarray(x, dtype=np.float32).reshape(-1)
 
     def _build_obs(self, obs_dict):
+        # --------------------------------------------------
+        # 1. DYNAMIC GOAL REFINEMENT
+        # --------------------------------------------------
         ball_x = obs_dict["ball_pos"][0]
         
-        # Slew Rate Limits (Max change per step)
-        MAX_POS_DELTA = 0.05 
-        MAX_ORI_DELTA = 0.1
-
         # Only update if ball is incoming and not hit
         if ball_x < 1.2 and not self._prev_paddle_contact:
-            # 1. Get the Raw Prediction
-            raw_new_pos, raw_new_ori = self._predict(obs_dict)
+            # A. Get FRESH Physics Prediction (The "97% Trick")
+            new_pos, new_ori = self._predict(obs_dict)
             
-            # 2. SMOOTH POSITION
-            # Calculate how much the goal WANTS to move
+            # Calculate new dt
+            dx = float(new_pos[0] - ball_x)
+            vx = float(obs_dict["ball_vel"][0])
+            new_dt = abs(dx / vx) if (abs(vx) > 1e-3 and (dx * vx) > 0.0) else 1.5
+            new_dt = float(np.clip(new_dt, 0.05, 1.5))
+            
+            new_base_goal = np.concatenate([new_pos, new_ori, [new_dt]])
+            
+            # C. Apply Manager's Delta
+            # Target = Fresh_Physics + Stored_Strategy
+            target_goal = new_base_goal + self.manager_delta
+            
+            # D. Smoothing (Slew Rate Limiting)
+            # Prevent "Teleporting" by limiting how much we change per step
             curr_pos = self.current_goal[0:3]
-            delta_pos = raw_new_pos - curr_pos
+            target_pos = target_goal[0:3]
+            delta_pos = target_pos - curr_pos
             dist_pos = np.linalg.norm(delta_pos)
             
-            # If the jump is too big, clamp it
+            MAX_POS_DELTA = 0.05
+            
             if dist_pos > MAX_POS_DELTA:
-                # Move only MAX_POS_DELTA towards the new prediction
                 scale = MAX_POS_DELTA / (dist_pos + 1e-9)
                 self.current_goal[0:3] = curr_pos + (delta_pos * scale)
             else:
-                # Jump is small enough, take it directly
-                self.current_goal[0:3] = raw_new_pos
+                self.current_goal[0:3] = target_pos
             
-            # 3. SMOOTH ORIENTATION
-            curr_ori = self.current_goal[3:7]
-            delta_ori = raw_new_ori - curr_ori
-            dist_ori = np.linalg.norm(delta_ori)
+            # Update Ori/Time (Usually safe to jump, or add similar smoothing)
+            self.current_goal[3:] = target_goal[3:]
             
-            if dist_ori > MAX_ORI_DELTA:
-                scale = MAX_ORI_DELTA / (dist_ori + 1e-9)
-                self.current_goal[3:7] = curr_ori + (delta_ori * scale)
-                # Re-normalize quaternion to ensure validity
-                self.current_goal[3:7] /= (np.linalg.norm(self.current_goal[3:7]) + 1e-9)
-            else:
-                self.current_goal[3:7] = raw_new_ori
-
-            # 4. UPDATE TIME
-            dx = float(self.current_goal[0] - ball_x)
-            vx = float(obs_dict["ball_vel"][0])
-            if abs(vx) > 1e-3 and (dx * vx) > 0.0:
-                new_dt = abs(dx / vx)
-                self.current_goal[7] = float(np.clip(new_dt, 0.05, 1.5))
-                self.goal_start_time = float(obs_dict["time"])
+            # Reset start time since dt is refreshed
+            self.goal_start_time = float(obs_dict["time"])
 
         # --------------------------------------------------
         # 2. BUILD OBSERVATION
@@ -245,10 +256,13 @@ class TableTennisWorker(CustomEnv):
 
         self._prev_paddle_contact = False
 
+        # Init with 0 delta
+        self.manager_delta = np.zeros(self.goal_dim, dtype=np.float32)
+        
         goal = self.predict_goal_from_state(obs_dict)
-        self.set_goal(goal)
+        self.set_goal(goal, delta=None)
+        
         self.prev_reach_err = None
-
         self.prev_reach_err = np.linalg.norm(
             obs_dict["paddle_pos"] - self.current_goal[:3]
         )
