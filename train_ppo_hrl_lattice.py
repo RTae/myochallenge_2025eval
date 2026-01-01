@@ -26,7 +26,7 @@ import math
 def load_worker_model(path: str):
     return RecurrentPPO.load(
             path,
-            device="cpu",
+            device="cuda",
             policy=LatticeActorCriticPolicy, 
     )
 
@@ -96,7 +96,7 @@ def main():
         "env": worker_env,                # this should be a VecNormalize-wrapped env
         "verbose": 1,
         "tensorboard_log": os.path.join(cfg.logdir),
-        "device": "cpu",
+        "device": "cuda",
 
         # ---------------------------
         # PPO Batch & Rollout Settings

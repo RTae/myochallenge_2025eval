@@ -270,9 +270,31 @@ class TableTennisWorker(CustomEnv):
         return self._build_obs(obs_dict), info
 
     def step(self, action):
+        # If the network outputs NaNs or Infs, replace with a neutral action (zeros)
+        if np.any(np.isnan(action)) or np.any(np.isinf(action)):
+            # logger.warning("NaN/Inf action detected! Replacing with zeros.")
+            action = np.zeros_like(action)
+            
+        # Now pass the safe action to the super class
         _, base_reward, terminated, truncated, info = super().step(action)
         
         obs_dict = info["obs_dict"]
+        
+        # ============================================================
+        # 2. OBSERVATION GUARD (Detect Physics Explosion)
+        # ============================================================
+        # If the physics engine returns NaNs, the sim has crashed.
+        # We must end the episode immediately to prevent confusing the PPO algorithm.
+        if any(np.isnan(v).any() for v in obs_dict.values()):
+            # Create a safe dummy observation (zeros)
+            safe_obs = np.zeros(self.observation_dim, dtype=np.float32)
+            
+            # Penalize the agent heavily for crashing the sim
+            penalty_reward = -10.0 
+            
+            # Force termination
+            return safe_obs, penalty_reward, True, False, info
+
         rwd_dict = info["rwd_dict"]
 
         reward, _, logs = self._compute_reward(obs_dict, rwd_dict)
