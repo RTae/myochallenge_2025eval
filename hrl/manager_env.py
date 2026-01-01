@@ -41,6 +41,7 @@ class TableTennisManager(CustomEnv):
             "TableTennisManager only supports num_envs=1 because it calculates "
             "a single goal correction based on the first environment."
         )
+        
 
         # --------------------------------------------------
         # Safety check: worker must be fully trained

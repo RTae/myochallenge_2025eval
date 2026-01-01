@@ -14,7 +14,6 @@ class CurriculumEnv(gym.Env):
       - SubprocVecEnv-safe curriculum variable
     """
 
-    metadata = {"render_modes": []}
 
     def __init__(
         self,

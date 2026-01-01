@@ -5,9 +5,6 @@ from config import Config
 
 
 class CustomEnv(gym.Env):
-    metadata = {
-        "render_modes": ["human", "rgb_array"],
-    }
 
     def __init__(self, config: Config, render_mode: Optional[str] = None):
         super().__init__()
