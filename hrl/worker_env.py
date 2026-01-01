@@ -375,13 +375,16 @@ class TableTennisWorker(CustomEnv):
             and 0.0 <= dt <= self.time_thr * 1.3
             and cos_sim > self.paddle_ori_thr - 0.1
         )
-
-        if paddle_hit and not self._prev_paddle_contact:
-            if goal_aligned and v_norm < 0.6:
-                reward += 3.5
-                is_contact = True
-
+                
+        if paddle_hit and not self._prev_paddle_contact and goal_aligned:
+            reward += 3.5
+            is_contact = True
+            
         self._prev_paddle_contact = paddle_hit
+
+        # safety-only penalty (inactive in normal behavior)
+        if v_norm > 6.0:
+            reward -= 0.05 * (v_norm - 6.0)
 
         # ==================================================
         # 7) ENV SUCCESS
