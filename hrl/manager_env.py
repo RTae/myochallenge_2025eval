@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from typing import Tuple, Dict, Optional, Any
 from collections import deque
 import numpy as np
@@ -9,7 +7,7 @@ from stable_baselines3.common.vec_env import VecEnv
 
 from config import Config
 from custom_env import CustomEnv
-from logging import logger
+from loguru import logger
 
 
 class TableTennisManager(CustomEnv):
@@ -184,6 +182,11 @@ class TableTennisManager(CustomEnv):
             "goal_delta_norm": delta_norm,
             **last_infos,
         }
+        
+        if obs_out.shape != self.observation_space.shape:
+            raise ValueError(
+                f"OBS SHAPE ERROR: got {obs_out.shape}, expected {self.observation_space.shape}"
+            )
 
         return obs_out, float(reward), terminated, truncated, info_out
 
