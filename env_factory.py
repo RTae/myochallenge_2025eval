@@ -19,9 +19,6 @@ def make_subproc_env(num_envs: int, thunk_fn: Callable):
 def build_worker_vec(cfg: Config, num_envs: int) -> VecNormalize:
     def make_env(rank: int):
         def _init():
-            import torch
-            # Prevent threads from fighting over CPU resources
-            torch.set_num_threads(1)
             
             env = TableTennisWorker(cfg)
             return env

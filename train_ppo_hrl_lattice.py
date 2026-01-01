@@ -101,7 +101,7 @@ def main():
         # ---------------------------
         # PPO Batch & Rollout Settings
         # ---------------------------
-        "batch_size": 128,
+        "batch_size": 4096,
         "n_steps": 256,
         "n_epochs": 5,
 
