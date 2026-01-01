@@ -411,6 +411,8 @@ class TableTennisWorker(CustomEnv):
             "reach_y_err": pred_err_y,
             "reach_z_err": pred_err_z,
             "paddle_quat_err": paddle_quat_err_goal,
+            "time_err": dt,
+            "abs_time_err": abs(dt),
             "is_ball_passed": active_mask,
             "pelvis_err": pelvis_err,
             "alignment_y": alignment_y,
