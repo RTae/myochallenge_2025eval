@@ -240,6 +240,12 @@ class TableTennisWorker(CustomEnv):
 
         info.update(logs)
         
+        info.update({
+            "time_threshold": self.time_thr,
+            "reach_threshold": self.reach_thr,
+            "paddle_ori_threshold": self.paddle_ori_thr,
+        })
+        
         return self._build_obs(obs_dict), float(reward), terminated, truncated, info
     
     def _compute_reward(self, obs_dict, rwd_dict):
