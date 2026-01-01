@@ -321,10 +321,10 @@ class TableTennisWorker(CustomEnv):
         # 5) POSTURE
         # --------------------------------------------------
         palm_closeness = float(rwd_dict.get("palm_dist", 0.0))
-        reward -= 0.2 * (1.0 - palm_closeness)
+        reward -= (1.0 - palm_closeness)
 
         torso_up = float(rwd_dict.get("torso_up", 0.0))
-        reward += 0.25 * torso_up
+        reward += torso_up
 
         # --------------------------------------------------
         # 6) CONTACT (Upper time limit removed)
