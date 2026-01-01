@@ -209,17 +209,17 @@ class TableTennisManager(CustomEnv):
         success_rate: float,
         delta_norm: float,
     ) -> float:
-        # Base existence cost (encourage speed)
+        # Base existence cost
         r = -0.05
         
         # Regularization: Penalize large changes to the physics baseline.
         r -= 0.05 * delta_norm 
 
-        # Tier 1: Worker did what we asked (Soft alignment)
+        # Tier 1: Worker did what we asked
         if goal_success:
             r += 1.0
 
-        # Tier 2: The ball actually hit the target (Hard success)
+        # Tier 2: Solve the environment
         if env_success:
             r += 10.0 # Boosted slightly to overpower the penalty
 
