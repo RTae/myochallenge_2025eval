@@ -395,9 +395,11 @@ class TableTennisWorker(CustomEnv):
             reward += 25.0
             
         # Contact Bonus
+        is_contact = False
         if has_hit and not self._prev_paddle_contact:
             if alignment_y > 0.5 and alignment_z > 0.5:
                 reward += 5.0
+                is_contact = True
             else:
                 reward += 1.0 
         
@@ -414,6 +416,7 @@ class TableTennisWorker(CustomEnv):
             "time_err": dt,
             "abs_time_err": abs(dt),
             "is_ball_passed": active_mask,
+            "is_contact": float(is_contact),
             "pelvis_err": pelvis_err,
             "alignment_y": alignment_y,
             "alignment_z": alignment_z,
