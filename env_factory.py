@@ -1,8 +1,7 @@
 from typing import Callable
 from loguru import logger
 
-from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize, DummyVecEnv
-from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize, DummyVecEnv, VecMonitor
 
 from config import Config
 from hrl.worker_env import TableTennisWorker
@@ -22,7 +21,7 @@ def build_worker_vec(cfg: Config, num_envs: int) -> VecNormalize:
     def make_env(rank: int):
         def _init():
             env = TableTennisWorker(cfg)
-            return Monitor(env, info_keywords=("is_success",))
+            return VecMonitor(env, info_keywords=("is_success",))
         return _init
 
     venv = make_subproc_env(num_envs, make_env)
@@ -71,12 +70,12 @@ def build_manager_vec(
                 max_episode_steps=max_episode_steps,
             )
 
-            return Monitor(env, info_keywords=("is_success",))
+            return VecMonitor(env, info_keywords=("is_success",))
 
         return _init
 
     venv = make_subproc_env(num_envs, make_env)
-    return VecNormalize(venv, norm_obs=True, norm_reward=False)
+    return VecNormalize(venv, norm_obs=False, norm_reward=False)
 
 
 def build_curriculum_vec(cfg: Config, num_envs: int, eval_mode: bool = False):

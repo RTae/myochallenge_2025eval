@@ -1,18 +1,13 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Tuple, Dict
 import numpy as np
 from myosuite.utils import gym
 
 from config import Config
 from custom_env import CustomEnv
 
-from hrl.utils import (
-    safe_unit,
-    predict_ball_trajectory,
-    quat_to_paddle_normal,
-    OWD,
-)
+from hrl.utils import predict_ball_trajectory
 
 
 class TableTennisWorker(CustomEnv):
@@ -38,7 +33,7 @@ class TableTennisWorker(CustomEnv):
 
     Goal (6):
         - target_ball_pos (3)
-        - target_paddle_normal (2)
+        - target_paddle_ori (4)
         - target_time_to_plane (1)
 
     Observation: 428 + 6 = 434
@@ -51,7 +46,7 @@ class TableTennisWorker(CustomEnv):
         # Observation space
         # ==================================================
         self.state_dim = 428
-        self.goal_dim = 6
+        self.goal_dim = 8
         self.observation_dim = self.state_dim + self.goal_dim
 
         self.observation_space = gym.spaces.Box(
@@ -117,25 +112,7 @@ class TableTennisWorker(CustomEnv):
         return float(self.progress)
         
     # ==================================================
-    # Helpers
-    # ==================================================
-    def _pack_normal_xy(self, n):
-        if n[0] > 0:
-            n = -n
-        return float(n[0]), float(n[1])
-
-    def _unpack_normal_xy(self, nx, ny):
-        r2 = nx * nx + ny * ny
-        if r2 > 0.999:
-            s = 0.999 / np.sqrt(r2)
-            nx *= s
-            ny *= s
-        nz = np.sqrt(max(1.0 - nx * nx - ny * ny, 0.0))
-        n = np.array([nx, ny, nz], dtype=np.float32)
-        return safe_unit(n, np.array(OWD, dtype=np.float32))
-
-    # ==================================================
-    # Prediction
+    # Goal API
     # ==================================================
     def _predict(self, obs_dict):
         pred_pos, paddle_ori_ideal = predict_ball_trajectory(
@@ -143,19 +120,15 @@ class TableTennisWorker(CustomEnv):
             ball_vel=obs_dict["ball_vel"],
             paddle_pos=obs_dict["paddle_pos"],
         )
-        n_ideal = quat_to_paddle_normal(paddle_ori_ideal)
         
-        return pred_pos, n_ideal
+        return pred_pos, paddle_ori_ideal
 
-    # ==================================================
-    # Goal API
-    # ==================================================
     def set_goal(self, goal_phys: np.ndarray):
         self.current_goal = goal_phys
         self.goal_start_time = float(self.env.unwrapped.obs_dict["time"])
         
     def predict_goal_from_state(self, obs_dict):
-        pred_pos, n_ideal = self._predict(obs_dict)
+        pred_pos, pred_paddle_ori = self._predict(obs_dict)
         dx = float(pred_pos[0] - obs_dict["ball_pos"][0])
         vx = float(obs_dict["ball_vel"][0])
 
@@ -165,10 +138,18 @@ class TableTennisWorker(CustomEnv):
             dt = 1.5
 
         dt = float(np.clip(dt, 0.05, 1.5))
-        nx, ny = self._pack_normal_xy(n_ideal)
 
         goal_phys = np.array(
-            [pred_pos[0], pred_pos[1], pred_pos[2], nx, ny, dt],
+            [
+                pred_pos[0],
+                pred_pos[1],
+                pred_pos[2],
+                pred_paddle_ori[0],
+                pred_paddle_ori[1],
+                pred_paddle_ori[2],
+                pred_paddle_ori[3],
+                dt
+            ],
             dtype=np.float32,
         )
 
@@ -248,137 +229,112 @@ class TableTennisWorker(CustomEnv):
         
         return self._build_obs(obs_dict), float(reward), terminated, truncated, info
     
-    def _compute_reward(self, obs_dict, rwd_dict):
-        # --------------------------------------------------
-        # GEOMETRY
-        # --------------------------------------------------
+    def _compute_reward(self, obs_dict, rwd_dict) -> Tuple[float, bool, Dict]:
+        """
+        Refactored Reward: Masked + Component-Wise + Quaternion Error (Ort)
+        """
+        # ==================================================
+        # 1. SETUP & MASKS
+        # ==================================================
+        # Retrieve the goal we set earlier (Frozen Goal)
+        # Goal vector: [x, y, z, nx, ny, dt]
+        goal_pos = self.current_goal[:3]
         paddle_pos = obs_dict["paddle_pos"]
-        goal_pos   = self.current_goal[:3]
 
-        reach_err = float(np.linalg.norm(paddle_pos - goal_pos))
+        # Calculate Masks (Active only if ball is in front of paddle)
+        # Note: We use the goal position as a proxy for the ball's impact point
+        err_x = float(goal_pos[0] - paddle_pos[0])
+        active_mask = 1.0 if err_x > -0.05 else 0.0
 
-        if self.prev_reach_err is None:
-            self.prev_reach_err = reach_err
-        reach_delta = self.prev_reach_err - reach_err
-        self.prev_reach_err = reach_err
+        # Check contact to stop "reaching" reward after the hit
+        touch_vec = obs_dict["touching_info"]
+        has_hit = float(touch_vec[0]) > 0.5
+        
+        # Once we hit, we stop enforcing alignment (allow follow-through)
+        active_alignment_mask = active_mask * (1.0 - float(self._prev_paddle_contact or has_hit))
 
+        # ==================================================
+        # 2. POSITION ALIGNMENT (Component-Wise)
+        # ==================================================
+        # Split error into Y (width) and Z (height) for precise feedback
+        pred_err_y = np.abs(paddle_pos[1] - goal_pos[1])
+        pred_err_z = np.abs(paddle_pos[2] - goal_pos[2])
+
+        alignment_y = active_alignment_mask * np.exp(-5.0 * pred_err_y)
+        alignment_z = active_alignment_mask * np.exp(-5.0 * pred_err_z)
+
+        # ==================================================
+        # 3. ORIENTATION ALIGNMENT
+        # ==================================================        
+        paddle_ori = obs_dict["paddle_ori"]
+        goal_ori = self.current_goal[3:7]
+        paddle_ori_err = paddle_ori - goal_ori
+        paddle_quat_err_goal = np.linalg.norm(paddle_ori_err)
+        paddle_quat_reward = active_alignment_mask * np.exp(-5.0 * paddle_quat_err_goal)
+        
+        # ==================================================
+        # 4. PELVIS ALIGNMENT
+        # ==================================================
+        # Force the base (pelvis) to move with the hand
+        pelvis_pos = obs_dict["pelvis_pos"]
+        
+        # Logic: Calculate where the pelvis *should* be to support the reach
+        paddle_to_pelvis_offset = pelvis_pos[:2] - paddle_pos[:2]
+        pelvis_target_pos = goal_pos[:2] + paddle_to_pelvis_offset
+        
+        pelvis_err = np.linalg.norm(pelvis_pos[:2] - pelvis_target_pos)
+        pelvis_alignment = active_alignment_mask * np.exp(-5.0 * pelvis_err)
+
+        # ==================================================
+        # 5. AGGREGATE REWARDS
+        # ==================================================
         reward = 0.0
-
-        # --------------------------------------------------
-        # 1) APPROACH
-        # --------------------------------------------------
-        reward += -0.15 * reach_err
-        reward += 1.2 * np.clip(reach_delta, -0.05, 0.05)
-
-        if reach_err > 0.30:
-            v = np.asarray(obs_dict["paddle_vel"], dtype=np.float32)
-            to_goal = goal_pos - paddle_pos
-            dist = np.linalg.norm(to_goal)
-            if dist > 1e-6:
-                to_goal /= dist
-                v_toward = float(np.dot(v, to_goal))
-                reward += 0.25 * np.clip(v_toward, 0.0, 2.0)
-
-        # --------------------------------------------------
-        # 2) ORIENTATION
-        # --------------------------------------------------
-        paddle_n = quat_to_paddle_normal(obs_dict["paddle_ori"])
-        paddle_n /= (np.linalg.norm(paddle_n) + 1e-8)
-
-        goal_n = self._unpack_normal_xy(
-            self.current_goal[3], self.current_goal[4]
-        )
-
-        cos_sim = float(np.clip(np.dot(paddle_n, goal_n), 0.0, 1.0))
-        reward += 0.4 * cos_sim * np.exp(-2.0 * reach_err)
-
-        # --------------------------------------------------
-        # 3) TIMING
-        # --------------------------------------------------
-        dt = float(self.goal_start_time + self.current_goal[5] - obs_dict["time"])
-        hit_ready = reach_err < 1.2 * self.reach_thr
         
-        if hit_ready:
-            # Note: Using base threshold (0.35) makes this reward lenient
-            if dt >= -self.time_thr_base:
-                reward += 0.4 * np.exp(-6.0 * max(0.0, dt))
-            else:
-                reward -= 0.8 * (-dt)
+        # Additive weights (Tune these if needed)
+        reward += 1.0 * alignment_y
+        reward += 1.0 * alignment_z
+        reward += 1.0 * paddle_quat_reward
+        reward += 0.5 * pelvis_alignment
 
         # --------------------------------------------------
-        # 4) READINESS
+        # EXTRAS: Posture, Timing, Success
         # --------------------------------------------------
-        reach_score = np.exp(-6.0 * reach_err)
-        angle_score = cos_sim ** 2
-        time_score  = np.exp(-6.0 * max(dt, 0.0)) 
-
-        readiness = reach_score * angle_score * time_score
-        readiness = np.clip(readiness, 0.0, 1.0)
-        
-        reward += 0.5 * readiness
-
-        # --------------------------------------------------
-        # 5) POSTURE
-        # --------------------------------------------------
+        # Palm Distance
         palm_closeness = float(rwd_dict.get("palm_dist", 0.0))
         reward -= (1.0 - palm_closeness)
-
-        torso_up = float(rwd_dict.get("torso_up", 0.0))
-        reward += torso_up
-
-        # --------------------------------------------------
-        # 6) CONTACT (Upper time limit removed)
-        # --------------------------------------------------
-        touch_vec = obs_dict["touching_info"]
-        paddle_hit = float(touch_vec[0]) > 0.5
-
-        is_contact = False
         
-        goal_aligned = (
-            reach_err < self.reach_thr * 1.5
-            and dt >= -self.time_thr_base * 1.3
-            and cos_sim > self.paddle_ori_thr - 0.15
-        )
-                
-        if paddle_hit and not self._prev_paddle_contact:
-            is_contact = True
-            if goal_aligned:
-                reward += 5.0
-            else:
-                reward -= 1.0 
-            
-        self._prev_paddle_contact = paddle_hit
+        # Torso Up
+        reward += 0.5 * float(rwd_dict.get("torso_up", 0.0))
 
-        # Safety
-        v_norm = float(np.linalg.norm(obs_dict["paddle_vel"]))
-        if v_norm > 6.0:
-            reward -= 0.05 * (v_norm - 6.0)
+        # Timing Penalty (Only if Late)
+        dt = float(self.goal_start_time + self.current_goal[5] - obs_dict["time"])
+        if dt < -0.05:
+            reward -= 1.0 * abs(dt)
 
-        # --------------------------------------------------
-        # 7) ENV SUCCESS
-        # --------------------------------------------------
+        # Success Bonus
         if bool(rwd_dict.get("solved", False)):
             reward += 25.0
             
-        hard_aligned = (
-            reach_err < self.reach_thr
-            and dt >= -self.time_thr_base * 1.3
-            and cos_sim > self.paddle_ori_thr
-        )
+        # Contact Bonus
+        if has_hit and not self._prev_paddle_contact:
+            # Check if aligned during hit
+            if alignment_y > 0.5 and alignment_z > 0.5:
+                reward += 5.0
+            else:
+                reward += 1.0 
+        
+        self._prev_paddle_contact = has_hit
 
+        # ==================================================
+        # LOGGING
+        # ==================================================
         logs = {
-            "reach_err": reach_err,
-            "reach_delta": reach_delta,
-            "cos_sim": cos_sim,
-            "time_error": dt,
-            "abs_time_error": abs(dt),
-            "readiness": readiness,
-            "paddle_speed": v_norm,
+            "alignment_y": alignment_y,
+            "alignment_z": alignment_z,
+            "quat_reward": paddle_quat_reward,
+            "pelvis_reward": pelvis_alignment,
             "palm_dist": palm_closeness,
-            "torso_up": torso_up,
-            "is_contact": float(is_contact),
-            "is_soft_goal_success": float(goal_aligned),
-            "is_goal_success": float(hard_aligned),
+            "is_contact": float(has_hit),
         }
 
         return float(reward), False, logs
