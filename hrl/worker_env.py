@@ -269,150 +269,176 @@ class TableTennisWorker(CustomEnv):
         return self._build_obs(obs_dict), info
 
     def step(self, action):
-        _, base_reward, terminated, truncated, info = super().step(action)
-        
-        obs_dict = info["obs_dict"]
-        rwd_dict = info["rwd_dict"]
+            # 1. Execute low-level environment step
+            _, base_reward, terminated, truncated, info = super().step(action)
+            
+            obs_dict = info["obs_dict"]
+            rwd_dict = info["rwd_dict"]
 
-        reward, _, logs = self._compute_reward(obs_dict, rwd_dict)
-        reward += 0.05 * base_reward
+            # 2. Compute our custom goal-conditioned reward
+            reward, _, logs = self._compute_reward(obs_dict, rwd_dict)
+            
+            # 3. Add base reward (small weight to prevent interference, but keep alive)
+            reward += 0.05 * base_reward
 
-        info.update(logs)
-        
-        return self._build_obs(obs_dict), float(reward), terminated, truncated, info
+            # 4. Update info with our custom logs
+            info.update(logs)
+            
+            # 5. Build observation
+            obs = self._build_obs(obs_dict)
+            
+            return obs, float(reward), terminated, truncated, info
     
     def _compute_reward(self, obs_dict, rwd_dict):
-        # ==================================================
-        # GEOMETRY
-        # ==================================================
-        paddle_pos = obs_dict["paddle_pos"]
-        goal_pos   = self.current_goal[:3]
+            # ==================================================
+            # GEOMETRY SETUP
+            # ==================================================
+            paddle_pos = obs_dict["paddle_pos"]
+            goal_pos   = self.current_goal[:3]
 
-        reach_err = float(np.linalg.norm(paddle_pos - goal_pos))
+            reach_err = float(np.linalg.norm(paddle_pos - goal_pos))
 
-        if self.prev_reach_err is None:
+            # Initialize previous error if this is the first step
+            if self.prev_reach_err is None:
+                self.prev_reach_err = reach_err
+            reach_delta = self.prev_reach_err - reach_err
             self.prev_reach_err = reach_err
-        reach_delta = self.prev_reach_err - reach_err
-        self.prev_reach_err = reach_err
 
-        reward = 0.0
+            reward = 0.0
 
-        # ==================================================
-        # 1) APPROACH
-        # ==================================================
-        # Always-on distance cost (far-field gradient)
-        reward += -0.15 * reach_err
+            # ==================================================
+            # 1) APPROACH (Dense Shaping)
+            # ==================================================
+            # General distance penalty (gradient to goal)
+            reward += -0.15 * reach_err
 
-        # Progress bonus (near-field)
-        reward += 1.2 * np.clip(reach_delta, -0.05, 0.05)
+            # Reward for improving reach error (delta)
+            reward += 1.2 * np.clip(reach_delta, -0.05, 0.05)
 
-        # Directional velocity only when far
-        if reach_err > 0.30:
-            v = np.asarray(obs_dict["paddle_vel"], dtype=np.float32)
-            to_goal = goal_pos - paddle_pos
-            to_goal /= (np.linalg.norm(to_goal) + 1e-8)
-            v_toward = float(np.dot(v, to_goal))
-            reward += 0.25 * np.clip(v_toward, 0.0, 2.0)
+            # Directional velocity bonus (guide velocity vector toward ball when far)
+            if reach_err > 0.30:
+                v = np.asarray(obs_dict["paddle_vel"], dtype=np.float32)
+                to_goal = goal_pos - paddle_pos
+                dist = np.linalg.norm(to_goal)
+                if dist > 1e-6:
+                    to_goal /= dist
+                    v_toward = float(np.dot(v, to_goal))
+                    reward += 0.25 * np.clip(v_toward, 0.0, 2.0)
 
-        # ==================================================
-        # 2) ORIENTATION
-        # ==================================================
-        paddle_n = quat_to_paddle_normal(obs_dict["paddle_ori"])
-        paddle_n /= (np.linalg.norm(paddle_n) + 1e-8)
+            # ==================================================
+            # 2) ORIENTATION (Dense Shaping)
+            # ==================================================
+            paddle_n = quat_to_paddle_normal(obs_dict["paddle_ori"])
+            paddle_n /= (np.linalg.norm(paddle_n) + 1e-8)
 
-        goal_n = self._unpack_normal_xy(
-            self.current_goal[3], self.current_goal[4]
-        )
+            goal_n = self._unpack_normal_xy(
+                self.current_goal[3], self.current_goal[4]
+            )
 
-        cos_sim = float(np.clip(np.dot(paddle_n, goal_n), 0.0, 1.0))
+            cos_sim = float(np.clip(np.dot(paddle_n, goal_n), 0.0, 1.0))
 
-        reward += 0.4 * cos_sim * np.exp(-2.0 * reach_err)
+            # Scale orientation reward by distance (only matters when close)
+            reward += 0.4 * cos_sim * np.exp(-2.0 * reach_err)
 
-        # ==================================================
-        # 3) TIMING
-        # ==================================================
-        dt = float(self.goal_start_time + self.current_goal[5] - obs_dict["time"])
+            # ==================================================
+            # 3) TIMING (Dense Shaping)
+            # ==================================================
+            # dt > 0: Ball is approaching. dt < 0: Ball has passed.
+            dt = float(self.goal_start_time + self.current_goal[5] - obs_dict["time"])
 
-        hit_ready = reach_err < 1.2 * self.reach_thr
+            # Only apply dense timing signals when physically close
+            hit_ready = reach_err < 1.2 * self.reach_thr
+            
+            if hit_ready:
+                # We enforce a "not too late" penalty
+                if dt >= -self.time_thr_base:
+                    # Guidance toward the predicted ideal time (dt=0)
+                    reward += 0.4 * np.exp(-6.0 * max(0.0, dt))
+                else:
+                    # Linear penalty for being late
+                    reward -= 0.8 * (-dt)
 
-        if hit_ready:
-            if dt >= 0.0:
-                reward += 0.4 * np.exp(-6.0 * dt)     # early good
-            else:
-                reward -= 0.8 * (-dt)                 # late bad
+            # ==================================================
+            # 4) READINESS (Multiplicative Gating)
+            # ==================================================
+            reach_score = np.exp(-6.0 * reach_err)
+            angle_score = cos_sim ** 2
+            # Use max(0, dt) to ensure early readiness is rewarded
+            time_score  = np.exp(-6.0 * max(dt, 0.0)) 
 
-        # ==================================================
-        # 4) DENSE PRE-CONTACT READINESS
-        # ==================================================
-        reach_score = np.exp(-6.0 * reach_err)
-        angle_score = cos_sim ** 2
-        time_score  = np.exp(-6.0 * max(dt, 0.0))
+            readiness = reach_score * angle_score * time_score
+            readiness = np.clip(readiness, 0.0, 1.0)
+            
+            reward += 0.5 * readiness
 
-        readiness = reach_score * angle_score * time_score
-        readiness = np.clip(readiness, 0.0, 1.0)
-        reward += 0.5 * readiness
+            # ==================================================
+            # 5) POSTURE
+            # ==================================================
+            palm_closeness = float(rwd_dict.get("palm_dist", 0.0))
+            reward -= 0.2 * (1.0 - palm_closeness)
 
-        # ==================================================
-        # 5) POSTURE
-        # ==================================================
-        palm_closeness = float(rwd_dict.get("palm_dist", 0.0))
-        reward -= 0.2 * (1.0 - palm_closeness)
+            torso_up = float(rwd_dict.get("torso_up", 0.0))
+            reward += 0.25 * torso_up
 
-        torso_up = float(rwd_dict.get("torso_up", 0.0))
-        reward += 0.25 * torso_up
+            # ==================================================
+            # 6) CONTACT (One-shot Event)
+            # ==================================================
+            touch_vec = obs_dict["touching_info"]
+            paddle_hit = float(touch_vec[0]) > 0.5
 
-        # ==================================================
-        # 6) CONTACT — ONE-SHOT SPIKE
-        # ==================================================
-        touch_vec = obs_dict["touching_info"]
-        paddle_hit = float(touch_vec[0]) > 0.5
-
-        v_norm = float(np.linalg.norm(obs_dict["paddle_vel"]))
-        is_contact = False
-
-        goal_aligned = (
-            reach_err < self.reach_thr * 1.3
-            and 0.0 <= dt <= self.time_thr * 1.3
-            and cos_sim > self.paddle_ori_thr - 0.1
-        )
+            is_contact = False
+            
+            # If dt is large positive (early hit), it is still valid.
+            goal_aligned = (
+                reach_err < self.reach_thr * 1.5
+                and dt >= -self.time_thr_base*1.3:
+                and cos_sim > self.paddle_ori_thr - 0.15
+            )
+                    
+            if paddle_hit and not self._prev_paddle_contact:
+                is_contact = True
+                if goal_aligned:
+                    reward += 5.0
+                else:
+                    # Small penalty for hitting ball while flailing/uncontrolled
+                    reward -= 1.0 
                 
-        if paddle_hit and not self._prev_paddle_contact and goal_aligned:
-            reward += 3.5
-            is_contact = True
-            
-        self._prev_paddle_contact = paddle_hit
+            self._prev_paddle_contact = paddle_hit
 
-        # safety-only penalty (inactive in normal behavior)
-        if v_norm > 6.0:
-            reward -= 0.05 * (v_norm - 6.0)
+            # Safety penalty (always active)
+            v_norm = float(np.linalg.norm(obs_dict["paddle_vel"]))
+            if v_norm > 6.0:
+                reward -= 0.05 * (v_norm - 6.0)
 
-        # ==================================================
-        # 7) ENV SUCCESS
-        # ==================================================
-        if bool(rwd_dict.get("solved", False)):
-            reward += 18.0
-            
-        hard_aligned = (
-            reach_err < self.reach_thr
-            and 0.0 <= dt <= self.time_thr
-            and cos_sim > self.paddle_ori_thr
-        )
+            # ==================================================
+            # 7) ENV SUCCESS (True Task Solved)
+            # ==================================================
+            if bool(rwd_dict.get("solved", False)):
+                reward += 25.0
+                
+            # Logging metric for "Perfect" alignment
+            hard_aligned = (
+                reach_err < self.reach_thr
+                and dt >= -self.time_thr_base*1.3:
+                and cos_sim > self.paddle_ori_thr
+            )
 
-        # ==================================================
-        # LOGS
-        # ==================================================
-        logs = {
-            "reach_err": reach_err,
-            "reach_delta": reach_delta,
-            "cos_sim": cos_sim,
-            "time_error": abs(dt),
-            "readiness": readiness,
-            "paddle_speed": v_norm,
-            "palm_dist": palm_closeness,
-            "torso_up": torso_up,
-            "is_contact": float(is_contact),
-            "is_soft_goal_success": float(goal_aligned),
-            "is_goal_success": float(hard_aligned),
-        }
+            # ==================================================
+            # LOGS
+            # ==================================================
+            logs = {
+                "reach_err": reach_err,
+                "reach_delta": reach_delta,
+                "cos_sim": cos_sim,
+                "time_error": dt,
+                "abs_time_error": abs(dt),
+                "readiness": readiness,
+                "paddle_speed": v_norm,
+                "palm_dist": palm_closeness,
+                "torso_up": torso_up,
+                "is_contact": float(is_contact),
+                "is_soft_goal_success": float(goal_aligned),
+                "is_goal_success": float(hard_aligned),
+            }
 
-        return float(reward), False, logs
+            return float(reward), False, logs
