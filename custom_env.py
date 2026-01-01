@@ -6,15 +6,13 @@ from config import Config
 
 class CustomEnv(gym.Env):
 
-    def __init__(self, config: Config, render_mode: Optional[str] = None):
+    def __init__(self, config: Config):
         super().__init__()
         self.config = config
-        self.render_mode = render_mode
 
         self.env = gym.make(
             config.env_id,
             max_episode_steps=config.episode_len,
-            render_mode=render_mode,
         )
 
         self.observation_space = self.env.observation_space
