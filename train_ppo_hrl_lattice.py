@@ -1,7 +1,8 @@
 import os
-from typing import Callable, Optional
+from typing import Optional
 
 from stable_baselines3 import PPO
+from sb3_contrib import RecurrentPPO
 from stable_baselines3.common.callbacks import EvalCallback, CallbackList
 from stable_baselines3.common.vec_env import VecNormalize, DummyVecEnv
 from lattice.ppo.policies import LatticeActorCriticPolicy
@@ -23,9 +24,9 @@ import math
 # Worker loaders
 # ==================================================
 def load_worker_model(path: str):
-    return PPO.load(
+    return RecurrentPPO.load(
             path,
-            device="cuda",
+            device="cpu",
             policy=LatticeActorCriticPolicy, 
     )
 
@@ -45,8 +46,8 @@ def main():
     cfg = Config()
     prepare_experiment_directory(cfg)
 
-    worker_total_timesteps = 15_000_000
-    manager_total_timesteps = 2_000_000
+    worker_total_timesteps = 20_000_000
+    manager_total_timesteps = 5_000_000
 
     # ==================================================
     # LOAD paths
@@ -95,7 +96,7 @@ def main():
         "env": worker_env,                # this should be a VecNormalize-wrapped env
         "verbose": 1,
         "tensorboard_log": os.path.join(cfg.logdir),
-        "device": "cuda",
+        "device": "cpu",
 
         # ---------------------------
         # PPO Batch & Rollout Settings
@@ -165,14 +166,14 @@ def main():
 
     if worker_resumed:
         logger.info(f"[Worker] Loading pretrained model from: {LOAD_WORKER_MODEL_PATH}")
-        worker_model = PPO.load(
+        worker_model = RecurrentPPO.load(
             LOAD_WORKER_MODEL_PATH,
             policy=LatticeActorCriticPolicy, 
             **worker_args
         )
     else:
         logger.info("[Worker] No pretrained worker model given/found. Training from scratch.")        
-        worker_model = PPO(
+        worker_model = RecurrentPPO(
             policy=LatticeActorCriticPolicy,
             **worker_args
         )
@@ -249,7 +250,6 @@ def main():
         assert os.path.exists(SAVE_WORKER_ENV_PATH)
 
     def worker_env_loader(path: str):
-        # Manager loads a frozen worker env via VecNormalize + fresh env_fn
         return load_worker_vecnormalize(path, TableTennisWorker(cfg))
 
     # Manager should use the worker produced by this run
