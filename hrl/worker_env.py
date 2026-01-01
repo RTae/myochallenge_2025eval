@@ -328,7 +328,6 @@ class TableTennisWorker(CustomEnv):
 
         is_contact = False
         
-        # FIXED: Removed Syntax Error (:) and kept logic
         goal_aligned = (
             reach_err < self.reach_thr * 1.5
             and dt >= -self.time_thr_base * 1.3
