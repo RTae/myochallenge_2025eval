@@ -407,6 +407,12 @@ class TableTennisWorker(CustomEnv):
         # LOGGING
         # ==================================================
         logs = {
+            "reach_error": float(np.linalg.norm(paddle_pos - goal_pos)),
+            "reach_y_err": pred_err_y,
+            "reach_z_err": pred_err_z,
+            "paddle_quat_err": paddle_quat_err_goal,
+            "is_ball_passed": active_mask,
+            "pelvis_err": pelvis_err,
             "alignment_y": alignment_y,
             "alignment_z": alignment_z,
             "quat_reward": paddle_quat_reward,

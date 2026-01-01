@@ -118,7 +118,7 @@ def main():
         "clip_range": cfg.ppo_clip_range,
         "gamma": cfg.ppo_gamma,
         "gae_lambda": cfg.ppo_lambda,
-        "max_grad_norm": cfg.ppo_max_grad_norm,
+        "max_grad_norm": 0.3,
         "vf_coef": 0.835671,
         "clip_range_vf": cfg.ppo_clip_range,
 
@@ -142,8 +142,8 @@ def main():
             use_expln=True,
             full_std=False,
             ortho_init=False,
-            log_std_init=-0.5,
-            std_clip=(1e-3, 10),
+            log_std_init=-2.0,
+            std_clip=(0.01, 1.0),
             expln_eps=1e-6,
             std_reg=0.0,
 
