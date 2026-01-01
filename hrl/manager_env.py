@@ -27,29 +27,21 @@ class TableTennisManager(CustomEnv):
         max_episode_steps: int = 800,
         success_buffer_len: int = 20,
     ):
-        # This initializes the unused base env, which is fine (ignored)
         super().__init__(config)
 
         self.worker_env = worker_env
         self.worker_model = worker_model
 
-        # --------------------------------------------------
-        # CRITICAL: Enforce Single Environment
-        # --------------------------------------------------
         assert self.worker_env.num_envs == 1, (
-            "TableTennisManager only supports num_envs=1 because it calculates "
-            "a single goal correction based on the first environment."
+            "TableTennisManager only supports num_envs=1."
         )
-        
 
         # --------------------------------------------------
-        # Safety check: worker must be fully trained
+        # Safety check
         # --------------------------------------------------
         worker_instance = self.worker_env.envs[0].unwrapped
-        
         if hasattr(worker_instance, "get_progress"):
             t_progress = worker_instance.get_progress()
-            # We allow slightly less than 1.0 just in case, but warn if low
             if t_progress < 0.95:
                 logger.warning(f"WARNING: Manager initialized with Worker progress {t_progress:.2f}")
 
@@ -60,7 +52,7 @@ class TableTennisManager(CustomEnv):
         # Observation space
         # --------------------------------------------------
         self.worker_obs_dim = np.prod(self.worker_env.observation_space.shape)
-        self.observation_dim = self.worker_obs_dim + 1 # +1 for time
+        self.observation_dim = self.worker_obs_dim + 1 
 
         self.observation_space = gym.spaces.Box(
             low=-np.inf,
@@ -70,13 +62,13 @@ class TableTennisManager(CustomEnv):
         )
         
         # --------------------------------------------------
-        # Action space: RAW physical Δ-goal (Residual)
-        # [dx, dy, dz, dnx, dny, ddt]
+        # Action space: 8-Dim Delta
+        # [dx, dy, dz, dqw, dqx, dqy, dqz, ddt]
         # --------------------------------------------------
         self.action_space = gym.spaces.Box(
             low=-0.5, 
             high=0.5,
-            shape=(6,),
+            shape=(8,), # <--- UPDATED to match Worker Goal
             dtype=np.float32,
         )
 
@@ -97,12 +89,9 @@ class TableTennisManager(CustomEnv):
         seed: Optional[int] = None,
         options: Optional[Dict] = None,
     ) -> Tuple[np.ndarray, Dict]:
-        # Reset the worker VecEnv (bypassing self.env)
         self._worker_obs = self.worker_env.reset()
-        
         self.current_step = 0
         self.success_buffer.clear()
-
         return self._build_obs(), {}
 
     def step(self, action: np.ndarray):
@@ -112,34 +101,41 @@ class TableTennisManager(CustomEnv):
         worker_env_access = self.worker_env.envs[0].unwrapped
         obs_dict = worker_env_access.unwrapped.obs_dict
         
-        # Use the Worker's physics logic to guess where we SHOULD hit
+        # Returns 8-dim goal: [Pos(3), Quat(4), Time(1)]
         goal_pred = worker_env_access.predict_goal_from_state(obs_dict)
 
         # --------------------------------------------------
-        # 2) Apply Learned Residual
+        # 2) Apply Learned Residual & NORMALIZE
         # --------------------------------------------------
         goal_delta = action.astype(np.float32)
-
         goal_final = goal_pred + goal_delta
+
+
+        quat_part = goal_final[3:7]
+        quat_norm = np.linalg.norm(quat_part)
+        if quat_norm > 1e-9:
+            goal_final[3:7] = quat_part / quat_norm
+        else:
+            goal_final[3:7] = np.array([1.0, 0.0, 0.0, 0.0])
+
+        goal_final[7] = np.clip(goal_final[7], 0.05, 2.0)
 
         # Set this goal for the worker
         worker_env_access.set_goal(goal_final)
         accumulated_worker_reward = 0.0
 
         # --------------------------------------------------
-        # 3) Execute Temporal Abstraction (Frozen Worker)
+        # 3) Execute Temporal Abstraction
         # --------------------------------------------------
         goal_success_any = False
         env_success_any = False
         last_infos = {}
         
         for _ in range(self.decision_interval):
-            # Predict deterministic action from frozen worker
             worker_actions, _ = self.worker_model.predict(
                 self._worker_obs, deterministic=True
             )
 
-            # Step the worker
             obs, rewards, dones, infos = self.worker_env.step(worker_actions)
             
             self._worker_obs = obs
@@ -148,7 +144,6 @@ class TableTennisManager(CustomEnv):
             info = infos[0] 
             last_infos = info
             
-            # Check success (Manager relies on Worker/BaseEnv to provide these keys)
             goal_success_any |= bool(info.get("is_goal_success", 0.0))
             env_success_any  |= bool(info.get("is_success", 0.0))
             accumulated_worker_reward += rewards[0]
@@ -172,7 +167,7 @@ class TableTennisManager(CustomEnv):
             env_success=env_success_any,
             success_rate=success_rate,
             delta_norm=delta_norm,
-            accumulated_worker_reward=accumulated_worker_reward,
+            worker_reward=accumulated_worker_reward, 
         )
 
         # --------------------------------------------------
@@ -192,21 +187,11 @@ class TableTennisManager(CustomEnv):
             **last_infos,
         }
         
-        if obs_out.shape != self.observation_space.shape:
-            raise ValueError(
-                f"OBS SHAPE ERROR: got {obs_out.shape}, expected {self.observation_space.shape}"
-            )
-
         return obs_out, float(reward), terminated, truncated, info_out
 
     def _build_obs(self) -> np.ndarray:
         worker_obs = self._worker_obs[0].astype(np.float32)
-
-        t_frac = np.array(
-            [self.current_step / self.max_episode_steps],
-            dtype=np.float32
-        )
-
+        t_frac = np.array([self.current_step / self.max_episode_steps], dtype=np.float32)
         return np.concatenate([worker_obs, t_frac])
 
     def _compute_reward(
@@ -218,19 +203,11 @@ class TableTennisManager(CustomEnv):
         delta_norm: float,
         worker_reward: float,
     ) -> float:
-        # Base existence cost
         r = -0.05
-
-        # Tier 1: Worker reached the physical target
         if goal_success:
             r += 1.0
-
-        # Tier 2: Task Solved (Ball hit table)
         if env_success:
             r += 10.0 
-
-        # Long-term consistency bonus
         r += 0.5 * success_rate
         r += 0.01 * worker_reward
-
         return float(r)
