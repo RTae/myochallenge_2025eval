@@ -57,7 +57,6 @@ def build_manager_vec(
             # --- FORCE worker into final curriculum regime ---
             worker_vec.env_method("set_goal_noise_scale", 0.0)
             worker_vec.env_method("set_progress", 1.0)
-            worker_vec.env_method("set_allow_hard_success", True)
 
             # --- Create manager ---
             env = TableTennisManager(

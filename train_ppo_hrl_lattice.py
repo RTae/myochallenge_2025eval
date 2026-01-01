@@ -3,7 +3,7 @@ from typing import Callable, Optional
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import EvalCallback, CallbackList
-from stable_baselines3.common.vec_env import VecNormalize
+from stable_baselines3.common.vec_env import VecNormalize, DummyVecEnv
 from lattice.ppo.policies import LatticeActorCriticPolicy
 
 from config import Config
@@ -35,7 +35,8 @@ def load_worker_vecnormalize(path: str, venv: TableTennisWorker) -> VecNormalize
     Keep your existing interface for manager/video usage:
     load VecNormalize stats onto a fresh env built by env_fn.
     """
-    vecnorm = VecNormalize.load(path, venv)
+    env = DummyVecEnv([lambda: venv])
+    vecnorm = VecNormalize.load(path, env)
     vecnorm.training = False
     vecnorm.norm_reward = False
     return vecnorm
