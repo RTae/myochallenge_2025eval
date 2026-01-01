@@ -46,8 +46,8 @@ def main():
     cfg = Config()
     prepare_experiment_directory(cfg)
 
-    worker_total_timesteps = 1_000_000
-    manager_total_timesteps = 100_000
+    worker_total_timesteps = 20_000_000
+    manager_total_timesteps = 4_000_000
 
     # ==================================================
     # LOAD paths
@@ -256,7 +256,7 @@ def main():
     # Manager should use the worker produced by this run
     manager_env = build_manager_vec(
         cfg=cfg,
-        num_envs=cfg.num_envs,
+        num_envs=40,
         worker_model_loader=load_worker_model,
         worker_env_loader=worker_env_loader,
         worker_model_path=SAVE_WORKER_MODEL_PATH,
@@ -271,8 +271,8 @@ def main():
         "device":"cpu",
         "verbose":1,
         "tensorboard_log":cfg.logdir,
-        "n_steps":256,
         "batch_size":1024,
+        "n_steps": 512,
         "learning_rate": lambda p: cfg.ppo_lr * 0.5 * (1 + math.cos(math.pi * (1 - p))),
         "clip_range": lambda p: cfg.ppo_clip_range * p,
         "gamma":0.995,
