@@ -432,7 +432,7 @@ class TableTennisWorker(CustomEnv):
             "time_err": dt,
             "abs_time_err": abs(dt),
             "is_ball_passed": active_mask,
-            "is_contact": float(is_contact_fresh), # Keeping your preferred 'has_hit' log
+            "is_contact": float(is_contact_fresh),
             "pelvis_err": pelvis_err,
             "alignment_y": alignment_y,
             "alignment_z": alignment_z,
