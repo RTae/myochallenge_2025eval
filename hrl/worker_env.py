@@ -355,7 +355,6 @@ class TableTennisWorker(CustomEnv):
         if bool(rwd_dict.get("solved", False)):
             reward += 25.0
             
-        # FIXED: Removed Syntax Error (:)
         hard_aligned = (
             reach_err < self.reach_thr
             and dt >= -self.time_thr_base * 1.3
