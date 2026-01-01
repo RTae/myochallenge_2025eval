@@ -78,12 +78,17 @@ class TableTennisWorker(CustomEnv):
         # ==================================================
         self.reach_thr_base = 0.25
         self.reach_max_delta = 0.15
-        self.time_thr_base = 0.35
-        self.time_max_delta = 0.15
-        self.paddle_ori_thr_base = 0.70
-        self.paddle_ori_max_delta = 0.25
+        self.time_thr_base = 0.1
+        self.time_max_delta = 0.05
+        self.paddle_ori_thr_base = 0.4
+        self.paddle_ori_max_delta = 0.2
 
-        # Initialize thresholds
+        # Initialize thresholds immediately so they exist for the first step
+        self.reach_thr = self.reach_thr_base
+        self.time_thr = self.time_thr_base
+        self.paddle_ori_thr = self.paddle_ori_thr_base
+        
+        # Apply initial progress (0.0) to set exact values
         self.set_progress(0.0)
 
     # ==================================================
@@ -98,11 +103,7 @@ class TableTennisWorker(CustomEnv):
 
         self.reach_thr = self.reach_thr_base - self.reach_max_delta * p
         self.time_thr  = self.time_thr_base  - self.time_max_delta  * p
-
-        angle_p = p ** 1.5
-        self.paddle_ori_thr = (
-            self.paddle_ori_thr_base + self.paddle_ori_max_delta * angle_p
-        )
+        self.paddle_ori_thr = self.paddle_ori_thr_base - self.paddle_ori_max_delta * p
         
     def get_progress(self):
         return float(self.progress)
@@ -319,6 +320,9 @@ class TableTennisWorker(CustomEnv):
         # ==================================================
         goal_pos = self.current_goal[:3]
         paddle_pos = obs_dict["paddle_pos"]
+        
+        # Check environment success (Did we really solve the task?)
+        is_env_success = bool(rwd_dict.get("solved", False))
 
         # Mask: Active only if ball is in front of paddle
         err_x = float(goal_pos[0] - paddle_pos[0])
@@ -366,7 +370,19 @@ class TableTennisWorker(CustomEnv):
         pelvis_alignment = active_alignment_mask * np.exp(-5.0 * pelvis_err)
 
         # ==================================================
-        # 5. AGGREGATE REWARDS
+        # 5. GOAL SUCCESS CHECK (For Manager)
+        # ==================================================
+        # This calculates if the worker reached the target state, 
+        reach_dist = float(np.linalg.norm(paddle_pos - goal_pos))
+        is_reach_good = reach_dist < self.reach_thr
+        is_ori_good = paddle_quat_err_goal < self.paddle_ori_thr
+        dt = float(self.goal_start_time + self.current_goal[7] - obs_dict["time"])
+        is_time_good = dt > -self.time_thr
+        
+        is_goal_success = float(is_reach_good and is_ori_good and is_time_good)
+
+        # ==================================================
+        # 6. AGGREGATE REWARDS
         # ==================================================
         reward = 0.0
         
@@ -386,20 +402,19 @@ class TableTennisWorker(CustomEnv):
         reward += 0.5 * float(rwd_dict.get("torso_up", 0.0))
 
         # Timing Penalty (Only if Late)
-        dt = float(self.goal_start_time + self.current_goal[7] - obs_dict["time"])
-        if dt < -0.05:
+        if dt < -self.time_thr:
             reward -= 1.0 * abs(dt)
 
         # Success Bonus
-        if bool(rwd_dict.get("solved", False)):
+        if is_env_success:
             reward += 25.0
             
         # Contact Bonus
-        is_contact = False
+        is_contact_fresh = False # Track "fresh" contact for this step
         if has_hit and not self._prev_paddle_contact:
             if alignment_y > 0.5 and alignment_z > 0.5:
                 reward += 5.0
-                is_contact = True
+                is_contact_fresh = True
             else:
                 reward += 1.0 
         
@@ -409,21 +424,21 @@ class TableTennisWorker(CustomEnv):
         # LOGGING
         # ==================================================
         logs = {
-            "reach_error": float(np.linalg.norm(paddle_pos - goal_pos)),
+            "is_goal_success": is_goal_success,            
+            "reach_error": reach_dist,
             "reach_y_err": pred_err_y,
             "reach_z_err": pred_err_z,
             "paddle_quat_err": paddle_quat_err_goal,
             "time_err": dt,
             "abs_time_err": abs(dt),
             "is_ball_passed": active_mask,
-            "is_contact": float(is_contact),
+            "is_contact": float(is_contact_fresh), # Keeping your preferred 'has_hit' log
             "pelvis_err": pelvis_err,
             "alignment_y": alignment_y,
             "alignment_z": alignment_z,
             "quat_reward": paddle_quat_reward,
             "pelvis_reward": pelvis_alignment,
             "palm_dist": palm_closeness,
-            "is_contact": float(has_hit),
         }
 
         return float(reward), False, logs
