@@ -119,14 +119,12 @@ class TableTennisManager(CustomEnv):
         # 2) Apply Learned Residual
         # --------------------------------------------------
         goal_delta = action.astype(np.float32)
-        
-        # Clamp delta to prevent impossible goals
-        goal_delta = np.clip(goal_delta, -0.3, 0.3)
 
         goal_final = goal_pred + goal_delta
 
         # Set this goal for the worker
         worker_env_access.set_goal(goal_final)
+        accumulated_worker_reward = 0.0
 
         # --------------------------------------------------
         # 3) Execute Temporal Abstraction (Frozen Worker)
@@ -153,6 +151,7 @@ class TableTennisManager(CustomEnv):
             # Check success (Manager relies on Worker/BaseEnv to provide these keys)
             goal_success_any |= bool(info.get("is_goal_success", 0.0))
             env_success_any  |= bool(info.get("is_success", 0.0))
+            accumulated_worker_reward += rewards[0]
             
             if dones[0]:
                 break
@@ -160,8 +159,12 @@ class TableTennisManager(CustomEnv):
         # --------------------------------------------------
         # 4) Compute Manager Reward
         # --------------------------------------------------
-        self.success_buffer.append(1.0 if env_success_any else 0.0)
-        success_rate = float(np.mean(self.success_buffer))
+        self.success_buffer.append(1.0 if goal_success_any else 0.0)
+        if len(self.success_buffer) > 0:
+            success_rate = float(np.mean(self.success_buffer))
+        else:
+            success_rate = 0.0
+        
         delta_norm = float(np.linalg.norm(goal_delta))
 
         reward = self._compute_reward(
@@ -169,6 +172,7 @@ class TableTennisManager(CustomEnv):
             env_success=env_success_any,
             success_rate=success_rate,
             delta_norm=delta_norm,
+            accumulated_worker_reward=accumulated_worker_reward,
         )
 
         # --------------------------------------------------
@@ -184,6 +188,7 @@ class TableTennisManager(CustomEnv):
             "goal_delta": goal_delta.copy(),
             "goal_final": goal_final.copy(),
             "goal_delta_norm": delta_norm,
+            "worker_reward": float(accumulated_worker_reward),
             **last_infos,
         }
         
@@ -211,6 +216,7 @@ class TableTennisManager(CustomEnv):
         env_success: bool,
         success_rate: float,
         delta_norm: float,
+        worker_reward: float,
     ) -> float:
         # Base existence cost
         r = -0.05
@@ -225,5 +231,6 @@ class TableTennisManager(CustomEnv):
 
         # Long-term consistency bonus
         r += 0.5 * success_rate
+        r += 0.01 * worker_reward
 
         return float(r)

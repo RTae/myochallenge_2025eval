@@ -81,13 +81,8 @@ class TableTennisWorker(CustomEnv):
         self.paddle_ori_thr_base = 0.70
         self.paddle_ori_max_delta = 0.25
 
-        self.reach_thr = self.reach_thr_base - self.reach_max_delta * self.progress
-        self.time_thr  = self.time_thr_base  - self.time_max_delta  * self.progress
-
-        angle_p = self.progress ** 1.5
-        self.paddle_ori_thr = (
-            self.paddle_ori_thr_base + self.paddle_ori_max_delta * angle_p
-        )
+        # Initialize thresholds
+        self.set_progress(0.0)
 
     # ==================================================
     # Curriculum hooks
@@ -102,7 +97,6 @@ class TableTennisWorker(CustomEnv):
         self.reach_thr = self.reach_thr_base - self.reach_max_delta * p
         self.time_thr  = self.time_thr_base  - self.time_max_delta  * p
 
-        # Angle precision ramps late
         angle_p = p ** 1.5
         self.paddle_ori_thr = (
             self.paddle_ori_thr_base + self.paddle_ori_max_delta * angle_p
@@ -115,12 +109,12 @@ class TableTennisWorker(CustomEnv):
     # Goal API
     # ==================================================
     def _predict(self, obs_dict):
+        """Helper to get physics prediction"""
         pred_pos, paddle_ori_ideal = predict_ball_trajectory(
             ball_pos=obs_dict["ball_pos"],
             ball_vel=obs_dict["ball_vel"],
             paddle_pos=obs_dict["paddle_pos"],
         )
-        
         return pred_pos, paddle_ori_ideal
 
     def set_goal(self, goal_phys: np.ndarray):
@@ -139,6 +133,7 @@ class TableTennisWorker(CustomEnv):
 
         dt = float(np.clip(dt, 0.05, 1.5))
 
+        # Goal = [Px, Py, Pz, Qw, Qx, Qy, Qz, Time]
         goal_phys = np.array(
             [
                 pred_pos[0],
@@ -155,7 +150,8 @@ class TableTennisWorker(CustomEnv):
 
         if self.goal_noise_scale > 0.0:
             goal_phys[:3] += np.random.normal(0.0, self.goal_noise_scale, size=3)
-            goal_phys[5] += np.random.normal(0.0, self.goal_noise_scale * 0.5)
+            # Apply noise to time estimate
+            goal_phys[7] += np.random.normal(0.0, self.goal_noise_scale * 0.5)
 
         return goal_phys
         
@@ -163,14 +159,41 @@ class TableTennisWorker(CustomEnv):
         return np.asarray(x, dtype=np.float32).reshape(-1)
 
     def _build_obs(self, obs_dict):
-        time = np.array(
+        # --------------------------------------------------
+        # 1. DYNAMIC GOAL REFINEMENT (The 97% Trick)
+        # --------------------------------------------------
+        # If ball is incoming (x < 1.2) and not hit, update the goal.
+        ball_x = obs_dict["ball_pos"][0]
+        
+        if ball_x < 1.2 and not self._prev_paddle_contact:
+            # Re-predict based on current ball state
+            new_pos, new_ori = self._predict(obs_dict)
+            
+            # Update Position (Indices 0-3)
+            self.current_goal[0:3] = new_pos
+            
+            # Update Orientation (Indices 3-7)
+            self.current_goal[3:7] = new_ori
+            
+            # Update Time (Index 7)
+            dx = float(new_pos[0] - ball_x)
+            vx = float(obs_dict["ball_vel"][0])
+            if abs(vx) > 1e-3 and (dx * vx) > 0.0:
+                new_dt = abs(dx / vx)
+                self.current_goal[7] = float(np.clip(new_dt, 0.05, 1.5))
+                # Reset start time so dt is relative to NOW
+                self.goal_start_time = float(obs_dict["time"])
+
+        # --------------------------------------------------
+        # 2. BUILD OBSERVATION
+        # --------------------------------------------------
+        time_feature = np.array(
             [obs_dict["time"] - self.goal_start_time],
             dtype=np.float32,
         )
 
-        # FIXED: "paddle_ori_err" typo fixed
         obs = np.concatenate([
-            self._flat(time),
+            self._flat(time_feature),
             self._flat(obs_dict["pelvis_pos"]),
             self._flat(obs_dict["body_qpos"]),
             self._flat(obs_dict["body_qvel"]),
@@ -236,27 +259,24 @@ class TableTennisWorker(CustomEnv):
         # ==================================================
         # 1. SETUP & MASKS
         # ==================================================
-        # Retrieve the goal we set earlier (Frozen Goal)
-        # Goal vector: [x, y, z, nx, ny, dt]
         goal_pos = self.current_goal[:3]
         paddle_pos = obs_dict["paddle_pos"]
 
-        # Calculate Masks (Active only if ball is in front of paddle)
-        # Note: We use the goal position as a proxy for the ball's impact point
+        # Mask: Active only if ball is in front of paddle
         err_x = float(goal_pos[0] - paddle_pos[0])
         active_mask = 1.0 if err_x > -0.05 else 0.0
 
-        # Check contact to stop "reaching" reward after the hit
+        # Check contact
         touch_vec = obs_dict["touching_info"]
         has_hit = float(touch_vec[0]) > 0.5
         
-        # Once we hit, we stop enforcing alignment (allow follow-through)
+        # Mask: Stop alignment reward after hit
         active_alignment_mask = active_mask * (1.0 - float(self._prev_paddle_contact or has_hit))
 
         # ==================================================
-        # 2. POSITION ALIGNMENT (Component-Wise)
+        # 2. POSITION ALIGNMENT
         # ==================================================
-        # Split error into Y (width) and Z (height) for precise feedback
+        # Split error into Y (width) and Z (height)
         pred_err_y = np.abs(paddle_pos[1] - goal_pos[1])
         pred_err_z = np.abs(paddle_pos[2] - goal_pos[2])
 
@@ -264,21 +284,23 @@ class TableTennisWorker(CustomEnv):
         alignment_z = active_alignment_mask * np.exp(-5.0 * pred_err_z)
 
         # ==================================================
-        # 3. ORIENTATION ALIGNMENT
+        # 3. ORIENTATION ALIGNMENT (Quaternion)
         # ==================================================        
         paddle_ori = obs_dict["paddle_ori"]
         goal_ori = self.current_goal[3:7]
+        
+        # Simple Euclidean distance between quaternions is a good proxy for rotation error
         paddle_ori_err = paddle_ori - goal_ori
         paddle_quat_err_goal = np.linalg.norm(paddle_ori_err)
+        
         paddle_quat_reward = active_alignment_mask * np.exp(-5.0 * paddle_quat_err_goal)
         
         # ==================================================
         # 4. PELVIS ALIGNMENT
         # ==================================================
-        # Force the base (pelvis) to move with the hand
         pelvis_pos = obs_dict["pelvis_pos"]
         
-        # Logic: Calculate where the pelvis *should* be to support the reach
+        # Maintain relative offset of pelvis to paddle
         paddle_to_pelvis_offset = pelvis_pos[:2] - paddle_pos[:2]
         pelvis_target_pos = goal_pos[:2] + paddle_to_pelvis_offset
         
@@ -290,14 +312,13 @@ class TableTennisWorker(CustomEnv):
         # ==================================================
         reward = 0.0
         
-        # Additive weights (Tune these if needed)
         reward += 1.0 * alignment_y
         reward += 1.0 * alignment_z
         reward += 1.0 * paddle_quat_reward
         reward += 0.5 * pelvis_alignment
 
         # --------------------------------------------------
-        # EXTRAS: Posture, Timing, Success
+        # EXTRAS
         # --------------------------------------------------
         # Palm Distance
         palm_closeness = float(rwd_dict.get("palm_dist", 0.0))
@@ -307,7 +328,7 @@ class TableTennisWorker(CustomEnv):
         reward += 0.5 * float(rwd_dict.get("torso_up", 0.0))
 
         # Timing Penalty (Only if Late)
-        dt = float(self.goal_start_time + self.current_goal[5] - obs_dict["time"])
+        dt = float(self.goal_start_time + self.current_goal[7] - obs_dict["time"])
         if dt < -0.05:
             reward -= 1.0 * abs(dt)
 
@@ -317,7 +338,6 @@ class TableTennisWorker(CustomEnv):
             
         # Contact Bonus
         if has_hit and not self._prev_paddle_contact:
-            # Check if aligned during hit
             if alignment_y > 0.5 and alignment_z > 0.5:
                 reward += 5.0
             else:
