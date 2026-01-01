@@ -50,6 +50,10 @@ def build_manager_vec(
 
     def make_env(rank: int):
         def _init():
+            
+            import torch
+            torch.set_num_threads(1)
+            
             # --- Load frozen worker env + policy ---
             worker_vec = worker_env_loader(worker_env_path)
             worker_model = worker_model_loader(worker_model_path)

@@ -86,6 +86,10 @@ class TableTennisManager(CustomEnv):
         self.current_step = 0
         self._worker_obs = None
         self.success_buffer = deque(maxlen=int(success_buffer_len))
+        
+    @property
+    def sim(self):
+        return self.worker_env.envs[0].unwrapped.sim
 
     def reset(
         self,
@@ -147,7 +151,7 @@ class TableTennisManager(CustomEnv):
             last_infos = info
             
             # Check success (Manager relies on Worker/BaseEnv to provide these keys)
-            goal_success_any |= bool(info.get("is_soft_goal_success", 0.0))
+            goal_success_any |= bool(info.get("is_goal_success", 0.0))
             env_success_any  |= bool(info.get("is_success", 0.0))
             
             if dones[0]:
@@ -210,9 +214,6 @@ class TableTennisManager(CustomEnv):
     ) -> float:
         # Base existence cost
         r = -0.05
-        
-        # Regularization: Penalize large deviations from physics
-        r -= 0.05 * delta_norm 
 
         # Tier 1: Worker reached the physical target
         if goal_success:
