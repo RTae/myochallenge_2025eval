@@ -405,7 +405,7 @@ class TableTennisWorker(CustomEnv):
             "reach_err": reach_err,
             "reach_delta": reach_delta,
             "cos_sim": cos_sim,
-            "dt": dt,
+            "time_error": abs(dt),
             "readiness": readiness,
             "paddle_speed": v_norm,
             "palm_dist": palm_closeness,
