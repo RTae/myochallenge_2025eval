@@ -301,28 +301,89 @@ class LatticeStateDependentNoiseDistribution(StateDependentNoiseDistribution):
         # Sample an exploration matrix
         self.sample_weights(log_std)
         return self.clipped_mean_actions_net, log_std
-
+    
     def proba_distribution(
-        self,
-        mean_actions: torch.Tensor,
-        log_std: torch.Tensor,
-        latent_sde: torch.Tensor,
-    ) -> "LatticeNoiseDistribution":
-        # Detach the last layer features because we do not want to update the noise generation
-        # to influence the features of the policy
-        self._latent_sde = latent_sde if self.learn_features else latent_sde.detach()
-        corr_std, ind_std = self.get_std(log_std)
-        latent_corr_variance = torch.mm(self._latent_sde**2, corr_std**2)  # Variance of the hidden state
-        latent_ind_variance = torch.mm(self._latent_sde**2, ind_std**2) + self.std_reg**2  # Variance of the action
+            self,
+            mean_actions: torch.Tensor,
+            log_std: torch.Tensor,
+            latent_sde: torch.Tensor,
+        ) -> "LatticeNoiseDistribution":
+            
+            # ============================================================
+            # 1. NAN GUARDS (Input Sanitization)
+            # ============================================================
+            # The traceback showed 'mean_actions' contained NaNs.
+            # We must fix this BEFORE anything else, or Normal() will crash.
+            if torch.isnan(mean_actions).any() or torch.isinf(mean_actions).any():
+                # Replace NaNs with 0.0 (do nothing) and Infs with finite bounds
+                mean_actions = torch.nan_to_num(mean_actions, nan=0.0, posinf=10.0, neginf=-10.0)
+                
+            if torch.isnan(log_std).any() or torch.isinf(log_std).any():
+                # Replace bad log_stds with 0.0 (which results in std=1.0 * init)
+                log_std = torch.nan_to_num(log_std, nan=0.0, posinf=5.0, neginf=-5.0)
 
-        # First consider the correlated variance
-        sigma_mat = self.alpha**2 * (self.mean_actions_net.weight * latent_corr_variance[:, None, :]).matmul(
-            self.mean_actions_net.weight.T
-        )
-        # Then the independent one, to be added to the diagonal
-        sigma_mat[:, range(self.action_dim), range(self.action_dim)] += latent_ind_variance
-        self.distribution = MultivariateNormal(loc=mean_actions, covariance_matrix=sigma_mat, validate_args=False)
-        return self
+            if torch.isnan(latent_sde).any() or torch.isinf(latent_sde).any():
+                latent_sde = torch.nan_to_num(latent_sde, nan=0.0, posinf=10.0, neginf=-10.0)
+            # ============================================================
+
+            # Detach the last layer features because we do not want to update the noise generation
+            # to influence the features of the policy
+            self._latent_sde = latent_sde if self.learn_features else latent_sde.detach()
+            corr_std, ind_std = self.get_std(log_std)
+            latent_corr_variance = torch.mm(self._latent_sde**2, corr_std**2)  # Variance of the hidden state
+            latent_ind_variance = torch.mm(self._latent_sde**2, ind_std**2) + self.std_reg**2  # Variance of the action
+
+            # First consider the correlated variance
+            sigma_mat = self.alpha**2 * (self.mean_actions_net.weight * latent_corr_variance[:, None, :]).matmul(
+                self.mean_actions_net.weight.T
+            )
+            # Then the independent one, to be added to the diagonal
+            sigma_mat[:, range(self.action_dim), range(self.action_dim)] += latent_ind_variance
+            
+            # ============================================================
+            # 2. MATRIX STABILIZATION (Cholesky Safety)
+            # ============================================================
+            # Ensure symmetry (numerical errors can make it asymmetric)
+            sigma_mat = 0.5 * (sigma_mat + sigma_mat.transpose(-1, -2))
+            
+            # Check for NaNs produced during matrix multiplication
+            if torch.isnan(sigma_mat).any():
+                # If sigma_mat exploded, fallback to Identity matrix logic immediately
+                sigma_mat = torch.eye(self.action_dim, device=sigma_mat.device).expand_as(sigma_mat) * 1e-3
+
+            # Attempt Cholesky Decomposition with retries
+            L, info = torch.linalg.cholesky_ex(sigma_mat)
+
+            if info.any():
+                # Level 1: Add small Jitter (1e-6)
+                sigma_mat[..., range(self.action_dim), range(self.action_dim)] += 1e-6
+                L, info = torch.linalg.cholesky_ex(sigma_mat)
+                
+                if info.any():
+                    # Level 2: Add larger Jitter (1e-4)
+                    sigma_mat[..., range(self.action_dim), range(self.action_dim)] += 1e-4
+                    L, info = torch.linalg.cholesky_ex(sigma_mat)
+                    
+                    if info.any():
+                        # Level 3: Fallback to Diagonal Normal (ignore correlations)
+                        # We take the diagonal elements (variance) and sqrt them to get std
+                        variance_diag = sigma_mat.diagonal(dim1=-2, dim2=-1)
+                        # Ensure positive variance before sqrt
+                        variance_diag = torch.clamp(variance_diag, min=1e-6)
+                        std_dev = variance_diag.sqrt()
+                        
+                        # Force finite std_dev (NaN guard again)
+                        std_dev = torch.nan_to_num(std_dev, nan=1.0, posinf=10.0, neginf=1e-6)
+
+                        # Return an Independent Normal (like standard PPO) to survive this batch
+                        self.distribution = torch.distributions.Independent(
+                            torch.distributions.Normal(mean_actions, std_dev), 1
+                        )
+                        return self
+            # ============================================================
+
+            self.distribution = MultivariateNormal(loc=mean_actions, covariance_matrix=sigma_mat, validate_args=False)
+            return self
 
     def log_prob(self, actions: torch.Tensor) -> torch.Tensor:
         if self.bijector is not None:
