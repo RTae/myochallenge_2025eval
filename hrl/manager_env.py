@@ -4,11 +4,12 @@ from typing import Tuple, Dict, Optional, Any
 from collections import deque
 import numpy as np
 
-from myosuite.utils import gym
+import gymnasium as gym
 from stable_baselines3.common.vec_env import VecEnv
 
 from config import Config
 from custom_env import CustomEnv
+from logging import logger
 
 
 class TableTennisManager(CustomEnv):
@@ -52,7 +53,7 @@ class TableTennisManager(CustomEnv):
             t_progress = worker_instance.get_progress()
             # We allow slightly less than 1.0 just in case, but warn if low
             if t_progress < 0.95:
-                print(f"WARNING: Manager initialized with Worker progress {t_progress:.2f}")
+                logger.warning(f"WARNING: Manager initialized with Worker progress {t_progress:.2f}")
 
         self.decision_interval = int(decision_interval)
         self.max_episode_steps = int(max_episode_steps)
@@ -69,7 +70,7 @@ class TableTennisManager(CustomEnv):
             shape=(self.observation_dim,),
             dtype=np.float32,
         )
-
+        
         # --------------------------------------------------
         # Action space: RAW physical Δ-goal (Residual)
         # [dx, dy, dz, dnx, dny, ddt]
@@ -107,8 +108,8 @@ class TableTennisManager(CustomEnv):
         # 1) Predict Base Goal (Heuristic)
         # --------------------------------------------------
         worker_env_access = self.worker_env.envs[0].unwrapped
-        obs_dict = worker_env_access.obs_dict
-
+        obs_dict = worker_env_access.unwrapped.obs_dict
+        
         # Use the Worker's physics logic to guess where we SHOULD hit
         goal_pred = worker_env_access.predict_goal_from_state(obs_dict)
 
