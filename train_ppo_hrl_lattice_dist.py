@@ -95,8 +95,8 @@ def main():
     cfg = Config()
     prepare_experiment_directory(cfg)
 
-    worker_total_timesteps = 500_000
-    manager_total_timesteps = 100_000
+    worker_total_timesteps = 20_000_000
+    manager_total_timesteps = 4_000_000
 
     # ==================================================
     # LOAD paths
