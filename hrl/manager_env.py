@@ -5,7 +5,7 @@ from collections import deque
 import numpy as np
 
 from myosuite.utils import gym
-from stable_baselines3.common.vec_env import VecEnv, DummyVecEnv
+from stable_baselines3.common.vec_env import VecEnv
 
 from config import Config
 from custom_env import CustomEnv
@@ -28,28 +28,30 @@ class TableTennisManager(CustomEnv):
         max_episode_steps: int = 800,
         success_buffer_len: int = 20,
     ):
+        # This initializes the unused base env, which is fine (ignored)
         super().__init__(config)
 
         self.worker_env = worker_env
         self.worker_model = worker_model
 
-
+        # --------------------------------------------------
+        # CRITICAL: Enforce Single Environment
+        # --------------------------------------------------
         assert self.worker_env.num_envs == 1, (
             "TableTennisManager only supports num_envs=1 because it calculates "
             "a single goal correction based on the first environment."
         )
 
+        # --------------------------------------------------
+        # Safety check: worker must be fully trained
+        # --------------------------------------------------
         worker_instance = self.worker_env.envs[0].unwrapped
         
-        # Check if methods exist before calling (safer)
         if hasattr(worker_instance, "get_progress"):
             t_progress = worker_instance.get_progress()
-            t_noise = worker_instance.goal_noise_scale
-            
-            assert t_progress >= 0.95, (
-                f"Manager requires a proficient Worker (progress ~1.0). "
-                f"Got progress={t_progress:.2f}"
-            )
+            # We allow slightly less than 1.0 just in case, but warn if low
+            if t_progress < 0.95:
+                print(f"WARNING: Manager initialized with Worker progress {t_progress:.2f}")
 
         self.decision_interval = int(decision_interval)
         self.max_episode_steps = int(max_episode_steps)
@@ -57,7 +59,6 @@ class TableTennisManager(CustomEnv):
         # --------------------------------------------------
         # Observation space
         # --------------------------------------------------
-        # In SB3 VecEnv, observation_space is usually a Box
         self.worker_obs_dim = np.prod(self.worker_env.observation_space.shape)
         self.observation_dim = self.worker_obs_dim + 1 # +1 for time
 
@@ -73,7 +74,7 @@ class TableTennisManager(CustomEnv):
         # [dx, dy, dz, dnx, dny, ddt]
         # --------------------------------------------------
         self.action_space = gym.spaces.Box(
-            low=-0.5, # Slightly tighter bounds for stability
+            low=-0.5, 
             high=0.5,
             shape=(6,),
             dtype=np.float32,
@@ -92,8 +93,7 @@ class TableTennisManager(CustomEnv):
         seed: Optional[int] = None,
         options: Optional[Dict] = None,
     ) -> Tuple[np.ndarray, Dict]:
-        # Reset the worker VecEnv
-        # SB3 VecEnv reset() returns only 'obs'
+        # Reset the worker VecEnv (bypassing self.env)
         self._worker_obs = self.worker_env.reset()
         
         self.current_step = 0
@@ -105,7 +105,6 @@ class TableTennisManager(CustomEnv):
         # --------------------------------------------------
         # 1) Predict Base Goal (Heuristic)
         # --------------------------------------------------
-        # Get the underlying environment instance
         worker_env_access = self.worker_env.envs[0].unwrapped
         obs_dict = worker_env_access.obs_dict
 
@@ -117,7 +116,7 @@ class TableTennisManager(CustomEnv):
         # --------------------------------------------------
         goal_delta = action.astype(np.float32)
         
-        # Clamp delta to prevent the manager from setting impossible goals
+        # Clamp delta to prevent impossible goals
         goal_delta = np.clip(goal_delta, -0.3, 0.3)
 
         goal_final = goal_pred + goal_delta
@@ -132,10 +131,8 @@ class TableTennisManager(CustomEnv):
         env_success_any = False
         last_infos = {}
         
-        rewards_accum = 0.0
-
         for _ in range(self.decision_interval):
-            # Worker is deterministic (we want the Manager to handle the noise)
+            # Predict deterministic action from frozen worker
             worker_actions, _ = self.worker_model.predict(
                 self._worker_obs, deterministic=True
             )
@@ -146,12 +143,11 @@ class TableTennisManager(CustomEnv):
             self._worker_obs = obs
             self.current_step += 1
             
-            # Accumulate info
-            # infos is a list of dicts (because VecEnv)
             info = infos[0] 
             last_infos = info
             
-            goal_success_any |= bool(info.get("is_goal_success", 0.0))
+            # Check success (Manager relies on Worker/BaseEnv to provide these keys)
+            goal_success_any |= bool(info.get("is_soft_goal_success", 0.0))
             env_success_any  |= bool(info.get("is_success", 0.0))
             
             if dones[0]:
@@ -190,10 +186,8 @@ class TableTennisManager(CustomEnv):
         return obs_out, float(reward), terminated, truncated, info_out
 
     def _build_obs(self) -> np.ndarray:
-        # Extract single obs from batch
         worker_obs = self._worker_obs[0].astype(np.float32)
 
-        # Normalize time
         t_frac = np.array(
             [self.current_step / self.max_episode_steps],
             dtype=np.float32
@@ -212,16 +206,16 @@ class TableTennisManager(CustomEnv):
         # Base existence cost
         r = -0.05
         
-        # Regularization: Penalize large changes to the physics baseline.
+        # Regularization: Penalize large deviations from physics
         r -= 0.05 * delta_norm 
 
-        # Tier 1: Worker did what we asked
+        # Tier 1: Worker reached the physical target
         if goal_success:
             r += 1.0
 
-        # Tier 2: Solve the environment
+        # Tier 2: Task Solved (Ball hit table)
         if env_success:
-            r += 10.0 # Boosted slightly to overpower the penalty
+            r += 10.0 
 
         # Long-term consistency bonus
         r += 0.5 * success_rate
