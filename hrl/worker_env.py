@@ -159,29 +159,51 @@ class TableTennisWorker(CustomEnv):
         return np.asarray(x, dtype=np.float32).reshape(-1)
 
     def _build_obs(self, obs_dict):
-        # --------------------------------------------------
-        # 1. DYNAMIC GOAL REFINEMENT (The 97% Trick)
-        # --------------------------------------------------
-        # If ball is incoming (x < 1.2) and not hit, update the goal.
         ball_x = obs_dict["ball_pos"][0]
         
+        # Slew Rate Limits (Max change per step)
+        MAX_POS_DELTA = 0.05 
+        MAX_ORI_DELTA = 0.1
+
+        # Only update if ball is incoming and not hit
         if ball_x < 1.2 and not self._prev_paddle_contact:
-            # Re-predict based on current ball state
-            new_pos, new_ori = self._predict(obs_dict)
+            # 1. Get the Raw Prediction
+            raw_new_pos, raw_new_ori = self._predict(obs_dict)
             
-            # Update Position (Indices 0-3)
-            self.current_goal[0:3] = new_pos
+            # 2. SMOOTH POSITION
+            # Calculate how much the goal WANTS to move
+            curr_pos = self.current_goal[0:3]
+            delta_pos = raw_new_pos - curr_pos
+            dist_pos = np.linalg.norm(delta_pos)
             
-            # Update Orientation (Indices 3-7)
-            self.current_goal[3:7] = new_ori
+            # If the jump is too big, clamp it
+            if dist_pos > MAX_POS_DELTA:
+                # Move only MAX_POS_DELTA towards the new prediction
+                scale = MAX_POS_DELTA / (dist_pos + 1e-9)
+                self.current_goal[0:3] = curr_pos + (delta_pos * scale)
+            else:
+                # Jump is small enough, take it directly
+                self.current_goal[0:3] = raw_new_pos
             
-            # Update Time (Index 7)
-            dx = float(new_pos[0] - ball_x)
+            # 3. SMOOTH ORIENTATION
+            curr_ori = self.current_goal[3:7]
+            delta_ori = raw_new_ori - curr_ori
+            dist_ori = np.linalg.norm(delta_ori)
+            
+            if dist_ori > MAX_ORI_DELTA:
+                scale = MAX_ORI_DELTA / (dist_ori + 1e-9)
+                self.current_goal[3:7] = curr_ori + (delta_ori * scale)
+                # Re-normalize quaternion to ensure validity
+                self.current_goal[3:7] /= (np.linalg.norm(self.current_goal[3:7]) + 1e-9)
+            else:
+                self.current_goal[3:7] = raw_new_ori
+
+            # 4. UPDATE TIME
+            dx = float(self.current_goal[0] - ball_x)
             vx = float(obs_dict["ball_vel"][0])
             if abs(vx) > 1e-3 and (dx * vx) > 0.0:
                 new_dt = abs(dx / vx)
                 self.current_goal[7] = float(np.clip(new_dt, 0.05, 1.5))
-                # Reset start time so dt is relative to NOW
                 self.goal_start_time = float(obs_dict["time"])
 
         # --------------------------------------------------
@@ -191,7 +213,7 @@ class TableTennisWorker(CustomEnv):
             [obs_dict["time"] - self.goal_start_time],
             dtype=np.float32,
         )
-
+        
         obs = np.concatenate([
             self._flat(time_feature),
             self._flat(obs_dict["pelvis_pos"]),
