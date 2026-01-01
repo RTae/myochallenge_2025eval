@@ -391,7 +391,7 @@ class TableTennisWorker(CustomEnv):
             # If dt is large positive (early hit), it is still valid.
             goal_aligned = (
                 reach_err < self.reach_thr * 1.5
-                and dt >= -self.time_thr_base*1.3:
+                and dt >= -self.time_thr_base*1.3
                 and cos_sim > self.paddle_ori_thr - 0.15
             )
                     
