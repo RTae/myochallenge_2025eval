@@ -1,12 +1,11 @@
 from typing import Callable
 from loguru import logger
 
-from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize, DummyVecEnv, VecMonitor
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize, VecMonitor
 
 from config import Config
 from hrl.worker_env import TableTennisWorker
 from hrl.manager_env import TableTennisManager
-from dr_spcrl.curriculum_env import CurriculumEnv
 from custom_env import CustomEnv
 
 
@@ -15,21 +14,23 @@ def make_subproc_env(num_envs: int, thunk_fn: Callable):
 
 
 # ============================================================
-# Worker Vec
+# Worker Vec (Low-Level)
 # ============================================================
 def build_worker_vec(cfg: Config, num_envs: int) -> VecNormalize:
     def make_env(rank: int):
         def _init():
             env = TableTennisWorker(cfg)
-            return VecMonitor(env, info_keywords=("is_success",))
+            return env
         return _init
-
+    
+    logger.info(f"Creating {num_envs} low-level environments")
     venv = make_subproc_env(num_envs, make_env)
+    venv = VecMonitor(venv, info_keywords=("is_success"))
     return VecNormalize(venv, norm_obs=True, norm_reward=False)
 
 
 # ============================================================
-# Manager
+# Manager Vec (High-Level)
 # ============================================================
 def build_manager_vec(
     cfg: Config,
@@ -49,19 +50,17 @@ def build_manager_vec(
 
     def make_env(rank: int):
         def _init():
-            
             import torch
+            # Prevent threads from fighting over CPU resources
             torch.set_num_threads(1)
             
-            # --- Load frozen worker env + policy ---
             worker_vec = worker_env_loader(worker_env_path)
             worker_model = worker_model_loader(worker_model_path)
 
-            # --- FORCE worker into final curriculum regime ---
-            worker_vec.env_method("set_goal_noise_scale", 0.0)
-            worker_vec.env_method("set_progress", 1.0)
+            if hasattr(worker_vec, "env_method"):
+                worker_vec.env_method("set_goal_noise_scale", 0.0)
+                worker_vec.env_method("set_progress", 1.0)
 
-            # --- Create manager ---
             env = TableTennisManager(
                 worker_env=worker_vec,
                 worker_model=worker_model,
@@ -69,35 +68,28 @@ def build_manager_vec(
                 decision_interval=decision_interval,
                 max_episode_steps=max_episode_steps,
             )
-
-            return VecMonitor(env, info_keywords=("is_success",))
+            return env
 
         return _init
 
+    logger.info(f"Creating {num_envs} high-level environments")
     venv = make_subproc_env(num_envs, make_env)
+    venv = VecMonitor(venv, info_keywords=("is_success"))
+
     return VecNormalize(venv, norm_obs=False, norm_reward=False)
-
-
-def build_curriculum_vec(cfg: Config, num_envs: int, eval_mode: bool = False):
-    def make_env(rank):
-        def _init():
-            env = CurriculumEnv(cfg, eval_mode=eval_mode)
-            return Monitor(env, info_keywords=("is_success",))
-        return _init
-
-    venv = make_subproc_env(num_envs, make_env)
-    return VecNormalize(venv, norm_obs=True, norm_reward=False, clip_obs=10.0)
-
 
 def create_default_env(cfg: Config, num_envs: int) -> VecNormalize:
     def make_env(rank: int):
         def _init():
             env = CustomEnv(cfg)
-            return Monitor(env, info_keywords=("is_success",))
+            return env
         return _init
 
-    logger.info(f"Creating {num_envs} parallel plain environments")
+    logger.info(f"Creating {num_envs} plain environments")
     venv = make_subproc_env(num_envs, make_env)
+    
+    venv = VecMonitor(venv, info_keywords=("is_success"))
+    
     return VecNormalize(
         venv,
         norm_obs=True,
