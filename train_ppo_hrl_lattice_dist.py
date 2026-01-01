@@ -55,6 +55,10 @@ def build_sharded_manager_vec(cfg: Config, num_envs: int, worker_model_path: str
     """
     def make_env(rank: int):
         def _init():
+            import torch
+            # Prevent threads from fighting over CPU resources
+            torch.set_num_threads(1)
+            
             # 1. Assign this environment to a specific GPU based on rank
             gpu_id = rank // (num_envs // num_gpus)
             gpu_id = min(gpu_id, num_gpus - 1)
@@ -66,10 +70,12 @@ def build_sharded_manager_vec(cfg: Config, num_envs: int, worker_model_path: str
             def specific_env_loader(p):
                 return load_worker_vecnormalize(p, TableTennisWorker(cfg))
 
-            # 3. Create Manager
+            worker_vec = specific_env_loader(worker_env_path),
+            worker_model = specific_model_loader(worker_model_path),
+
             env = TableTennisManager(
-                worker_env=specific_env_loader(worker_env_path),
-                worker_model=specific_model_loader(worker_model_path),
+                worker_env=worker_vec,
+                worker_model=worker_model,
                 config=cfg,
                 decision_interval=5,
                 max_episode_steps=cfg.episode_len,
@@ -294,8 +300,8 @@ def main():
         return
 
     # 1. Build Multi-GPU Sharded Environment
-    # 120 Envs / 4 GPUs = 30 Envs per GPU (Very safe for 5090 VRAM)
-    MANAGER_NUM_ENVS = 120 
+    # 160 Envs / 4 GPUs = 40 Envs per GPU
+    MANAGER_NUM_ENVS = 160 
     
     manager_env = build_sharded_manager_vec(
         cfg=cfg,
@@ -311,10 +317,10 @@ def main():
         "verbose": 1,
         "tensorboard_log": cfg.logdir,
         
-        # Optimized for 120 Envs
-        # Buffer = 120 * 256 = 30,720 transitions (Great buffer size)
+        # Optimized for 160 Envs
+        # Buffer = 160 * 256 = 40960
         "n_steps": 256,
-        "batch_size": 2048, # High batch size for GPU efficiency
+        "batch_size": 4096,
         
         "learning_rate": lambda p: 3e-4 * 0.5 * (1 + math.cos(math.pi * (1 - p))),
         "clip_range": lambda p: 0.2 * p,

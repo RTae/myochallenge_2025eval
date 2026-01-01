@@ -28,13 +28,23 @@ class TableTennisManager(CustomEnv):
         success_buffer_len: int = 20,
     ):
         super().__init__(config)
+        
+        if isinstance(worker_env, tuple):
+            worker_env = worker_env[0]
+            
+        if isinstance(worker_model, tuple):
+            worker_model = worker_model[0]
 
         self.worker_env = worker_env
         self.worker_model = worker_model
-
+        
         assert self.worker_env.num_envs == 1, (
             "TableTennisManager only supports num_envs=1."
         )
+        
+        if hasattr(self.worker_env, "env_method"):
+            self.worker_env.env_method("set_goal_noise_scale", 0.0)
+            self.worker_env.env_method("set_progress", 1.0)
 
         # --------------------------------------------------
         # Safety check
