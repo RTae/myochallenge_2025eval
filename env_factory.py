@@ -89,7 +89,7 @@ def create_default_env(cfg: Config, num_envs: int) -> VecNormalize:
     logger.info(f"Creating {num_envs} plain environments")
     venv = make_subproc_env(num_envs, make_env)
     
-    venv = VecMonitor(venv, info_keywords=("is_success"))
+    venv = VecMonitor(venv, info_keywords=("is_success",))
     
     return VecNormalize(
         venv,
