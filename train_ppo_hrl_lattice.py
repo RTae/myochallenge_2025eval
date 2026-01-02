@@ -109,7 +109,7 @@ def main():
         # Scheduler
         # ---------------------------
         "learning_rate": lambda p: cfg.ppo_lr * 0.5 * (1 + math.cos(math.pi * (1 - p))),
-        "clip_range": lambda p: cfg.ppo_clip_range * p,
+        "clip_range": 0.2,
 
         # ---------------------------
         # PPO Hyperparameters
