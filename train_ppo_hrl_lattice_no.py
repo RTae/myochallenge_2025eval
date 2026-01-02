@@ -254,7 +254,7 @@ def main():
     # Manager should use the worker produced by this run
     manager_env = build_manager_vec(
         cfg=cfg,
-        num_envs=40,
+        num_envs=cfg.num_envs,
         worker_model_loader=load_worker_model,
         worker_env_loader=worker_env_loader,
         worker_model_path=SAVE_WORKER_MODEL_PATH,
