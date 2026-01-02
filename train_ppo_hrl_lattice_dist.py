@@ -4,7 +4,7 @@ from typing import Optional
 from stable_baselines3 import PPO
 from sb3_contrib import RecurrentPPO
 from stable_baselines3.common.callbacks import EvalCallback, CallbackList
-from stable_baselines3.common.vec_env import VecNormalize, DummyVecEnv
+from stable_baselines3.common.vec_env import VecNormalize, DummyVecEnv, SubprocVecEnv, VecMonitor
 from lattice.ppo.policies import LatticeRecurrentActorCriticPolicy
 
 from config import Config
@@ -74,7 +74,7 @@ def build_sharded_manager_vec(cfg: Config, num_envs: int, worker_model_path: str
     venv = SubprocVecEnv(env_fns)
     
     # Monitor for logging and wrap in VecNormalize
-    venv = VecMonitor(venv, info_keywords=("is_success", "worker_reward"))
+    venv = VecMonitor(venv, info_keywords=("is_success",))
     
     return VecNormalize(
         venv, 
