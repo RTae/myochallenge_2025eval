@@ -150,6 +150,3 @@ def predict_ball_trajectory(ball_pos, ball_vel, paddle_pos,
     pred_ori = np.stack([qw, qx, qy, qz], axis=-1)
     
     return pred_pos, pred_ori
-
-def as_1d(x):
-    return np.asarray(x, dtype=np.float32).reshape(-1)
