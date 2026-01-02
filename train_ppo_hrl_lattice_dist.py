@@ -149,7 +149,7 @@ def main():
         # ---------------------------
         # PPO Batch & Rollout Settings
         # ---------------------------
-        "batch_size": 4096,
+        "batch_size": 2048,
         "n_steps": 256,
         "n_epochs": 5,
 
@@ -189,7 +189,8 @@ def main():
             use_lattice=True,
             use_expln=True,
             full_std=False,
-            ortho_init=False,
+            ortho_init=True,
+            
             log_std_init=-2.0,
             std_clip=(0.01, 1.0),
             expln_eps=1e-6,
