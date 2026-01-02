@@ -357,17 +357,17 @@ class TableTennisWorker(CustomEnv):
         
         paddle_quat_reward = active_alignment_mask * np.exp(-5.0 * paddle_quat_err_goal)
         
-        # ==================================================
-        # 4. PELVIS ALIGNMENT
-        # ==================================================
-        pelvis_pos = obs_dict["pelvis_pos"]
+        # # ==================================================
+        # # 4. PELVIS ALIGNMENT
+        # # ==================================================
+        # pelvis_pos = obs_dict["pelvis_pos"]
         
-        # Maintain relative offset of pelvis to paddle
-        paddle_to_pelvis_offset = pelvis_pos[:2] - paddle_pos[:2]
-        pelvis_target_pos = goal_pos[:2] + paddle_to_pelvis_offset
+        # # Maintain relative offset of pelvis to paddle
+        # paddle_to_pelvis_offset = pelvis_pos[:2] - paddle_pos[:2]
+        # pelvis_target_pos = goal_pos[:2] + paddle_to_pelvis_offset
         
-        pelvis_err = np.linalg.norm(pelvis_pos[:2] - pelvis_target_pos)
-        pelvis_alignment = active_alignment_mask * np.exp(-5.0 * pelvis_err)
+        # pelvis_err = np.linalg.norm(pelvis_pos[:2] - pelvis_target_pos)
+        # pelvis_alignment = active_alignment_mask * np.exp(-5.0 * pelvis_err)
 
         # ==================================================
         # 5. GOAL SUCCESS CHECK (For Manager)
@@ -389,7 +389,7 @@ class TableTennisWorker(CustomEnv):
         reward += 1.0 * alignment_y
         reward += 1.0 * alignment_z
         reward += 1.0 * paddle_quat_reward
-        reward += 0.5 * pelvis_alignment
+        #reward += 0.5 * pelvis_alignment
 
         # --------------------------------------------------
         # EXTRAS
@@ -433,11 +433,11 @@ class TableTennisWorker(CustomEnv):
             "abs_time_err": abs(dt),
             "is_ball_passed": active_mask,
             "is_contact": float(is_contact_fresh),
-            "pelvis_err": pelvis_err,
+            #"pelvis_err": pelvis_err,
             "alignment_y": alignment_y,
             "alignment_z": alignment_z,
             "quat_reward": paddle_quat_reward,
-            "pelvis_reward": pelvis_alignment,
+            #"pelvis_reward": pelvis_alignment,
             "palm_dist": palm_closeness,
         }
 

@@ -189,7 +189,7 @@ def main():
             use_lattice=True,
             use_expln=True,
             full_std=False,
-            ortho_init=True,
+            ortho_init=False,
             
             log_std_init=-2.0,
             std_clip=(0.01, 1.0),
