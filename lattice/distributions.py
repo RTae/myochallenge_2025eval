@@ -184,9 +184,19 @@ class LatticeStateDependentNoiseDistribution(StateDependentNoiseDistribution):
         :param log_std:
         :return:
         """
+        log_min = float(np.log(self.min_std))
+        log_max = float(np.log(self.max_std))
+
+        log_std = torch.nan_to_num(
+            log_std,
+            nan=log_min,
+            posinf=log_max,
+            neginf=log_min,
+        )
+        
         # Apply correction to remove scaling of action std as a function of the latent
         # dimension (see paper for details)
-        log_std = log_std.clip(min=np.log(self.min_std), max=np.log(self.max_std))
+        log_std = log_std.clip(min=log_min, max=log_max)
         log_std = log_std - 0.5 * np.log(self.latent_sde_dim)
 
         if self.use_expln:
@@ -200,6 +210,14 @@ class LatticeStateDependentNoiseDistribution(StateDependentNoiseDistribution):
         else:
             # Use normal exponential
             std = torch.exp(log_std)
+
+        std = torch.nan_to_num(
+            std,
+            nan=self.min_std,
+            posinf=self.max_std,
+            neginf=self.min_std,
+        )
+        std = std.clamp(min=self.min_std, max=self.max_std)
 
         if self.full_std:
             assert std.shape == (
