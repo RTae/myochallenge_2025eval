@@ -67,29 +67,6 @@ class LatticeNoiseDistribution(DiagGaussianDistribution):
 
         sigma_mat = (self.mean_actions.weight * latent_variance[..., None, :]).matmul(self.mean_actions.weight.T)
         sigma_mat[..., range(self.action_dim), range(self.action_dim)] += action_variance
-
-        sigma_mat = 0.5 * (sigma_mat + sigma_mat.transpose(-1, -2))
-        L, info = torch.linalg.cholesky_ex(sigma_mat)
-
-        if info.any():
-            # Level 2: Add Jitter 1e-6
-            sigma_mat[..., range(self.action_dim), range(self.action_dim)] += 1e-6
-            L, info = torch.linalg.cholesky_ex(sigma_mat)
-            
-            if info.any():
-                # Level 3: Add Jitter 1e-4
-                sigma_mat[..., range(self.action_dim), range(self.action_dim)] += 1e-4
-                L, info = torch.linalg.cholesky_ex(sigma_mat)
-                
-                if info.any():
-                    # Final Level: Total fallback to Diagonal
-                    # We use a standard Normal but wrap it to look like a MVN
-                    std_dev = (action_variance + 1e-3).sqrt()
-                    self.distribution = torch.distributions.Independent(
-                        torch.distributions.Normal(mean_actions, std_dev), 1
-                    )
-                    return self
-                    
         self.distribution = MultivariateNormal(mean_actions, sigma_mat)
         return self
 
@@ -236,7 +213,6 @@ class LatticeStateDependentNoiseDistribution(StateDependentNoiseDistribution):
             assert std.shape == (self.latent_sde_dim, 2), std.shape
             corr_std = torch.ones(self.latent_sde_dim, self.latent_sde_dim).to(log_std.device) * std[:, 0:1]
             ind_std = torch.ones(self.latent_sde_dim, self.action_dim).to(log_std.device) * std[:, 1:]
-            
         return corr_std, ind_std
 
     def sample_weights(self, log_std: torch.Tensor, batch_size: int = 1) -> None:

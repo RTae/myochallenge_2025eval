@@ -31,12 +31,12 @@ class TableTennisWorker(CustomEnv):
         - touching_info (6)
         - act (273)
 
-    Goal (6):
+    Goal (8):
         - target_ball_pos (3)
         - target_paddle_ori (4)
         - target_time_to_plane (1)
 
-    Observation: 428 + 6 = 434
+    Observation: 428 + 8 = 436
     """
 
     def __init__(self, config: Config):
@@ -212,7 +212,7 @@ class TableTennisWorker(CustomEnv):
             else:
                 self.current_goal[0:3] = target_pos
             
-            # Update Ori/Time (Usually safe to jump, or add similar smoothing)
+            # Update Ori/Time
             self.current_goal[3:] = target_goal[3:]
             
             # Reset start time since dt is refreshed
@@ -221,13 +221,8 @@ class TableTennisWorker(CustomEnv):
         # --------------------------------------------------
         # 2. BUILD OBSERVATION
         # --------------------------------------------------
-        time_feature = np.array(
-            [obs_dict["time"] - self.goal_start_time],
-            dtype=np.float32,
-        )
-        
         obs = np.concatenate([
-            self._flat(time_feature),
+            self._flat(obs_dict["time"]),
             self._flat(obs_dict["pelvis_pos"]),
             self._flat(obs_dict["body_qpos"]),
             self._flat(obs_dict["body_qvel"]),
@@ -246,7 +241,12 @@ class TableTennisWorker(CustomEnv):
         ], axis=0)
         
         assert obs.shape == (self.observation_dim,), f"Invalid shape {obs.shape}"
-        return obs
+
+        if not np.isfinite(obs).all():
+            idx = np.where(~np.isfinite(obs))[0][:10]
+            raise RuntimeError(f"[NaN/Inf] obs: idx={idx}, vals={obs.reshape(-1)[idx]}")
+        
+        return obs.astype(np.float32)
 
     # ==================================================
     # Gym API
@@ -270,46 +270,28 @@ class TableTennisWorker(CustomEnv):
 
         return self._build_obs(obs_dict), info
 
-    def step(self, action):
-        # If the network outputs NaNs or Infs, replace with a neutral action (zeros)
-        if np.any(np.isnan(action)) or np.any(np.isinf(action)):
-            # logger.warning("NaN/Inf action detected! Replacing with zeros.")
-            action = np.zeros_like(action)
-            
-        # Now pass the safe action to the super class
+    def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         _, base_reward, terminated, truncated, info = super().step(action)
         
         obs_dict = info["obs_dict"]
-        
-        # ============================================================
-        # 2. OBSERVATION GUARD (Detect Physics Explosion)
-        # ============================================================
-        # If the physics engine returns NaNs, the sim has crashed.
-        # We must end the episode immediately to prevent confusing the PPO algorithm.
-        if any(np.isnan(v).any() for v in obs_dict.values()):
-            # Create a safe dummy observation (zeros)
-            safe_obs = np.zeros(self.observation_dim, dtype=np.float32)
-            
-            # Penalize the agent heavily for crashing the sim
-            penalty_reward = -10.0 
-            
-            # Force termination
-            return safe_obs, penalty_reward, True, False, info
-
         rwd_dict = info["rwd_dict"]
 
         reward, _, logs = self._compute_reward(obs_dict, rwd_dict)
+        if not np.isfinite(reward):
+            raise RuntimeError(f"[NaN/Inf] reward={reward}, logs={logs}")
+        
         reward += 0.05 * base_reward
 
         info.update(logs)
-        
         info.update({
             "time_threshold": self.time_thr,
             "reach_threshold": self.reach_thr,
             "paddle_ori_threshold": self.paddle_ori_thr,
         })
         
-        return self._build_obs(obs_dict), float(reward), terminated, truncated, info
+        obs = self._build_obs(obs_dict)
+        
+        return obs, float(reward), terminated, truncated, info
     
     def _compute_reward(self, obs_dict, rwd_dict) -> Tuple[float, bool, Dict]:
         """
@@ -353,7 +335,7 @@ class TableTennisWorker(CustomEnv):
         
         # Simple Euclidean distance between quaternions is a good proxy for rotation error
         paddle_ori_err = paddle_ori - goal_ori
-        paddle_quat_err_goal = np.linalg.norm(paddle_ori_err)
+        paddle_quat_err_goal = np.linalg.norm(paddle_ori_err, axis=-1)
         
         paddle_quat_reward = active_alignment_mask * np.exp(-5.0 * paddle_quat_err_goal)
         
