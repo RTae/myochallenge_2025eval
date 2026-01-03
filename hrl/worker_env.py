@@ -233,7 +233,6 @@ class TableTennisWorker(CustomEnv):
         self.current_goal[7] = final_target[7] # Time component
         self.goal_start_time = float(obs_dict["time"])
         
-        # ERROR CALCULATIONS as a part of obs
         # Position Error
         pos_err = self.current_goal[0:3] - obs_dict["paddle_pos"]
 
@@ -266,6 +265,8 @@ class TableTennisWorker(CustomEnv):
             self._flat(obs_dict["act"]),
             self._flat(self.current_goal),
         ], axis=0)
+        
+        assert obs.shape == (self.observation_dim,) , f"Obs shape mismatch: {obs.shape} vs {(self.observation_dim,)}"
         
         return obs.astype(np.float32)
 
