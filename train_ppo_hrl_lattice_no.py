@@ -100,21 +100,20 @@ def main():
         # ---------------------------
         # PPO Batch & Rollout Settings
         # ---------------------------
-        "batch_size": 4096,
+        "batch_size": 2048,
         "n_steps": 256,
-        "n_epochs": 10,
+        "n_epochs": 5,
 
         # ---------------------------
         # Scheduler
         # ---------------------------
         "learning_rate": lambda p: cfg.ppo_lr * 0.5 * (1 + math.cos(math.pi * (1 - p))),
-        "clip_range": lambda p: cfg.ppo_clip_range * p,
 
         # ---------------------------
         # PPO Hyperparameters
         # ---------------------------
         "ent_coef": 3.62109e-06,
-        "clip_range": cfg.ppo_clip_range,
+        "clip_range": 0.2,
         "gamma": cfg.ppo_gamma,
         "gae_lambda": cfg.ppo_lambda,
         "max_grad_norm": 0.3,
@@ -125,7 +124,7 @@ def main():
         # SDE Exploration
         # ---------------------------
         "use_sde": True,
-        "sde_sample_freq": 1,
+        "sde_sample_freq": 8,
 
         # ---------------------------
         # Reproducibility
@@ -141,10 +140,11 @@ def main():
             use_expln=True,
             full_std=False,
             ortho_init=False,
+            
             log_std_init=-2.0,
-            std_clip=(0.01, 1.0),
+            std_clip=(0.01, 0.3),
             expln_eps=1e-6,
-            std_reg=0.0,
+            std_reg=1e-3,
 
             # ===== Pi & V Network Sizes =====
             net_arch=

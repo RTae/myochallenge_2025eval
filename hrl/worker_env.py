@@ -60,6 +60,7 @@ class TableTennisWorker(CustomEnv):
         # Runtime
         # ==================================================
         self.current_goal: Optional[np.ndarray] = None
+        self._track_goal: Optional[np.ndarray] = None
         # Store the Manager's deviation strategy
         self.manager_delta: np.ndarray = np.zeros(self.goal_dim, dtype=np.float32)
         
@@ -175,48 +176,49 @@ class TableTennisWorker(CustomEnv):
         return np.asarray(x, dtype=np.float32).reshape(-1)
 
     def _build_obs(self, obs_dict):
-        # --------------------------------------------------
-        # 1. DYNAMIC GOAL REFINEMENT
-        # --------------------------------------------------
         ball_x = obs_dict["ball_pos"][0]
+        ball_vel_x = obs_dict["ball_vel"][0]
+        paddle_x = obs_dict["paddle_pos"][0]
         
-        # Only update if ball is incoming and not hit
-        if ball_x < 1.2 and not self._prev_paddle_contact:
-            # A. Get FRESH Physics Prediction (The "97% Trick")
+        touching = obs_dict.get('touching_info')
+        current_touch = 1.0 if (touching is not None and touching[0] > 0.1) else 0.0
+        
+        is_hitting_zone = (abs(ball_x - paddle_x) < 0.05)
+        is_contact = (current_touch > 0) or (ball_vel_x > 0.05) or self._prev_paddle_contact 
+        
+        # Tracking/Calculation (Only when far and no contact)
+        # We only update our 'track_goal' while the ball is distant (> 1.2m)
+        if (not is_contact) and (not is_hitting_zone) and (ball_x > 1.2) and (ball_vel_x < -0.05):
             new_pos, new_ori = self._predict(obs_dict)
-            
-            # Calculate new dt
             dx = float(new_pos[0] - ball_x)
-            vx = float(obs_dict["ball_vel"][0])
-            new_dt = abs(dx / vx) if (abs(vx) > 1e-3 and (dx * vx) > 0.0) else 1.5
-            new_dt = float(np.clip(new_dt, 0.05, 1.5))
+            new_dt = abs(dx / ball_vel_x) if (abs(ball_vel_x) > 1e-3) else 1.5
             
-            new_base_goal = np.concatenate([new_pos, new_ori, [new_dt]])
-            
-            # C. Apply Manager's Delta
-            # Target = Fresh_Physics + Stored_Strategy
-            target_goal = new_base_goal + self.manager_delta
-            
-            # D. Smoothing (Slew Rate Limiting)
-            # Prevent "Teleporting" by limiting how much we change per step
-            curr_pos = self.current_goal[0:3]
-            target_pos = target_goal[0:3]
-            delta_pos = target_pos - curr_pos
-            dist_pos = np.linalg.norm(delta_pos)
-            
-            MAX_POS_DELTA = 0.05
-            
-            if dist_pos > MAX_POS_DELTA:
-                scale = MAX_POS_DELTA / (dist_pos + 1e-9)
-                self.current_goal[0:3] = curr_pos + (delta_pos * scale)
-            else:
-                self.current_goal[0:3] = target_pos
-            
-            # Update Ori/Time
-            self.current_goal[3:] = target_goal[3:]
-            
-            # Reset start time since dt is refreshed
-            self.goal_start_time = float(obs_dict["time"])
+            # Physics + Manager Strategy
+            target_goal = np.concatenate([new_pos, new_ori, [np.clip(new_dt, 0.05, 1.5)]]) + self.manager_delta
+            self._track_goal = target_goal.copy()
+
+        # Selection (Decision)
+        # Decide what the final_target should be for this specific step
+        if self._track_goal is not None:
+            final_target = self._track_goal.copy()
+        else:
+            final_target = self.current_goal
+
+        # Execution (Smoothing/Slew Rate)
+        curr_pos = self.current_goal[0:3]
+        target_pos = final_target[0:3]
+        delta_pos = target_pos - curr_pos
+        dist_pos = np.linalg.norm(delta_pos)
+        
+        MAX_POS_DELTA = 0.05
+        if dist_pos > MAX_POS_DELTA:
+            self.current_goal[0:3] = curr_pos + (delta_pos * (MAX_POS_DELTA / (dist_pos + 1e-9)))
+        else:
+            self.current_goal[0:3] = target_pos
+        
+        # Update orientation and time components
+        self.current_goal[3:] = final_target[3:]
+        self.goal_start_time = float(obs_dict["time"])
 
         # --------------------------------------------------
         # 2. BUILD OBSERVATION
@@ -307,8 +309,8 @@ class TableTennisWorker(CustomEnv):
         is_env_success = bool(rwd_dict.get("solved", False))
 
         # Mask: Active only if ball is in front of paddle
-        err_x = float(goal_pos[0] - paddle_pos[0])
-        active_mask = 1.0 if err_x > -0.05 else 0.0
+        err_x = obs_dict["reach_err"][0] 
+        active_mask = float(err_x > -0.05)
 
         # Check contact
         touch_vec = obs_dict["touching_info"]
