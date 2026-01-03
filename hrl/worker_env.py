@@ -387,7 +387,9 @@ class TableTennisWorker(CustomEnv):
         reward += 1.0 * paddle_quat_reward
         reward += 0.5 * pelvis_alignment
 
-        # Prevent drop a paddle
+        # ==================================================
+        # 6. Paddle drop plenalty
+        # ==================================================
         # Calculate RAW distance in meters (from obs_dict)
         raw_palm_dist = np.linalg.norm(obs_dict["palm_err"])
         # Apply HARD penalty if dropped (> 10cm)
@@ -397,17 +399,26 @@ class TableTennisWorker(CustomEnv):
         # We use the raw distance decay here, not the rwd_dict value
         reward -= 0.5 * np.tanh(5.0 * raw_palm_dist)
         
-        # Posture rewards
+        # ==================================================
+        # 7. Posture reward
+        # ==================================================
         reward += 0.1 * float(rwd_dict.get("torso_up", 0.0))
 
-        # Time penalty for being late
+        # ==================================================
+        # 5. PENALTIES & BONUSES
+        # ==================================================
+        # Time penalty for being too late
         if dt < -self.time_thr:
             reward -= 1.0 * abs(dt)
 
-        # Extra success bonus
+        # ==================================================
+        # 6. SUCCESS BONUSES
+        # ==================================================
+        # Environment success bonus
         if is_env_success:
             reward += 25.0
-            
+        
+        # Fresh contact bonus
         is_contact_fresh = False
         if has_hit and not self._prev_paddle_contact:
             if alignment_y > 0.5 and alignment_z > 0.5:
