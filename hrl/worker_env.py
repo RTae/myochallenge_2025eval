@@ -14,7 +14,7 @@ class TableTennisWorker(CustomEnv):
     """
     Goal-conditioned low-level controller
 
-    State (434):
+    State 431:
         - time (1)
         - pelvis_pos (3)
         - body_qpos (58)
@@ -24,7 +24,8 @@ class TableTennisWorker(CustomEnv):
         - paddle_pos (3)
         - paddle_vel (3)
         - paddle_ori (4)
-        - paddle_ori_err (4)
+        - goal_pos (3)
+        - goal_paddle_ori_err (4)
         - reach_err (3)
         - palm_pos (3)
         - palm_err (3)
@@ -36,7 +37,7 @@ class TableTennisWorker(CustomEnv):
         - target_paddle_ori (4)
         - target_time_to_plane (1)
 
-    Observation: 428 + 8 = 436
+    Observation: 431 + 8 = 439
     """
 
     def __init__(self, config: Config):
@@ -45,7 +46,7 @@ class TableTennisWorker(CustomEnv):
         # ==================================================
         # Observation space
         # ==================================================
-        self.state_dim = 428
+        self.state_dim = 431
         self.goal_dim = 8
         self.observation_dim = self.state_dim + self.goal_dim
 
@@ -176,7 +177,7 @@ class TableTennisWorker(CustomEnv):
         return np.asarray(x, dtype=np.float32).reshape(-1)
 
     def _build_obs(self, obs_dict):
-        # 1. State Extraction
+        # State Extraction
         ball_x = obs_dict["ball_pos"][0]
         ball_vel_x = obs_dict["ball_vel"][0]
         paddle_x = obs_dict["paddle_pos"][0]
@@ -231,6 +232,17 @@ class TableTennisWorker(CustomEnv):
 
         self.current_goal[7] = final_target[7] # Time component
         self.goal_start_time = float(obs_dict["time"])
+        
+        # ERROR CALCULATIONS as a part of obs
+        # Position Error
+        pos_err = self.current_goal[0:3] - obs_dict["paddle_pos"]
+
+        # Orientation Error
+        curr_ori = obs_dict["paddle_ori"]
+        goal_ori = self.current_goal[3:7]
+        if np.dot(curr_ori, goal_ori) < 0:
+            goal_ori = -goal_ori
+        ori_err = goal_ori - curr_ori
 
         # --------------------------------------------------
         # 5. BUILD OBSERVATION
@@ -245,8 +257,9 @@ class TableTennisWorker(CustomEnv):
             self._flat(obs_dict["paddle_pos"]),
             self._flat(obs_dict["paddle_vel"]),
             self._flat(obs_dict["paddle_ori"]),
-            self._flat(obs_dict["padde_ori_err"]),
             self._flat(obs_dict["reach_err"]),
+            self._flat(pos_err),
+            self._flat(ori_err),
             self._flat(obs_dict["palm_pos"]),
             self._flat(obs_dict["palm_err"]),
             self._flat(obs_dict["touching_info"]),
@@ -329,6 +342,12 @@ class TableTennisWorker(CustomEnv):
 
         paddle_ori = obs_dict["paddle_ori"]
         goal_ori = self.current_goal[3:7]
+        
+        # If dot product is negative, they represent the same rotation 
+        # but with opposite signs. Flip one to match the other.
+        if np.dot(paddle_ori, goal_ori) < 0:
+            goal_ori = -goal_ori
+        
         paddle_quat_err_goal = np.linalg.norm(paddle_ori - goal_ori, axis=-1)
         paddle_quat_reward = active_alignment_mask * np.exp(-5.0 * paddle_quat_err_goal)
         
