@@ -105,22 +105,16 @@ class TableTennisManager(CustomEnv):
         return self._build_obs(), {}
 
     def step(self, action: np.ndarray):
-        # --------------------------------------------------
-        # 1) Predict Base Goal (Heuristic)
-        # --------------------------------------------------
+        # Predict Base Goal (Heuristic)
         worker_env_access = self.worker_env.envs[0].unwrapped
         obs_dict = worker_env_access.unwrapped.obs_dict
-        
-        # Returns 8-dim goal: [Pos(3), Quat(4), Time(1)]
         goal_pred = worker_env_access.predict_goal_from_state(obs_dict)
 
-        # --------------------------------------------------
-        # 2) Apply Learned Residual & NORMALIZE
-        # --------------------------------------------------
+        # Apply Learned Residual & NORMALIZE
         goal_delta = action.astype(np.float32)
         goal_final = goal_pred + goal_delta
 
-
+        # Re-normalize quaternion
         quat_part = goal_final[3:7]
         quat_norm = np.linalg.norm(quat_part)
         if quat_norm > 1e-9:
@@ -128,29 +122,26 @@ class TableTennisManager(CustomEnv):
         else:
             goal_final[3:7] = np.array([1.0, 0.0, 0.0, 0.0])
 
+        # Clip Time
         goal_final[7] = np.clip(goal_final[7], 0.05, 2.0)
-
-        # Set this goal for the worker
-        worker_env_access.set_goal(goal_final)
+        worker_env_access.set_goal(goal_final, delta=goal_delta)
+    
         accumulated_worker_reward = 0.0
-
-        # --------------------------------------------------
-        # 3) Execute Temporal Abstraction
-        # --------------------------------------------------
         goal_success_any = False
         env_success_any = False
         last_infos = {}
         
         for _ in range(self.decision_interval):
+            # Predict with Worker
             worker_actions, _ = self.worker_model.predict(
                 self._worker_obs, deterministic=True
             )
 
+            # Step Environment
             obs, rewards, dones, infos = self.worker_env.step(worker_actions)
             
             self._worker_obs = obs
             self.current_step += 1
-            
             info = infos[0] 
             last_infos = info
             
@@ -161,9 +152,7 @@ class TableTennisManager(CustomEnv):
             if dones[0]:
                 break
 
-        # --------------------------------------------------
-        # 4) Compute Manager Reward
-        # --------------------------------------------------
+        # Compute Reward
         self.success_buffer.append(1.0 if goal_success_any else 0.0)
         if len(self.success_buffer) > 0:
             success_rate = float(np.mean(self.success_buffer))
@@ -180,9 +169,7 @@ class TableTennisManager(CustomEnv):
             worker_reward=accumulated_worker_reward, 
         )
 
-        # --------------------------------------------------
-        # 5) Build Output
-        # --------------------------------------------------
+        # Build Output
         terminated = bool(env_success_any)
         truncated = bool(self.current_step >= self.max_episode_steps)
 
