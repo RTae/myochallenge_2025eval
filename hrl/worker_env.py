@@ -369,7 +369,7 @@ class TableTennisWorker(CustomEnv):
         # ==================================================
         # 4. GOAL SUCCESS CHECK (For Manager)
         # ==================================================
-        reach_dist = float(np.linalg.norm(paddle_pos - goal_pos))
+        reach_dist = float(np.linalg.norm(paddle_pos - goal_pos, axis=-1))
         is_reach_good = reach_dist < self.reach_thr
         is_ori_good = paddle_quat_err_goal < self.paddle_ori_thr
         dt = float(self.goal_start_time + self.current_goal[7] - obs_dict["time"])
