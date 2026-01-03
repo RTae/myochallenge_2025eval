@@ -169,7 +169,8 @@ class TableTennisWorker(CustomEnv):
 
         if self.goal_noise_scale > 0.0:
             goal_phys[:3] += np.random.normal(0.0, self.goal_noise_scale, size=3)
-            goal_phys[7] += np.random.normal(0.0, self.goal_noise_scale * 0.5)
+            goal_phys[3:7] += np.random.normal(0.0, self.goal_noise_scale * 0.1, size=4)
+            goal_phys[7] += np.random.normal(0.0, self.goal_noise_scale * 0.5, size=1)
 
         return goal_phys
         
@@ -386,11 +387,18 @@ class TableTennisWorker(CustomEnv):
         reward += 1.0 * paddle_quat_reward
         reward += 0.5 * pelvis_alignment
 
-        # Prevent throw a paddle
-        palm_closeness = float(rwd_dict.get("palm_dist", 0.0))
-        reward -= (1.0 - palm_closeness)
+        # Prevent drop a paddle
+        # Calculate RAW distance in meters (from obs_dict)
+        raw_palm_dist = np.linalg.norm(obs_dict["palm_err"])
+        # Apply HARD penalty if dropped (> 10cm)
+        if raw_palm_dist > 0.1:
+            reward -= 1.0 
+        # Apply soft guidance (closer is better)
+        # We use the raw distance decay here, not the rwd_dict value
+        reward -= 0.5 * np.tanh(5.0 * raw_palm_dist)
+        
         # Posture rewards
-        reward += 0.5 * float(rwd_dict.get("torso_up", 0.0))
+        reward += 0.1 * float(rwd_dict.get("torso_up", 0.0))
 
         # Time penalty for being late
         if dt < -self.time_thr:
