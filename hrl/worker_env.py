@@ -338,8 +338,8 @@ class TableTennisWorker(CustomEnv):
         # ==================================================
         pred_err_y = np.abs(paddle_pos[1] - goal_pos[1])
         pred_err_z = np.abs(paddle_pos[2] - goal_pos[2])
-        alignment_y = active_alignment_mask * np.exp(-5.0 * pred_err_y)
-        alignment_z = active_alignment_mask * np.exp(-5.0 * pred_err_z)
+        alignment_y = active_alignment_mask * np.exp(-1.0 * pred_err_y)
+        alignment_z = active_alignment_mask * np.exp(-1.0 * pred_err_z)
 
         paddle_ori = obs_dict["paddle_ori"]
         goal_ori = self.current_goal[3:7]
@@ -350,7 +350,7 @@ class TableTennisWorker(CustomEnv):
             goal_ori = -goal_ori
         
         paddle_quat_err_goal = np.linalg.norm(paddle_ori - goal_ori, axis=-1)
-        paddle_quat_reward = active_alignment_mask * np.exp(-5.0 * paddle_quat_err_goal)
+        paddle_quat_reward = active_alignment_mask * np.exp(-2.0 * paddle_quat_err_goal)
         
         # ==================================================
         # 3. PELVIS ALIGNMENT (Integrated Logic)
