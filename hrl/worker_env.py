@@ -264,6 +264,7 @@ class TableTennisWorker(CustomEnv):
         obs_dict = self.env.unwrapped.obs_dict
 
         self._prev_paddle_contact = False
+        self._track_goal = None
 
         # Init with 0 delta
         self.manager_delta = np.zeros(self.goal_dim, dtype=np.float32)
