@@ -78,7 +78,7 @@ class TableTennisManager(CustomEnv):
         self.action_space = gym.spaces.Box(
             low=-0.5, 
             high=0.5,
-            shape=(8,), # <--- UPDATED to match Worker Goal
+            shape=(8,),
             dtype=np.float32,
         )
 
