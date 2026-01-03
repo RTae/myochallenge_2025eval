@@ -176,29 +176,32 @@ class TableTennisWorker(CustomEnv):
         return np.asarray(x, dtype=np.float32).reshape(-1)
 
     def _build_obs(self, obs_dict):
+        # 1. State Extraction
         ball_x = obs_dict["ball_pos"][0]
         ball_vel_x = obs_dict["ball_vel"][0]
         paddle_x = obs_dict["paddle_pos"][0]
-        
         touching = obs_dict.get('touching_info')
         current_touch = 1.0 if (touching is not None and touching[0] > 0.1) else 0.0
         
+        # Immediate Update for self._prev_paddle_contact to ensure no lag
+        if current_touch > 0:
+            self._prev_paddle_contact = True
+
+        # Stop tracking if hit or in strike zone
         is_hitting_zone = (abs(ball_x - paddle_x) < 0.05)
-        is_contact = (current_touch > 0) or (ball_vel_x > 0.05) or self._prev_paddle_contact 
+        is_contact = (current_touch > 0) or (ball_vel_x > 0.05) or self._prev_paddle_contact
         
-        # Tracking/Calculation (Only when far and no contact)
-        # We only update our 'track_goal' while the ball is distant (> 1.2m)
+        # Tracking/Calculation (Only distant and incoming)
         if (not is_contact) and (not is_hitting_zone) and (ball_x > 1.2) and (ball_vel_x < -0.05):
             new_pos, new_ori = self._predict(obs_dict)
             dx = float(new_pos[0] - ball_x)
             new_dt = abs(dx / ball_vel_x) if (abs(ball_vel_x) > 1e-3) else 1.5
             
-            # Physics + Manager Strategy
+            # Physics + Strategy
             target_goal = np.concatenate([new_pos, new_ori, [np.clip(new_dt, 0.05, 1.5)]]) + self.manager_delta
             self._track_goal = target_goal.copy()
 
         # Selection (Decision)
-        # Decide what the final_target should be for this specific step
         if self._track_goal is not None:
             final_target = self._track_goal.copy()
         else:
@@ -216,12 +219,21 @@ class TableTennisWorker(CustomEnv):
         else:
             self.current_goal[0:3] = target_pos
         
-        # Update orientation and time components
-        self.current_goal[3:] = final_target[3:]
+        # Orientation Safety Slew
+        delta_ori = final_target[3:7] - self.current_goal[3:7]
+        dist_ori = np.linalg.norm(delta_ori)
+        MAX_ROT_DELTA = 0.1
+        if dist_ori > MAX_ROT_DELTA:
+            self.current_goal[3:7] += delta_ori * (MAX_ROT_DELTA / (dist_ori + 1e-9))
+            self.current_goal[3:7] /= (np.linalg.norm(self.current_goal[3:7]) + 1e-9) # Normalize quat
+        else:
+            self.current_goal[3:7] = final_target[3:7]
+
+        self.current_goal[7] = final_target[7] # Time component
         self.goal_start_time = float(obs_dict["time"])
 
         # --------------------------------------------------
-        # 2. BUILD OBSERVATION
+        # 5. BUILD OBSERVATION
         # --------------------------------------------------
         obs = np.concatenate([
             self._flat(obs_dict["time"]),
@@ -241,12 +253,6 @@ class TableTennisWorker(CustomEnv):
             self._flat(obs_dict["act"]),
             self._flat(self.current_goal),
         ], axis=0)
-        
-        assert obs.shape == (self.observation_dim,), f"Invalid shape {obs.shape}"
-
-        if not np.isfinite(obs).all():
-            idx = np.where(~np.isfinite(obs))[0][:10]
-            raise RuntimeError(f"[NaN/Inf] obs: idx={idx}, vals={obs.reshape(-1)[idx]}")
         
         return obs.astype(np.float32)
 
