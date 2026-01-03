@@ -392,12 +392,12 @@ class TableTennisWorker(CustomEnv):
         # ==================================================
         # Calculate RAW distance in meters (from obs_dict)
         raw_palm_dist = np.linalg.norm(obs_dict["palm_err"])
-        # Apply HARD penalty if dropped (> 10cm)
-        if raw_palm_dist > 0.1:
+        # Apply HARD penalty if dropped (> 25cm)
+        if raw_palm_dist > 0.25:
             reward -= 1.0 
         # Apply soft guidance (closer is better)
         # We use the raw distance decay here, not the rwd_dict value
-        reward -= 0.5 * np.tanh(5.0 * raw_palm_dist)
+        reward -= 1.0 * np.tanh(5.0 * raw_palm_dist)
         
         # ==================================================
         # 7. Posture reward
