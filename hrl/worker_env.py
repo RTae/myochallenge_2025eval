@@ -302,67 +302,52 @@ class TableTennisWorker(CustomEnv):
         return obs, float(reward), terminated, truncated, info
     
     def _compute_reward(self, obs_dict, rwd_dict) -> Tuple[float, bool, Dict]:
-        """
-        Refactored Reward: Masked + Component-Wise + Quaternion Error (Ort)
-        """
         # ==================================================
         # 1. SETUP & MASKS
         # ==================================================
         goal_pos = self.current_goal[:3]
         paddle_pos = obs_dict["paddle_pos"]
+        pelvis_pos = obs_dict["pelvis_pos"]
         
-        # Check environment success (Did we really solve the task?)
         is_env_success = bool(rwd_dict.get("solved", False))
-
-        # Mask: Active only if ball is in front of paddle
         err_x = obs_dict["reach_err"][0] 
         active_mask = float(err_x > -0.05)
 
-        # Check contact
         touch_vec = obs_dict["touching_info"]
         has_hit = float(touch_vec[0]) > 0.5
         
-        # Mask: Stop alignment reward after hit
         active_alignment_mask = active_mask * (1.0 - float(self._prev_paddle_contact or has_hit))
 
         # ==================================================
-        # 2. POSITION ALIGNMENT
+        # 2. POSITION & ORIENTATION ALIGNMENT
         # ==================================================
-        # Split error into Y (width) and Z (height)
         pred_err_y = np.abs(paddle_pos[1] - goal_pos[1])
         pred_err_z = np.abs(paddle_pos[2] - goal_pos[2])
-
         alignment_y = active_alignment_mask * np.exp(-5.0 * pred_err_y)
         alignment_z = active_alignment_mask * np.exp(-5.0 * pred_err_z)
 
-        # ==================================================
-        # 3. ORIENTATION ALIGNMENT (Quaternion)
-        # ==================================================        
         paddle_ori = obs_dict["paddle_ori"]
         goal_ori = self.current_goal[3:7]
-        
-        # Simple Euclidean distance between quaternions is a good proxy for rotation error
-        paddle_ori_err = paddle_ori - goal_ori
-        paddle_quat_err_goal = np.linalg.norm(paddle_ori_err, axis=-1)
-        
+        paddle_quat_err_goal = np.linalg.norm(paddle_ori - goal_ori, axis=-1)
         paddle_quat_reward = active_alignment_mask * np.exp(-5.0 * paddle_quat_err_goal)
         
-        # # ==================================================
-        # # 4. PELVIS ALIGNMENT
-        # # ==================================================
-        # pelvis_pos = obs_dict["pelvis_pos"]
+        # ==================================================
+        # 3. PELVIS ALIGNMENT (Integrated Logic)
+        # ==================================================
+        # This keeps the body (pelvis) positioned relative to where 
+        # the paddle needs to be, encouraging footwork.
         
-        # # Maintain relative offset of pelvis to paddle
-        # paddle_to_pelvis_offset = pelvis_pos[:2] - paddle_pos[:2]
-        # pelvis_target_pos = goal_pos[:2] + paddle_to_pelvis_offset
+        # We assume a comfortable side-on stance offset
+        # You can also capture this offset during reset() for more variety
+        paddle_to_pelvis_offset = np.array([-0.2, 0.4])
+        pelvis_target_xy = goal_pos[:2] + paddle_to_pelvis_offset
         
-        # pelvis_err = np.linalg.norm(pelvis_pos[:2] - pelvis_target_pos)
-        # pelvis_alignment = active_alignment_mask * np.exp(-5.0 * pelvis_err)
+        pelvis_err = np.linalg.norm(pelvis_pos[:2] - pelvis_target_xy)
+        pelvis_alignment = active_alignment_mask * np.exp(-5.0 * pelvis_err)
 
         # ==================================================
-        # 5. GOAL SUCCESS CHECK (For Manager)
+        # 4. GOAL SUCCESS CHECK (For Manager)
         # ==================================================
-        # This calculates if the worker reached the target state, 
         reach_dist = float(np.linalg.norm(paddle_pos - goal_pos))
         is_reach_good = reach_dist < self.reach_thr
         is_ori_good = paddle_quat_err_goal < self.paddle_ori_thr
@@ -372,35 +357,29 @@ class TableTennisWorker(CustomEnv):
         is_goal_success = float(is_reach_good and is_ori_good and is_time_good)
 
         # ==================================================
-        # 6. AGGREGATE REWARDS
+        # 5. AGGREGATE REWARDS
         # ==================================================
         reward = 0.0
-        
         reward += 1.0 * alignment_y
         reward += 1.0 * alignment_z
         reward += 1.0 * paddle_quat_reward
-        #reward += 0.5 * pelvis_alignment
+        reward += 0.5 * pelvis_alignment
 
-        # --------------------------------------------------
-        # EXTRAS
-        # --------------------------------------------------
-        # Palm Distance
+        # Prevent throw a paddle
         palm_closeness = float(rwd_dict.get("palm_dist", 0.0))
         reward -= (1.0 - palm_closeness)
-        
-        # Torso Up
+        # Posture rewards
         reward += 0.5 * float(rwd_dict.get("torso_up", 0.0))
 
-        # Timing Penalty (Only if Late)
+        # Time penalty for being late
         if dt < -self.time_thr:
             reward -= 1.0 * abs(dt)
 
-        # Success Bonus
+        # Extra success bonus
         if is_env_success:
             reward += 25.0
             
-        # Contact Bonus
-        is_contact_fresh = False # Track "fresh" contact for this step
+        is_contact_fresh = False
         if has_hit and not self._prev_paddle_contact:
             if alignment_y > 0.5 and alignment_z > 0.5:
                 reward += 5.0
@@ -411,7 +390,7 @@ class TableTennisWorker(CustomEnv):
         self._prev_paddle_contact = has_hit
 
         # ==================================================
-        # LOGGING
+        # 6. LOGGING
         # ==================================================
         logs = {
             "is_goal_success": is_goal_success,            
@@ -423,11 +402,11 @@ class TableTennisWorker(CustomEnv):
             "abs_time_err": abs(dt),
             "is_ball_passed": active_mask,
             "is_contact": float(is_contact_fresh),
-            #"pelvis_err": pelvis_err,
+            "pelvis_err": pelvis_err,
             "alignment_y": alignment_y,
             "alignment_z": alignment_z,
             "quat_reward": paddle_quat_reward,
-            #"pelvis_reward": pelvis_alignment,
+            "pelvis_reward": pelvis_alignment,
             "palm_dist": palm_closeness,
         }
 
