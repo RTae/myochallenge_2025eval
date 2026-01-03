@@ -436,7 +436,7 @@ class TableTennisWorker(CustomEnv):
             "alignment_z": alignment_z,
             "quat_reward": paddle_quat_reward,
             "pelvis_reward": pelvis_alignment,
-            "palm_dist": palm_closeness,
+            "palm_dist": raw_palm_dist,
         }
 
         return float(reward), False, logs
