@@ -16,7 +16,7 @@ from stable_baselines3.common.vec_env import VecNormalize
 from config import Config
 from env_factory import create_default_env
 
-def evaluate_single_model(model_path, env, trials=10000):
+def evaluate_single_model(model_path, env, trials=1000):
     """
     Runs evaluation for a single model instance.
     """
@@ -39,7 +39,7 @@ def evaluate_single_model(model_path, env, trials=10000):
             
             if done:
                 all_rewards.append(info["episode"]["r"])
-                efforts.append(info['effort'])
+                efforts.append(info.get('effort', 0.0)) # Safety get in case effort is missing
                 if info["is_success"]:
                     success_count += 1
                     
@@ -50,7 +50,7 @@ def evaluate_single_model(model_path, env, trials=10000):
     efforts_mean = np.mean(efforts) if efforts else 0.0
     return mean_reward, success_rate, efforts_mean
 
-def evaluate(folders, trials=10000):
+def evaluate(folders, trials=1000):
     
     # 1. Setup the Standardized Environment
     cfg = Config()
@@ -60,9 +60,12 @@ def evaluate(folders, trials=10000):
     print("-" * 60)
 
     for folder_path in folders:
-        seed_name = os.path.basename(folder_path)
+        # --- FIX IS HERE ---
+        # os.path.normpath removes the trailing slash (e.g. "seed42/" -> "seed42")
+        # so basename can correctly grab the folder name.
+        seed_name = os.path.basename(os.path.normpath(folder_path))
         
-        # Construct Path: ppo_seed42/best_model/best_model.zip
+        # Construct Path
         model_path = os.path.join(folder_path, "best_model", "best_model.zip")
         
         if not os.path.exists(model_path):
@@ -73,7 +76,6 @@ def evaluate(folders, trials=10000):
         try:
             env = create_default_env(cfg, num_envs=1)
             
-            # Just ensure we aren't updating stats during test
             if isinstance(env, VecNormalize):
                 env.training = False
                 env.norm_reward = False
@@ -81,7 +83,7 @@ def evaluate(folders, trials=10000):
             mean_r, success_r, efforts_mean = evaluate_single_model(model_path, env, trials=trials)
             
             results.append({
-                "Seed": str(seed_name),
+                "Seed": seed_name,
                 "Mean Reward": mean_r,
                 "Success Rate": success_r,
                 "Mean Effort": efforts_mean
@@ -92,8 +94,9 @@ def evaluate(folders, trials=10000):
             env.close()
             
         except Exception as e:
-            raise SystemError(f"Error evaluating {seed_name}: {e}")
-
+            # Better error printing so we see WHICH seed failed
+            print(f"Error evaluating {seed_name}: {e}")
+            raise e
 
     # 3. Report Results
     if not results:
@@ -102,6 +105,7 @@ def evaluate(folders, trials=10000):
 
     df = pd.DataFrame(results)
     
+    # Calculate stats
     avg_reward = df["Mean Reward"].mean()
     std_reward = df["Mean Reward"].std()
     avg_success = df["Success Rate"].mean()
@@ -109,19 +113,24 @@ def evaluate(folders, trials=10000):
     avg_effort = df["Mean Effort"].mean()
     std_effort = df["Mean Effort"].std()
 
-    print("\n" + "="*60)
+    print("\n" + "="*80)
     print("FINAL AGGREGATED REPORT")
-    print("="*60)
+    print("="*80)
+    # Ensure pandas prints all columns and doesn't truncate
+    pd.set_option('display.max_rows', None)
+    pd.set_option('display.max_columns', None)
+    pd.set_option('display.width', 1000)
+    
     print(df.to_string(index=False))
-    print("-" * 60)
+    print("-" * 80)
     print(f"Average Reward:       {avg_reward:.2f} ± {std_reward:.2f}")
     print(f"Average Success Rate: {avg_success:.2f}% ± {std_success:.2f}")
     print(f"Average Effort:       {avg_effort:.4f} ± {std_effort:.4f}")
-    print("="*60)
+    print("="*80)
 
 if __name__ == "__main__":
     
     evaluate(
         folders=sorted(glob.glob("./logs/ppo_seed*/")),
-        trials=10
+        trials=1000 # Change back to 10000 when ready
     )
