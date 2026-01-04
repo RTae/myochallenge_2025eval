@@ -113,6 +113,7 @@ class TableTennisWorker(CustomEnv):
     # ==================================================
     # Goal API
     # ==================================================
+    
     def _predict(self, obs_dict):
         """Helper to get physics prediction"""
         pred_pos, paddle_ori_ideal = predict_ball_trajectory(
@@ -300,8 +301,43 @@ class TableTennisWorker(CustomEnv):
     # ==================================================
     # Gym API
     # ==================================================
+    def _force_start_grasp(self):
+        """
+        Forces the 'Golden Grip' finger values.
+        Does NOT touch the wrist (flexion) or paddle position.
+        """
+        sim = self.env.unwrapped.sim
+        model = sim.model
+        data = sim.data
+
+        # YOUR UPDATED POSE (Includes new Pinky values)
+        perfect_fingers = {
+            # THUMB
+            "cmc_abduction": -0.334, "cmc_flexion": 0.0562, "mp_flexion": -0.511, "ip_flexion": -0.881,
+            # INDEX
+            "mcp2_flexion": 1.49, "mcp2_abduction": 0.147, "pm2_flexion": 1.3, "md2_flexion": 1.25,
+            # MIDDLE
+            "mcp3_flexion": 1.42, "mcp3_abduction": -0.0131, "pm3_flexion": 1.35, "md3_flexion": 1.04,
+            # RING
+            "mcp4_flexion": 1.48, "mcp4_abduction": -0.0681, "pm4_flexion": 1.36, "md4_flexion": 1.07,
+            # PINKY
+            "mcp5_flexion": 1.39, "mcp5_abduction": -0.188, "pm5_flexion": 0.872, "md5_flexion": 1.57
+        }
+
+        # Apply to physics
+        for name, val in perfect_fingers.items():
+            jid = model.joint_name2id(name)
+            adr = model.jnt_qposadr[jid]
+            data.qpos[adr] = val
+        
+        # Forward physics to lock it in
+        sim.forward()
+        
     def reset(self, seed=None, options=None):
         _, info = super().reset(seed=seed)
+        
+        self._force_start_grasp()
+        
         obs_dict = self.env.unwrapped.obs_dict
 
         self._prev_paddle_contact = False
