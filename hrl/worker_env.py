@@ -463,8 +463,6 @@ class TableTennisWorker(CustomEnv):
         # Apply HARD penalty if dropped (> 25cm)
         if not is_holding:
             reward -= 5.0 
-        # Apply soft guidance (closer is better)
-        reward -= 5.0 * np.tanh(5.0 * raw_palm_dist)
         
         # ==================================================
         # 7. Posture reward
