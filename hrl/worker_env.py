@@ -176,64 +176,90 @@ class TableTennisWorker(CustomEnv):
         
     def _flat(self, x):
         return np.asarray(x, dtype=np.float32).reshape(-1)
-
-    def _build_obs(self, obs_dict):
-        # State Extraction
+    
+    def _update_goal_tracker(self, obs_dict):
+        # Extract State
         ball_x = obs_dict["ball_pos"][0]
         ball_vel_x = obs_dict["ball_vel"][0]
         paddle_x = obs_dict["paddle_pos"][0]
         touching = obs_dict.get('touching_info')
         current_touch = 1.0 if (touching is not None and touching[0] > 0.1) else 0.0
         
-        # Immediate Update for self._prev_paddle_contact to ensure no lag
+        # Update Contact Memory
         if current_touch > 0:
             self._prev_paddle_contact = True
 
-        # Stop tracking if hit or in strike zone
-        is_hitting_zone = (abs(ball_x - paddle_x) < 0.05)
+        # Check Tracking Conditions
+        is_hitting_zone = (abs(ball_x - paddle_x) < 0.20)
         is_contact = (current_touch > 0) or (ball_vel_x > 0.05) or self._prev_paddle_contact
         
-        # Tracking/Calculation (Only distant and incoming)
-        if (not is_contact) and (not is_hitting_zone) and (ball_x > 1.2) and (ball_vel_x < -0.05):
+        # Update when
+        # - Not in contact
+        # - Ball is before paddle (x direction)
+        # - Ball is moving towards paddle around paddle + 0.1m
+        # - Not already hitting zone
+        should_track = (not is_contact) and \
+                    (not is_hitting_zone) and \
+                    (ball_x > paddle_x + 0.1) and \
+                    (ball_vel_x < -0.05)
+
+        # --------------------------------------------------
+        # 4. TRACKING LOGIC
+        # --------------------------------------------------
+        if should_track:
+            # Calculate fresh physics
             new_pos, new_ori = self._predict(obs_dict)
             dx = float(new_pos[0] - ball_x)
-            new_dt = abs(dx / ball_vel_x) if (abs(ball_vel_x) > 1e-3) else 1.5
             
-            # Physics + Strategy
-            target_goal = np.concatenate([new_pos, new_ori, [np.clip(new_dt, 0.05, 1.5)]]) + self.manager_delta
+            # Estimate time to impact
+            if abs(ball_vel_x) > 1e-3:
+                new_dt = abs(dx / ball_vel_x)
+            else:
+                new_dt = 1.5
+            new_dt = np.clip(new_dt, 0.05, 1.5)
+            
+            # B. Update the "Tracked Goal" (Physics + Manager Delta)
+            target_goal = np.concatenate([new_pos, new_ori, [new_dt]]) + self.manager_delta
             self._track_goal = target_goal.copy()
+            
+            # Update "Start Time" ONLY when tracking
+            # This ensures (Start + DT) = Absolute Deadline
+            # When we stop tracking, this variable freezes, so the deadline stays fixed.
+            self.goal_start_time = float(obs_dict["time"])
 
-        # Selection (Decision)
+        # --------------------------------------------------
+        # 5. EXECUTION
+        # --------------------------------------------------
         if self._track_goal is not None:
-            final_target = self._track_goal.copy()
-        else:
-            final_target = self.current_goal
+            # --- Position Smoothing ---
+            curr_pos = self.current_goal[0:3]
+            target_pos = self._track_goal[0:3]
+            delta_pos = target_pos - curr_pos
+            dist_pos = np.linalg.norm(delta_pos)
+            
+            MAX_POS_DELTA = 0.05
+            if dist_pos > MAX_POS_DELTA:
+                # Move partial step towards target
+                self.current_goal[0:3] = curr_pos + (delta_pos * (MAX_POS_DELTA / (dist_pos + 1e-9)))
+            else:
+                # Snap to target
+                self.current_goal[0:3] = target_pos
+            
+            # --- Orientation Smoothing (Safety) ---
+            delta_ori = self._track_goal[3:7] - self.current_goal[3:7]
+            dist_ori = np.linalg.norm(delta_ori)
+            MAX_ROT_DELTA = 0.1
+            if dist_ori > MAX_ROT_DELTA:
+                self.current_goal[3:7] += delta_ori * (MAX_ROT_DELTA / (dist_ori + 1e-9))
+                # Normalize quaternion after modification
+                self.current_goal[3:7] /= (np.linalg.norm(self.current_goal[3:7]) + 1e-9)
+            else:
+                self.current_goal[3:7] = self._track_goal[3:7]
 
-        # Execution (Smoothing/Slew Rate)
-        curr_pos = self.current_goal[0:3]
-        target_pos = final_target[0:3]
-        delta_pos = target_pos - curr_pos
-        dist_pos = np.linalg.norm(delta_pos)
-        
-        MAX_POS_DELTA = 0.05
-        if dist_pos > MAX_POS_DELTA:
-            self.current_goal[0:3] = curr_pos + (delta_pos * (MAX_POS_DELTA / (dist_pos + 1e-9)))
-        else:
-            self.current_goal[0:3] = target_pos
-        
-        # Orientation Safety Slew
-        delta_ori = final_target[3:7] - self.current_goal[3:7]
-        dist_ori = np.linalg.norm(delta_ori)
-        MAX_ROT_DELTA = 0.1
-        if dist_ori > MAX_ROT_DELTA:
-            self.current_goal[3:7] += delta_ori * (MAX_ROT_DELTA / (dist_ori + 1e-9))
-            self.current_goal[3:7] /= (np.linalg.norm(self.current_goal[3:7]) + 1e-9) # Normalize quat
-        else:
-            self.current_goal[3:7] = final_target[3:7]
+            # --- Time Update ---
+            self.current_goal[7] = self._track_goal[7]
 
-        self.current_goal[7] = final_target[7] # Time component
-        self.goal_start_time = float(obs_dict["time"])
-        
+    def _build_obs(self, obs_dict):
         # Position Error
         pos_err = self.current_goal[0:3] - obs_dict["paddle_pos"]
 
@@ -245,7 +271,7 @@ class TableTennisWorker(CustomEnv):
         ori_err = goal_ori - curr_ori
 
         # --------------------------------------------------
-        # 5. BUILD OBSERVATION
+        # BUILD OBSERVATION
         # --------------------------------------------------
         obs = np.concatenate([
             self._flat(obs_dict["time"]),
@@ -297,8 +323,11 @@ class TableTennisWorker(CustomEnv):
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         _, base_reward, terminated, truncated, info = super().step(action)
         
+        
         obs_dict = info["obs_dict"]
         rwd_dict = info["rwd_dict"]
+        
+        self._update_goal_tracker(obs_dict)
 
         reward, _, logs = self._compute_reward(obs_dict, rwd_dict)
         if not np.isfinite(reward):
@@ -382,8 +411,8 @@ class TableTennisWorker(CustomEnv):
         # 5. AGGREGATE REWARDS
         # ==================================================
         reward = 0.0
-        reward += 1.0 * alignment_y
-        reward += 1.0 * alignment_z
+        reward += 5.0 * alignment_y
+        reward += 5.0 * alignment_z
         reward += 1.0 * paddle_quat_reward
         reward += 0.5 * pelvis_alignment
 
