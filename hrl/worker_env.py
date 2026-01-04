@@ -56,13 +56,14 @@ class TableTennisWorker(CustomEnv):
             shape=(self.observation_dim,),
             dtype=np.float32,
         )
+        
+        self.grip_indices = [242, 243, 244, 245, 246, 247, 248, 249, 258, 260]
 
         # ==================================================
         # Runtime
         # ==================================================
         self.current_goal: Optional[np.ndarray] = None
         self._track_goal: Optional[np.ndarray] = None
-        # Store the Manager's deviation strategy
         self.manager_delta: np.ndarray = np.zeros(self.goal_dim, dtype=np.float32)
         
         self.goal_start_time: Optional[float] = None
@@ -76,7 +77,7 @@ class TableTennisWorker(CustomEnv):
         self.progress = 0.0
 
         # ==================================================
-        # Success thresholds (curriculum-controlled)
+        # Success thresholds
         # ==================================================
         self.reach_thr_base = 0.25
         self.reach_max_delta = 0.15
@@ -85,12 +86,10 @@ class TableTennisWorker(CustomEnv):
         self.paddle_ori_thr_base = 0.4
         self.paddle_ori_max_delta = 0.2
 
-        # Initialize thresholds immediately so they exist for the first step
         self.reach_thr = self.reach_thr_base
         self.time_thr = self.time_thr_base
         self.paddle_ori_thr = self.paddle_ori_thr_base
         
-        # Apply initial progress (0.0) to set exact values
         self.set_progress(0.0)
 
     # ==================================================
@@ -113,7 +112,6 @@ class TableTennisWorker(CustomEnv):
     # ==================================================
     # Goal API
     # ==================================================
-    
     def _predict(self, obs_dict):
         """Helper to get physics prediction"""
         pred_pos, paddle_ori_ideal = predict_ball_trajectory(
@@ -124,14 +122,6 @@ class TableTennisWorker(CustomEnv):
         return pred_pos, paddle_ori_ideal
 
     def set_goal(self, goal_phys: np.ndarray, delta: Optional[np.ndarray] = None):
-        """
-        Sets the current goal.
-        
-        Args:
-            goal_phys: The full 8D goal vector (Base + Delta).
-            delta: The explicit Manager Delta (optional). 
-                   If None (Low-level training), we assume 0.
-        """
         self.current_goal = goal_phys.astype(np.float32)
         
         if delta is not None:
@@ -153,18 +143,10 @@ class TableTennisWorker(CustomEnv):
 
         dt = float(np.clip(dt, 0.05, 1.5))
 
-        # Goal = [Px, Py, Pz, Qw, Qx, Qy, Qz, Time]
         goal_phys = np.array(
-            [
-                pred_pos[0],
-                pred_pos[1],
-                pred_pos[2],
-                pred_paddle_ori[0],
-                pred_paddle_ori[1],
-                pred_paddle_ori[2],
-                pred_paddle_ori[3],
-                dt
-            ],
+            [pred_pos[0], pred_pos[1], pred_pos[2],
+             pred_paddle_ori[0], pred_paddle_ori[1], pred_paddle_ori[2], pred_paddle_ori[3],
+             dt],
             dtype=np.float32,
         )
 
@@ -179,60 +161,38 @@ class TableTennisWorker(CustomEnv):
         return np.asarray(x, dtype=np.float32).reshape(-1)
     
     def _update_goal_tracker(self, obs_dict):
-        # Extract State
         ball_x = obs_dict["ball_pos"][0]
         ball_vel_x = obs_dict["ball_vel"][0]
         paddle_x = obs_dict["paddle_pos"][0]
         touching = obs_dict.get('touching_info')
         current_touch = 1.0 if (touching is not None and touching[0] > 0.1) else 0.0
         
-        # Update Contact Memory
         if current_touch > 0:
             self._prev_paddle_contact = True
 
-        # Check Tracking Conditions
         is_hitting_zone = (abs(ball_x - paddle_x) < 0.20)
         is_contact = (current_touch > 0) or (ball_vel_x > 0.05) or self._prev_paddle_contact
         
-        # Update when
-        # - Not in contact
-        # - Ball is before paddle (x direction)
-        # - Ball is moving towards paddle around paddle + 0.1m
-        # - Not already hitting zone
         should_track = (not is_contact) and \
                     (not is_hitting_zone) and \
                     (ball_x > paddle_x + 0.1) and \
                     (ball_vel_x < -0.05)
 
-        # --------------------------------------------------
-        # 4. TRACKING LOGIC
-        # --------------------------------------------------
         if should_track:
-            # Calculate fresh physics
             new_pos, new_ori = self._predict(obs_dict)
             dx = float(new_pos[0] - ball_x)
             
-            # Estimate time to impact
             if abs(ball_vel_x) > 1e-3:
                 new_dt = abs(dx / ball_vel_x)
             else:
                 new_dt = 1.5
             new_dt = np.clip(new_dt, 0.05, 1.5)
             
-            # B. Update the "Tracked Goal" (Physics + Manager Delta)
             target_goal = np.concatenate([new_pos, new_ori, [new_dt]]) + self.manager_delta
             self._track_goal = target_goal.copy()
-            
-            # Update "Start Time" ONLY when tracking
-            # This ensures (Start + DT) = Absolute Deadline
-            # When we stop tracking, this variable freezes, so the deadline stays fixed.
             self.goal_start_time = float(obs_dict["time"])
 
-        # --------------------------------------------------
-        # 5. EXECUTION
-        # --------------------------------------------------
         if self._track_goal is not None:
-            # --- Position Smoothing ---
             curr_pos = self.current_goal[0:3]
             target_pos = self._track_goal[0:3]
             delta_pos = target_pos - curr_pos
@@ -240,40 +200,30 @@ class TableTennisWorker(CustomEnv):
             
             MAX_POS_DELTA = 0.05
             if dist_pos > MAX_POS_DELTA:
-                # Move partial step towards target
                 self.current_goal[0:3] = curr_pos + (delta_pos * (MAX_POS_DELTA / (dist_pos + 1e-9)))
             else:
-                # Snap to target
                 self.current_goal[0:3] = target_pos
             
-            # --- Orientation Smoothing (Safety) ---
             delta_ori = self._track_goal[3:7] - self.current_goal[3:7]
             dist_ori = np.linalg.norm(delta_ori)
             MAX_ROT_DELTA = 0.1
             if dist_ori > MAX_ROT_DELTA:
                 self.current_goal[3:7] += delta_ori * (MAX_ROT_DELTA / (dist_ori + 1e-9))
-                # Normalize quaternion after modification
                 self.current_goal[3:7] /= (np.linalg.norm(self.current_goal[3:7]) + 1e-9)
             else:
                 self.current_goal[3:7] = self._track_goal[3:7]
 
-            # --- Time Update ---
             self.current_goal[7] = self._track_goal[7]
 
     def _build_obs(self, obs_dict):
-        # Position Error
         pos_err = self.current_goal[0:3] - obs_dict["paddle_pos"]
 
-        # Orientation Error
         curr_ori = obs_dict["paddle_ori"]
         goal_ori = self.current_goal[3:7]
         if np.dot(curr_ori, goal_ori) < 0:
             goal_ori = -goal_ori
         ori_err = goal_ori - curr_ori
 
-        # --------------------------------------------------
-        # BUILD OBSERVATION
-        # --------------------------------------------------
         obs = np.concatenate([
             self._flat(obs_dict["time"]),
             self._flat(obs_dict["pelvis_pos"]),
@@ -294,8 +244,6 @@ class TableTennisWorker(CustomEnv):
             self._flat(self.current_goal),
         ], axis=0)
         
-        assert obs.shape == (self.observation_dim,) , f"Obs shape mismatch: {obs.shape} vs {(self.observation_dim,)}"
-        
         return obs.astype(np.float32)
 
     # ==================================================
@@ -304,52 +252,45 @@ class TableTennisWorker(CustomEnv):
     def _force_start_grasp(self):
         """
         Forces the 'Golden Grip' finger values.
-        Does NOT touch the wrist (flexion) or paddle position.
+        Crucial for Frame 0 stability.
         """
         sim = self.env.unwrapped.sim
         model = sim.model
         data = sim.data
 
-        # YOUR UPDATED POSE (Includes new Pinky values)
         perfect_fingers = {
-            # THUMB
             "cmc_abduction": -0.334, "cmc_flexion": 0.0562, "mp_flexion": -0.511, "ip_flexion": -0.881,
-            # INDEX
             "mcp2_flexion": 1.49, "mcp2_abduction": 0.147, "pm2_flexion": 1.3, "md2_flexion": 1.25,
-            # MIDDLE
             "mcp3_flexion": 1.42, "mcp3_abduction": -0.0131, "pm3_flexion": 1.35, "md3_flexion": 1.04,
-            # RING
             "mcp4_flexion": 1.48, "mcp4_abduction": -0.0681, "pm4_flexion": 1.36, "md4_flexion": 1.07,
-            # PINKY
             "mcp5_flexion": 1.39, "mcp5_abduction": -0.188, "pm5_flexion": 0.872, "md5_flexion": 1.57
         }
 
-        # Apply to physics
         for name, val in perfect_fingers.items():
-            jid = model.joint_name2id(name)
-            adr = model.jnt_qposadr[jid]
-            data.qpos[adr] = val
+            try:
+                jid = model.joint_name2id(name)
+                adr = model.jnt_qposadr[jid]
+                data.qpos[adr] = val
+            except ValueError:
+                pass
         
-        # Forward physics to lock it in
         sim.forward()
         
     def reset(self, seed=None, options=None):
         _, info = super().reset(seed=seed)
         
+        # 1. INJECT STARTING GRIP (Frame 0)
         self._force_start_grasp()
         
         obs_dict = self.env.unwrapped.obs_dict
 
         self._prev_paddle_contact = False
         self._track_goal = None
-
-        # Init with 0 delta
         self.manager_delta = np.zeros(self.goal_dim, dtype=np.float32)
         
         goal = self.predict_goal_from_state(obs_dict)
         self.set_goal(goal, delta=None)
         
-        self.prev_reach_err = None
         self.prev_reach_err = np.linalg.norm(
             obs_dict["paddle_pos"] - self.current_goal[:3]
         )
@@ -357,15 +298,17 @@ class TableTennisWorker(CustomEnv):
         return self._build_obs(obs_dict), info
 
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict]:
-        _, base_reward, terminated, truncated, info = super().step(action)
+        clamped_action = action.copy()
+        clamped_action[self.grip_indices] = 1.0
+
+        # Pass the clamped action to the physics engine
+        _, base_reward, terminated, truncated, info = super().step(clamped_action)
         
         obs_dict = info["obs_dict"]
         rwd_dict = info["rwd_dict"]
         
-        # 1. Update internal state first
         self._update_goal_tracker(obs_dict)
 
-        # 2. Compute reward using the new state + new logic
         reward, _, logs = self._compute_reward(obs_dict, rwd_dict)
         if not np.isfinite(reward):
             raise RuntimeError(f"[NaN/Inf] reward={reward}, logs={logs}")
@@ -379,15 +322,11 @@ class TableTennisWorker(CustomEnv):
             "paddle_ori_threshold": self.paddle_ori_thr,
         })
         
-        # 3. Build observation
         obs = self._build_obs(obs_dict)
         
         return obs, float(reward), terminated, truncated, info
     
     def _compute_reward(self, obs_dict, rwd_dict) -> Tuple[float, bool, Dict]:
-        # ==================================================
-        # 1. SETUP & MASKS
-        # ==================================================
         goal_pos = self.current_goal[:3]
         paddle_pos = obs_dict["paddle_pos"]
         pelvis_pos = obs_dict["pelvis_pos"]
@@ -399,21 +338,15 @@ class TableTennisWorker(CustomEnv):
         touch_vec = obs_dict["touching_info"]
         has_hit = float(touch_vec[0]) > 0.5
         
-        # Calculate RAW distance first to check if agent are holding it
+        # Distance check for holding
         raw_palm_dist = np.linalg.norm(obs_dict["palm_err"])
-        is_holding = float(raw_palm_dist < 0.25) # 1.0 if holding, 0.0 if dropped
+        is_holding = float(raw_palm_dist < 0.20)
 
-        # You only get alignment rewards if:
-        # 1. Ball is active
-        # 2. You haven't hit it yet
-        # 3. YOU ARE HOLDING THE PADDLE
         active_alignment_mask = active_mask * \
                                 (1.0 - float(self._prev_paddle_contact or has_hit)) * \
                                 is_holding
 
-        # ==================================================
-        # 2. POSITION & ORIENTATION ALIGNMENT
-        # ==================================================
+        # Position & Orientation Alignment
         pred_err_y = np.abs(paddle_pos[1] - goal_pos[1])
         pred_err_z = np.abs(paddle_pos[2] - goal_pos[2])
         alignment_y = active_alignment_mask * np.exp(-1.0 * pred_err_y)
@@ -428,18 +361,13 @@ class TableTennisWorker(CustomEnv):
         paddle_quat_err_goal = np.linalg.norm(paddle_ori - goal_ori, axis=-1)
         paddle_quat_reward = active_alignment_mask * np.exp(-2.0 * paddle_quat_err_goal)
         
-        # ==================================================
-        # 3. PELVIS ALIGNMENT
-        # ==================================================
+        # Pelvis Alignment
         paddle_to_pelvis_offset = np.array([-0.2, 0.4])
         pelvis_target_xy = goal_pos[:2] + paddle_to_pelvis_offset
-        
         pelvis_err = np.linalg.norm(pelvis_pos[:2] - pelvis_target_xy)
         pelvis_alignment = active_alignment_mask * np.exp(-5.0 * pelvis_err)
 
-        # ==================================================
-        # 4. GOAL SUCCESS CHECK
-        # ==================================================
+        # Success Checks
         reach_dist = float(np.linalg.norm(paddle_pos - goal_pos, axis=-1))
         is_reach_good = reach_dist < self.reach_thr
         is_ori_good = paddle_quat_err_goal < self.paddle_ori_thr
@@ -448,37 +376,24 @@ class TableTennisWorker(CustomEnv):
         
         is_goal_success = float(is_reach_good and is_ori_good and is_time_good)
 
-        # ==================================================
-        # 5. AGGREGATE REWARDS
-        # ==================================================
+        # Rewards
         reward = 0.0
         reward += 5.0 * alignment_y
         reward += 5.0 * alignment_z
         reward += 1.0 * paddle_quat_reward
         reward += 0.5 * pelvis_alignment
 
-        # ==================================================
-        # 6. Paddle drop penalty
-        # ==================================================
-        # Apply HARD penalty if dropped (> 25cm)
+        # DROP PENALTY
         if not is_holding:
             reward -= 5.0 
         
-        # ==================================================
-        # 7. Posture reward
-        # ==================================================
         reward += 0.1 * float(rwd_dict.get("torso_up", 0.0))
 
-        # ==================================================
-        # 5. PENALTIES & BONUSES
-        # ==================================================
-        # Time penalty for being too late
+        # Time penalty
         if dt < -self.time_thr:
             reward -= 1.0 * abs(dt)
 
-        # ==================================================
-        # 6. SUCCESS BONUSES
-        # ==================================================
+        # Success Bonus
         if is_env_success:
             reward += 25.0
         
@@ -492,9 +407,6 @@ class TableTennisWorker(CustomEnv):
         
         self._prev_paddle_contact = has_hit
 
-        # ==================================================
-        # 6. LOGGING
-        # ==================================================
         logs = {
             "is_goal_success": is_goal_success,            
             "reach_error": reach_dist,
