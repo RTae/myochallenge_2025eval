@@ -120,7 +120,9 @@ def main():
     )
     
     model_path = os.path.join(cfg.logdir, "model.pkl")
+    env_path = os.path.join(cfg.logdir, "vecnormalize.pkl")
     model.save(model_path)
+    env.save(env_path)
     logger.info(f"Model saved to {model_path}, closing environments...")
     
     eval_env.close()
