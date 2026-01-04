@@ -428,7 +428,7 @@ class TableTennisWorker(CustomEnv):
         if not is_holding:
             reward -= 5.0 
         # Apply soft guidance (closer is better)
-        reward -= 1.0 * np.tanh(5.0 * raw_palm_dist)
+        reward -= 5.0 * np.tanh(5.0 * raw_palm_dist)
         
         # ==================================================
         # 7. Posture reward
