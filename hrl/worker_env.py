@@ -323,12 +323,13 @@ class TableTennisWorker(CustomEnv):
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         _, base_reward, terminated, truncated, info = super().step(action)
         
-        
         obs_dict = info["obs_dict"]
         rwd_dict = info["rwd_dict"]
         
+        # 1. Update internal state first
         self._update_goal_tracker(obs_dict)
 
+        # 2. Compute reward using the new state + new logic
         reward, _, logs = self._compute_reward(obs_dict, rwd_dict)
         if not np.isfinite(reward):
             raise RuntimeError(f"[NaN/Inf] reward={reward}, logs={logs}")
@@ -342,6 +343,7 @@ class TableTennisWorker(CustomEnv):
             "paddle_ori_threshold": self.paddle_ori_thr,
         })
         
+        # 3. Build observation
         obs = self._build_obs(obs_dict)
         
         return obs, float(reward), terminated, truncated, info
@@ -361,7 +363,17 @@ class TableTennisWorker(CustomEnv):
         touch_vec = obs_dict["touching_info"]
         has_hit = float(touch_vec[0]) > 0.5
         
-        active_alignment_mask = active_mask * (1.0 - float(self._prev_paddle_contact or has_hit))
+        # Calculate RAW distance first to check if agent are holding it
+        raw_palm_dist = np.linalg.norm(obs_dict["palm_err"])
+        is_holding = float(raw_palm_dist < 0.25) # 1.0 if holding, 0.0 if dropped
+
+        # You only get alignment rewards if:
+        # 1. Ball is active
+        # 2. You haven't hit it yet
+        # 3. YOU ARE HOLDING THE PADDLE
+        active_alignment_mask = active_mask * \
+                                (1.0 - float(self._prev_paddle_contact or has_hit)) * \
+                                is_holding
 
         # ==================================================
         # 2. POSITION & ORIENTATION ALIGNMENT
@@ -374,8 +386,6 @@ class TableTennisWorker(CustomEnv):
         paddle_ori = obs_dict["paddle_ori"]
         goal_ori = self.current_goal[3:7]
         
-        # If dot product is negative, they represent the same rotation 
-        # but with opposite signs. Flip one to match the other.
         if np.dot(paddle_ori, goal_ori) < 0:
             goal_ori = -goal_ori
         
@@ -383,13 +393,8 @@ class TableTennisWorker(CustomEnv):
         paddle_quat_reward = active_alignment_mask * np.exp(-2.0 * paddle_quat_err_goal)
         
         # ==================================================
-        # 3. PELVIS ALIGNMENT (Integrated Logic)
+        # 3. PELVIS ALIGNMENT
         # ==================================================
-        # This keeps the body (pelvis) positioned relative to where 
-        # the paddle needs to be, encouraging footwork.
-        
-        # We assume a comfortable side-on stance offset
-        # You can also capture this offset during reset() for more variety
         paddle_to_pelvis_offset = np.array([-0.2, 0.4])
         pelvis_target_xy = goal_pos[:2] + paddle_to_pelvis_offset
         
@@ -397,7 +402,7 @@ class TableTennisWorker(CustomEnv):
         pelvis_alignment = active_alignment_mask * np.exp(-5.0 * pelvis_err)
 
         # ==================================================
-        # 4. GOAL SUCCESS CHECK (For Manager)
+        # 4. GOAL SUCCESS CHECK
         # ==================================================
         reach_dist = float(np.linalg.norm(paddle_pos - goal_pos, axis=-1))
         is_reach_good = reach_dist < self.reach_thr
@@ -417,15 +422,12 @@ class TableTennisWorker(CustomEnv):
         reward += 0.5 * pelvis_alignment
 
         # ==================================================
-        # 6. Paddle drop plenalty
+        # 6. Paddle drop penalty
         # ==================================================
-        # Calculate RAW distance in meters (from obs_dict)
-        raw_palm_dist = np.linalg.norm(obs_dict["palm_err"])
         # Apply HARD penalty if dropped (> 25cm)
-        if raw_palm_dist > 0.25:
+        if not is_holding:
             reward -= 1.0 
         # Apply soft guidance (closer is better)
-        # We use the raw distance decay here, not the rwd_dict value
         reward -= 1.0 * np.tanh(5.0 * raw_palm_dist)
         
         # ==================================================
@@ -443,11 +445,9 @@ class TableTennisWorker(CustomEnv):
         # ==================================================
         # 6. SUCCESS BONUSES
         # ==================================================
-        # Environment success bonus
         if is_env_success:
             reward += 25.0
         
-        # Fresh contact bonus
         is_contact_fresh = False
         if has_hit and not self._prev_paddle_contact:
             if alignment_y > 0.5 and alignment_z > 0.5:
