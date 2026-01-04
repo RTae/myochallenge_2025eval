@@ -2,7 +2,7 @@ from stable_baselines3.common.callbacks import CallbackList, EvalCallback
 from callbacks.infologger_callback import InfoLoggerCallback
 from callbacks.video_callback import VideoCallback
 from lattice.ppo.policies import LatticeActorCriticPolicy
-from stable_baselines3 import PPO
+from sb3_contrib import RecurrentPPO
 from config import Config
 from loguru import logger
 import os
@@ -10,42 +10,87 @@ import os
 from utils import prepare_experiment_directory, make_predict_fn
 from env_factory import create_default_env
 from custom_env import CustomEnv
+from torch import nn
+import math
 
 def main():
     cfg = Config()
     prepare_experiment_directory(cfg)
-            
+    
     env = create_default_env(cfg, num_envs=cfg.num_envs)
-    model = PPO(
-        policy=LatticeActorCriticPolicy, 
-        env=env,
-        verbose=1,
-        tensorboard_log=os.path.join(cfg.logdir),
-        device='cuda',
-        batch_size=32,
-        n_steps=128,
-        learning_rate=cfg.ppo_lr,
-        ent_coef=3.62109e-06,
-        clip_range=cfg.ppo_clip_range,
-        gamma=cfg.ppo_gamma,
-        gae_lambda=cfg.ppo_lambda,
-        max_grad_norm=cfg.ppo_max_grad_norm,
-        vf_coef=0.835671,
-        n_epochs=cfg.ppo_epochs,
-        use_sde=False,
-        sde_sample_freq=1,
-        clip_range_vf=cfg.ppo_clip_range,
-        seed=cfg.seed,
-        policy_kwargs=dict(
+    
+    args = {
+        # ---------------------------
+        # Env + VecNormalize
+        # ---------------------------
+        "env": env,
+        "verbose": 1,
+        "tensorboard_log": os.path.join(cfg.logdir),
+        "device": "cuda",
+
+        # ---------------------------
+        # PPO Batch & Rollout Settings
+        # ---------------------------
+        "batch_size": 2048,
+        "n_steps": 256,
+        "n_epochs": 5,
+
+        # ---------------------------
+        # Scheduler
+        # ---------------------------
+        "learning_rate": lambda p: cfg.ppo_lr * 0.5 * (1 + math.cos(math.pi * (1 - p))),
+        "clip_range": 0.2,
+
+        # ---------------------------
+        # PPO Hyperparameters
+        # ---------------------------
+        "ent_coef": 3.62109e-06,
+        "clip_range": cfg.ppo_clip_range,
+        "gamma": cfg.ppo_gamma,
+        "gae_lambda": cfg.ppo_lambda,
+        "max_grad_norm": 0.3,
+        "vf_coef": 0.835671,
+        "clip_range_vf": cfg.ppo_clip_range,
+
+        # ---------------------------
+        # SDE Exploration
+        # ---------------------------
+        "use_sde": True,
+        "sde_sample_freq": 1,
+
+        # ---------------------------
+        # Reproducibility
+        # ---------------------------
+        "seed": cfg.seed,
+
+        # ---------------------------
+        # Policy Network Architecture
+        # ---------------------------
+        "policy_kwargs": dict(
+            # ===== Lattice Noise Settings =====
             use_lattice=True,
             use_expln=True,
-            ortho_init=False,
-            log_std_init=0.0,
-            std_clip=(1e-3, 10),
-            expln_eps=1e-6,
             full_std=False,
+            ortho_init=False,
+            log_std_init=-2.0,
+            std_clip=(0.01, 1.0),
+            expln_eps=1e-6,
             std_reg=0.0,
-        )
+
+            # ===== Pi & V Network Sizes =====
+            net_arch=
+                dict(
+                    pi=[256, 256],
+                    vf=[256, 256],
+                ),
+            activation_fn=nn.Tanh,  # smooth control
+            lstm_hidden_size=128,
+        ),
+    }
+        
+    model = RecurrentPPO(
+        policy=LatticeActorCriticPolicy, 
+        **args
     )
     
     
@@ -75,7 +120,9 @@ def main():
     )
     
     model_path = os.path.join(cfg.logdir, "model.pkl")
+    env_path = os.path.join(cfg.logdir, "vecnormalize.pkl")
     model.save(model_path)
+    env.save(env_path)
     logger.info(f"Model saved to {model_path}, closing environments...")
     
     eval_env.close()

@@ -9,28 +9,50 @@ import os
 from utils import prepare_experiment_directory, make_predict_fn
 from env_factory import create_default_env
 from custom_env import CustomEnv
+from torch import nn
+import math
+
 
 def main():
     cfg = Config()
     prepare_experiment_directory(cfg)
     
     env = create_default_env(cfg, num_envs=cfg.num_envs)
+    
+    args = {
+        "env": env,
+        "verbose": 1,
+        "tensorboard_log": os.path.join(cfg.logdir),
+        "device": "cuda",
+        "batch_size": 4096,
+        "n_steps": 256,
+        "n_epochs": 5,
+        "learning_rate": lambda p: cfg.ppo_lr * 0.5 * (1 + math.cos(math.pi * (1 - p))),
+        "clip_range": 0.2,
+        "ent_coef": 3.62109e-06,
+        "clip_range": cfg.ppo_clip_range,
+        "gamma": cfg.ppo_gamma,
+        "gae_lambda": cfg.ppo_lambda,
+        "max_grad_norm": 0.3,
+        "vf_coef": 0.835671,
+        "clip_range_vf": cfg.ppo_clip_range,
+        "use_sde": True,
+        "sde_sample_freq": 1,
+        "seed": cfg.seed,
+        "policy_kwargs": dict(
+            # ===== Pi & V Network Sizes =====
+            net_arch=
+                dict(
+                    pi=[256, 256],
+                    vf=[256, 256],
+                ),
+            activation_fn=nn.Tanh,  # smooth control
+        ),
+    }
+    
     model = PPO(
         "MlpPolicy",
-        env,
-        verbose=1,
-        tensorboard_log=os.path.join(cfg.logdir),
-        n_steps=cfg.ppo_n_steps,
-        batch_size=cfg.ppo_n_steps//cfg.ppo_batch_size,
-        gamma=cfg.ppo_gamma,
-        learning_rate=cfg.ppo_lr,
-        gae_lambda=cfg.ppo_lambda,
-        n_epochs=cfg.ppo_epochs,
-        max_grad_norm=cfg.ppo_max_grad_norm,
-        clip_range=cfg.ppo_clip_range,
-        seed=cfg.seed,
-        clip_range_vf=cfg.ppo_clip_range,
-        policy_kwargs=dict(net_arch=[cfg.ppo_hidden_dim]),
+        **args
     )
     
     info_cb = InfoLoggerCallback(prefix="train/info")
@@ -59,7 +81,9 @@ def main():
     )
     
     model_path = os.path.join(cfg.logdir, "model.pkl")
+    env_path = os.path.join(cfg.logdir, "vecnormalize.pkl")
     model.save(model_path)
+    env.save(env_path)
     logger.info(f"Model saved to {model_path}, closing environments...")
     
     eval_env.close()
