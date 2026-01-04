@@ -39,7 +39,7 @@ def evaluate_single_model(model_path, env, trials=1000):
             
             if done:
                 all_rewards.append(info["episode"]["r"])
-                efforts.append(info.get('effort', 0.0)) # Safety get in case effort is missing
+                efforts.append(info.get('effort', 0.0))
                 if info["is_success"]:
                     success_count += 1
                     
@@ -60,9 +60,7 @@ def evaluate(folders, trials=1000):
     print("-" * 60)
 
     for folder_path in folders:
-        # --- FIX IS HERE ---
-        # os.path.normpath removes the trailing slash (e.g. "seed42/" -> "seed42")
-        # so basename can correctly grab the folder name.
+
         seed_name = os.path.basename(os.path.normpath(folder_path))
         
         # Construct Path
