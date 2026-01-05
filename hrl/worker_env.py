@@ -12,9 +12,9 @@ from hrl.utils import predict_ball_trajectory, get_y_normal
 
 class TableTennisWorker(CustomEnv):
     """
-    Goal-conditioned low-level controller (Updated for Normal Vector Alignment)
+    Goal-conditioned low-level controller (Normal-Vector Optimized)
 
-    State 434:
+    State 432:
         - time (1)
         - pelvis_pos (3)
         - body_qpos (58)
@@ -24,22 +24,21 @@ class TableTennisWorker(CustomEnv):
         - paddle_pos (3)
         - paddle_vel (3)
         - paddle_ori (4)
-        - goal_pos (3)
-        - curr_face_normal (3)
-        - goal_face_normal (3)
-        - face_alignment_dot (1)
         - reach_err (3)
+        - pos_err (3)
+        - curr_face_normal (3)
+        - face_alignment_dot (1)
         - palm_pos (3)
         - palm_err (3)
         - touching_info (6)
         - act (273)
 
-    Goal (8):
-        - target_ball_pos (3)
-        - target_paddle_ori (4)
-        - target_time_to_plane (1)
+    Goal 7:
+        - target_ball_pos (3)   # x, y, z intercept
+        - target_face_normal (3)# nx, ny, nz world-space aim
+        - target_time (1)       # dt to intercept
 
-    Observation: 434 + 8 = 442
+    Observation: 432 + 7 = 439
     """
 
     def __init__(self, config: Config):
@@ -48,8 +47,8 @@ class TableTennisWorker(CustomEnv):
         # ==================================================
         # Observation space
         # ==================================================
-        self.state_dim = 434
-        self.goal_dim = 8
+        self.state_dim = 432
+        self.goal_dim = 7
         self.observation_dim = self.state_dim + self.goal_dim
 
         self.observation_space = gym.spaces.Box(
@@ -135,6 +134,11 @@ class TableTennisWorker(CustomEnv):
         
     def predict_goal_from_state(self, obs_dict):
         pred_pos, pred_paddle_ori = self._predict(obs_dict)
+        
+        # 1. NEW: Convert predicted quaternion to the Face Normal
+        pred_normal = get_y_normal(pred_paddle_ori)
+
+        # 2. Calculate time-to-intercept (unchanged)
         dx = float(pred_pos[0] - obs_dict["ball_pos"][0])
         vx = float(obs_dict["ball_vel"][0])
 
@@ -142,23 +146,30 @@ class TableTennisWorker(CustomEnv):
             dt = abs(dx / vx)
         else:
             dt = 1.5
-
         dt = float(np.clip(dt, 0.05, 1.5))
 
-        goal_phys = np.array(
-            [pred_pos[0], pred_pos[1], pred_pos[2],
-             pred_paddle_ori[0], pred_paddle_ori[1], pred_paddle_ori[2], pred_paddle_ori[3],
-             dt],
-            dtype=np.float32,
-        )
+        # 3. Build 7-dim Goal: [x, y, z, nx, ny, nz, dt]
+        goal_phys = np.concatenate([
+            pred_pos,     # (3)
+            pred_normal,  # (3)
+            [dt]          # (1)
+        ]).astype(np.float32)
 
+        # 4. Apply Noise (Updated for 3D normal vector)
         if self.goal_noise_scale > 0.0:
+            # Position noise
             goal_phys[:3] += np.random.normal(0.0, self.goal_noise_scale, size=3)
-            goal_phys[3:7] += np.random.normal(0.0, self.goal_noise_scale * 0.1, size=4)
-            goal_phys[7] += np.random.normal(0.0, self.goal_noise_scale * 0.5, size=1)
+            
+            # Normal vector noise (smaller scale, then re-normalized)
+            goal_phys[3:6] += np.random.normal(0.0, self.goal_noise_scale * 0.1, size=3)
+            goal_phys[3:6] /= (np.linalg.norm(goal_phys[3:6]) + 1e-9)
+            
+            # Time noise
+            goal_phys[6] += np.random.normal(0.0, self.goal_noise_scale * 0.5, size=1)
+            goal_phys[6] = np.clip(goal_phys[6], 0.05, 1.5)
 
         return goal_phys
-        
+    
     def _flat(self, x):
         return np.asarray(x, dtype=np.float32).reshape(-1)
     
@@ -181,20 +192,23 @@ class TableTennisWorker(CustomEnv):
                     (ball_vel_x < -0.05)
 
         if should_track:
-            new_pos, new_ori = self._predict(obs_dict)
-            dx = float(new_pos[0] - ball_x)
+            new_pos, new_quat = self._predict(obs_dict)
+            new_normal = get_y_normal(new_quat) 
             
+            dx = float(new_pos[0] - ball_x)
             if abs(ball_vel_x) > 1e-3:
                 new_dt = abs(dx / ball_vel_x)
             else:
                 new_dt = 1.5
             new_dt = np.clip(new_dt, 0.05, 1.5)
             
-            target_goal = np.concatenate([new_pos, new_ori, [new_dt]]) + self.manager_delta
+            # Target Goal is now: [x, y, z, nx, ny, nz, dt]
+            target_goal = np.concatenate([new_pos, new_normal, [new_dt]]) + self.manager_delta[:7]
             self._track_goal = target_goal.copy()
             self.goal_start_time = float(obs_dict["time"])
 
         if self._track_goal is not None:
+            # --- 1. Smooth Position [0:3] ---
             curr_pos = self.current_goal[0:3]
             target_pos = self._track_goal[0:3]
             delta_pos = target_pos - curr_pos
@@ -206,48 +220,57 @@ class TableTennisWorker(CustomEnv):
             else:
                 self.current_goal[0:3] = target_pos
             
-            delta_ori = self._track_goal[3:7] - self.current_goal[3:7]
-            dist_ori = np.linalg.norm(delta_ori)
-            MAX_ROT_DELTA = 0.1
-            if dist_ori > MAX_ROT_DELTA:
-                self.current_goal[3:7] += delta_ori * (MAX_ROT_DELTA / (dist_ori + 1e-9))
-                self.current_goal[3:7] /= (np.linalg.norm(self.current_goal[3:7]) + 1e-9)
+            # --- 2. Smooth Normal Vector [3:6] ---
+            curr_norm_target = self.current_goal[3:6]
+            target_norm = self._track_goal[3:6]
+            delta_norm = target_norm - curr_norm_target
+            dist_norm = np.linalg.norm(delta_norm)
+            
+            MAX_ROT_DELTA = 0.1 
+            if dist_norm > MAX_ROT_DELTA:
+                self.current_goal[3:6] += delta_norm * (MAX_ROT_DELTA / (dist_norm + 1e-9))
+                # Re-normalize to ensure it stays a unit vector
+                self.current_goal[3:6] /= (np.linalg.norm(self.current_goal[3:6]) + 1e-9)
             else:
-                self.current_goal[3:7] = self._track_goal[3:7]
+                self.current_goal[3:6] = target_norm
 
-            self.current_goal[7] = self._track_goal[7]
+            # --- 3. Update Time [6] ---
+            self.current_goal[6] = self._track_goal[6]
 
     def _build_obs(self, obs_dict):
-        pos_err = self.current_goal[0:3] - obs_dict["paddle_pos"]
-
+        # 1. Capture current face direction
         paddle_quat = obs_dict["paddle_ori"]
-        goal_quat = self.current_goal[3:7]
-        
         curr_normal = get_y_normal(paddle_quat)
-        goal_normal = get_y_normal(goal_quat)
         
+        # 2. Capture target face direction from our 7-dim goal
+        goal_pos = self.current_goal[0:3]
+        goal_normal = self.current_goal[3:6]
+        
+        # 3. Calculate explicit error features for the network
+        pos_err = goal_pos - obs_dict["paddle_pos"]
+        # How well are we aligned? (1.0 = perfect, 0.0 = edge-on)
         normal_dot = np.dot(curr_normal, goal_normal)
 
+        # 4. Concatenate 
         obs = np.concatenate([
-            self._flat(obs_dict["time"]),
-            self._flat(obs_dict["pelvis_pos"]),
-            self._flat(obs_dict["body_qpos"]),
-            self._flat(obs_dict["body_qvel"]),
-            self._flat(obs_dict["ball_pos"]),
-            self._flat(obs_dict["ball_vel"]),
-            self._flat(obs_dict["paddle_pos"]),
-            self._flat(obs_dict["paddle_vel"]),
-            self._flat(obs_dict["paddle_ori"]),
-            self._flat(obs_dict["reach_err"]),
-            self._flat(pos_err),
-            self._flat(normal_dot),
-            self._flat(curr_normal),
-            self._flat(goal_normal),
-            self._flat(obs_dict["palm_pos"]),
-            self._flat(obs_dict["palm_err"]),
-            self._flat(obs_dict["touching_info"]),
-            self._flat(obs_dict["act"]),
-            self._flat(self.current_goal),
+            self._flat(obs_dict["time"]),           # 1
+            self._flat(obs_dict["pelvis_pos"]),     # 3
+            self._flat(obs_dict["body_qpos"]),       # 58
+            self._flat(obs_dict["body_qvel"]),       # 58
+            self._flat(obs_dict["ball_pos"]),       # 3
+            self._flat(obs_dict["ball_vel"]),       # 3
+            self._flat(obs_dict["paddle_pos"]),     # 3
+            self._flat(obs_dict["paddle_vel"]),     # 3
+            self._flat(paddle_quat),                # 4 (Context for joint limits)
+            self._flat(curr_normal),                # 3 (Current aim)
+            self._flat(obs_dict["reach_err"]),       # 3 (Base env reach err)
+            self._flat(pos_err),                    # 3 (Goal reach err)
+            self._flat(normal_dot),                 # 1 (Aim quality)
+            self._flat(obs_dict["palm_pos"]),       # 3
+            self._flat(obs_dict["palm_err"]),       # 3
+            self._flat(obs_dict["touching_info"]),   # 6
+            self._flat(obs_dict["act"]),             # 273
+            self._flat(self.current_goal),          # 7 (pos, normal, dt)
         ], axis=0)
         
         return obs.astype(np.float32)
