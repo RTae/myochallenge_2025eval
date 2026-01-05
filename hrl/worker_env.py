@@ -378,15 +378,15 @@ class TableTennisWorker(CustomEnv):
 
         # Rewards
         reward = 0.0
-        reward += 10.0 * alignment_y
-        reward += 10.0 * alignment_z
-        reward += 2.0 * (1.0 - np.tanh(reach_dist))
-        reward += 1.0 * paddle_quat_reward
+        reward += 5.0 * alignment_y
+        reward += 5.0 * alignment_z
+        reward += 10.0 * (1.0 - np.tanh(reach_dist))
+        reward += 2.0 * paddle_quat_reward
         reward += 0.5 * pelvis_alignment
 
         # DROP PENALTY
         if not is_holding:
-            reward -= 5.0 
+            reward -= 0.5
         
         reward += 0.1 * float(rwd_dict.get("torso_up", 0.0))
 
