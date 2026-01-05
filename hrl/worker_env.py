@@ -255,21 +255,21 @@ class TableTennisWorker(CustomEnv):
         obs = np.concatenate([
             self._flat(obs_dict["time"]),           # 1
             self._flat(obs_dict["pelvis_pos"]),     # 3
-            self._flat(obs_dict["body_qpos"]),       # 58
-            self._flat(obs_dict["body_qvel"]),       # 58
+            self._flat(obs_dict["body_qpos"]),      # 58
+            self._flat(obs_dict["body_qvel"]),      # 58
             self._flat(obs_dict["ball_pos"]),       # 3
             self._flat(obs_dict["ball_vel"]),       # 3
             self._flat(obs_dict["paddle_pos"]),     # 3
             self._flat(obs_dict["paddle_vel"]),     # 3
-            self._flat(paddle_quat),                # 4 (Context for joint limits)
+            self._flat(paddle_quat),                # 4
             self._flat(curr_normal),                # 3 (Current aim)
-            self._flat(obs_dict["reach_err"]),       # 3 (Base env reach err)
+            self._flat(obs_dict["reach_err"]),      # 3 (Base env reach err between paddle and ball)
             self._flat(pos_err),                    # 3 (Goal reach err)
             self._flat(normal_dot),                 # 1 (Aim quality)
             self._flat(obs_dict["palm_pos"]),       # 3
             self._flat(obs_dict["palm_err"]),       # 3
-            self._flat(obs_dict["touching_info"]),   # 6
-            self._flat(obs_dict["act"]),             # 273
+            self._flat(obs_dict["touching_info"]),  # 6
+            self._flat(obs_dict["act"]),            # 273
             self._flat(self.current_goal),          # 7 (pos, normal, dt)
         ], axis=0)
         
