@@ -150,3 +150,11 @@ def predict_ball_trajectory(ball_pos, ball_vel, paddle_pos,
     pred_ori = np.stack([qw, qx, qy, qz], axis=-1)
     
     return pred_pos, pred_ori
+
+def get_y_normal(q):
+    qw, qx, qy, qz = q
+    return np.array([
+        2 * (qx*qy - qw*qz),
+        1 - 2 * (qx**2 + qz**2),
+        2 * (qy*qz + qw*qx)
+    ])

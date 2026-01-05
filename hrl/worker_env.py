@@ -7,14 +7,14 @@ from myosuite.utils import gym
 from config import Config
 from custom_env import CustomEnv
 
-from hrl.utils import predict_ball_trajectory
+from hrl.utils import predict_ball_trajectory, get_y_normal
 
 
 class TableTennisWorker(CustomEnv):
     """
-    Goal-conditioned low-level controller
+    Goal-conditioned low-level controller (Updated for Normal Vector Alignment)
 
-    State 431:
+    State 434:
         - time (1)
         - pelvis_pos (3)
         - body_qpos (58)
@@ -25,7 +25,9 @@ class TableTennisWorker(CustomEnv):
         - paddle_vel (3)
         - paddle_ori (4)
         - goal_pos (3)
-        - goal_paddle_ori_err (4)
+        - curr_face_normal (3)
+        - goal_face_normal (3)
+        - face_alignment_dot (1)
         - reach_err (3)
         - palm_pos (3)
         - palm_err (3)
@@ -37,7 +39,7 @@ class TableTennisWorker(CustomEnv):
         - target_paddle_ori (4)
         - target_time_to_plane (1)
 
-    Observation: 431 + 8 = 439
+    Observation: 434 + 8 = 442
     """
 
     def __init__(self, config: Config):
@@ -46,7 +48,7 @@ class TableTennisWorker(CustomEnv):
         # ==================================================
         # Observation space
         # ==================================================
-        self.state_dim = 431
+        self.state_dim = 434
         self.goal_dim = 8
         self.observation_dim = self.state_dim + self.goal_dim
 
@@ -84,7 +86,7 @@ class TableTennisWorker(CustomEnv):
         self.time_thr_base = 0.1
         self.time_max_delta = 0.05
         self.paddle_ori_thr_base = 0.4
-        self.paddle_ori_max_delta = 0.2
+        self.paddle_ori_max_delta = 0.3
 
         self.reach_thr = self.reach_thr_base
         self.time_thr = self.time_thr_base
@@ -218,11 +220,13 @@ class TableTennisWorker(CustomEnv):
     def _build_obs(self, obs_dict):
         pos_err = self.current_goal[0:3] - obs_dict["paddle_pos"]
 
-        curr_ori = obs_dict["paddle_ori"]
-        goal_ori = self.current_goal[3:7]
-        if np.dot(curr_ori, goal_ori) < 0:
-            goal_ori = -goal_ori
-        ori_err = goal_ori - curr_ori
+        paddle_quat = obs_dict["paddle_ori"]
+        goal_quat = self.current_goal[3:7]
+        
+        curr_normal = get_y_normal(paddle_quat)
+        goal_normal = get_y_normal(goal_quat)
+        
+        normal_dot = np.dot(curr_normal, goal_normal)
 
         obs = np.concatenate([
             self._flat(obs_dict["time"]),
@@ -236,7 +240,9 @@ class TableTennisWorker(CustomEnv):
             self._flat(obs_dict["paddle_ori"]),
             self._flat(obs_dict["reach_err"]),
             self._flat(pos_err),
-            self._flat(ori_err),
+            self._flat(normal_dot),
+            self._flat(curr_normal),
+            self._flat(goal_normal),
             self._flat(obs_dict["palm_pos"]),
             self._flat(obs_dict["palm_err"]),
             self._flat(obs_dict["touching_info"]),
@@ -298,8 +304,10 @@ class TableTennisWorker(CustomEnv):
         return self._build_obs(obs_dict), info
 
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict]:
-        clamped_action = action.copy()
+        clean_action = np.nan_to_num(action, nan=0.0, posinf=1.0, neginf=-1.0)
+        clamped_action = clean_action.copy()
         clamped_action[self.grip_indices] = 1.0
+        clamped_action = np.clip(clamped_action, 0.0, 1.0)
 
         # Pass the clamped action to the physics engine
         _, base_reward, terminated, truncated, info = super().step(clamped_action)
@@ -352,14 +360,16 @@ class TableTennisWorker(CustomEnv):
         alignment_y = active_alignment_mask * np.exp(-1.0 * pred_err_y)
         alignment_z = active_alignment_mask * np.exp(-1.0 * pred_err_z)
 
-        paddle_ori = obs_dict["paddle_ori"]
-        goal_ori = self.current_goal[3:7]
+        paddle_quat = obs_dict["paddle_ori"]
+        goal_quat = self.current_goal[3:7]
+        curr_normal = get_y_normal(paddle_quat)
+        goal_normal = get_y_normal(goal_quat)
         
-        if np.dot(paddle_ori, goal_ori) < 0:
-            goal_ori = -goal_ori
+        dot_abs = np.abs(np.dot(curr_normal, goal_normal))
+        dot_abs = np.clip(dot_abs, 0.0, 1.0)
+        paddle_face_err = np.arccos(dot_abs)
         
-        paddle_quat_err_goal = np.linalg.norm(paddle_ori - goal_ori, axis=-1)
-        paddle_quat_reward = active_alignment_mask * np.exp(-2.0 * paddle_quat_err_goal)
+        paddle_quat_reward = active_alignment_mask * np.exp(-2.0 * paddle_face_err)
         
         # Pelvis Alignment
         paddle_to_pelvis_offset = np.array([-0.2, 0.4])
@@ -370,7 +380,7 @@ class TableTennisWorker(CustomEnv):
         # Success Checks
         reach_dist = float(np.linalg.norm(paddle_pos - goal_pos, axis=-1))
         is_reach_good = reach_dist < self.reach_thr
-        is_ori_good = paddle_quat_err_goal < self.paddle_ori_thr
+        is_ori_good = paddle_face_err < self.paddle_ori_thr
         dt = float(self.goal_start_time + self.current_goal[7] - obs_dict["time"])
         is_time_good = dt > -self.time_thr
         
@@ -413,7 +423,7 @@ class TableTennisWorker(CustomEnv):
             "reach_error": reach_dist,
             "reach_y_err": pred_err_y,
             "reach_z_err": pred_err_z,
-            "paddle_quat_err": paddle_quat_err_goal,
+            "paddle_err": paddle_face_err,
             "time_err": dt,
             "abs_time_err": abs(dt),
             "is_ball_passed": active_mask,
