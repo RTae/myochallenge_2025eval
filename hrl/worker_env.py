@@ -144,13 +144,8 @@ class TableTennisWorker(CustomEnv):
         base_normal = get_y_normal(pred_quat)
         
         if relative_y > 0.0:
-            # FOREHAND: Use the predicted normal as-is
-            target_normal = base_normal
-        else:
-            # BACKHAND: Flip the normal to encourage hitting with the back face
-            # This prevents the 'arm curl' because the reward now 
-            # favors the face that is already reachable without curling.
-            target_normal = -base_normal 
+            # Flip to Forehand side (Black color)
+            target_normal = -base_normal
 
         # 3. Calculate DT
         dx = float(pred_pos[0] - obs_dict["ball_pos"][0])
@@ -189,7 +184,7 @@ class TableTennisWorker(CustomEnv):
             
             relative_y = new_pos[1] - obs_dict["pelvis_pos"][1]
             new_normal = get_y_normal(new_quat)
-            if relative_y <= -0.05:
+            if relative_y > 0.0:
                 new_normal = -new_normal
             
             dx = float(new_pos[0] - ball_x)
