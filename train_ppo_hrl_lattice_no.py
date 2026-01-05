@@ -45,7 +45,7 @@ def main():
     cfg = Config()
     prepare_experiment_directory(cfg)
 
-    worker_total_timesteps = 50_000_000
+    worker_total_timesteps = 20_000_000
     manager_total_timesteps = 4_000_000
 
     # ==================================================
@@ -92,7 +92,7 @@ def main():
         # ---------------------------
         # Env + VecNormalize
         # ---------------------------
-        "env": worker_env,                # this should be a VecNormalize-wrapped env
+        "env": worker_env,
         "verbose": 1,
         "tensorboard_log": os.path.join(cfg.logdir),
         "device": "cuda",
@@ -101,18 +101,18 @@ def main():
         # PPO Batch & Rollout Settings
         # ---------------------------
         "batch_size": 2048,
-        "n_steps": 256,
-        "n_epochs": 5,
+        "n_steps": 1024,
+        "n_epochs": 10,
 
         # ---------------------------
         # Scheduler
         # ---------------------------
-        "learning_rate": lambda p: cfg.ppo_lr * 0.5 * (1 + math.cos(math.pi * (1 - p))),
+        "learning_rate": lambda p: 3e-4 * 0.5 * (1 + math.cos(math.pi * (1 - p))),
 
         # ---------------------------
         # PPO Hyperparameters
         # ---------------------------
-        "ent_coef": 3.62109e-06,
+        "ent_coef": 0.001,
         "clip_range": 0.2,
         "gamma": cfg.ppo_gamma,
         "gae_lambda": cfg.ppo_lambda,
@@ -141,7 +141,7 @@ def main():
             full_std=False,
             ortho_init=False,
             
-            log_std_init=-2.0,
+            log_std_init=-1.5,
             std_clip=(0.01, 0.3),
             expln_eps=1e-6,
             std_reg=1e-3,
