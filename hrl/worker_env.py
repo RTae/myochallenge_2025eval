@@ -133,45 +133,40 @@ class TableTennisWorker(CustomEnv):
         self.goal_start_time = float(self.env.unwrapped.obs_dict["time"])
         
     def predict_goal_from_state(self, obs_dict):
-        pred_pos, pred_paddle_ori = self._predict(obs_dict)
+        # 1. Physics Prediction
+        pred_pos, pred_quat = self._predict(obs_dict)
         
-        # 1. NEW: Convert predicted quaternion to the Face Normal
-        pred_normal = get_y_normal(pred_paddle_ori)
+        # 2. Rule-Based Switch
+        # relative_y > 0 usually means ball is on the right (Forehand side)
+        relative_y = pred_pos[1] - obs_dict["pelvis_pos"][1]
+        
+        # Get the standard normal from the physics predictor
+        base_normal = get_y_normal(pred_quat)
+        
+        if relative_y > 0.0:
+            # FOREHAND: Use the predicted normal as-is
+            target_normal = base_normal
+        else:
+            # BACKHAND: Flip the normal to encourage hitting with the back face
+            # This prevents the 'arm curl' because the reward now 
+            # favors the face that is already reachable without curling.
+            target_normal = -base_normal 
 
-        # 2. Calculate time-to-intercept (unchanged)
+        # 3. Calculate DT
         dx = float(pred_pos[0] - obs_dict["ball_pos"][0])
         vx = float(obs_dict["ball_vel"][0])
+        dt = float(np.clip(abs(dx / vx) if abs(vx) > 1e-3 else 1.5, 0.05, 1.5))
 
-        if abs(vx) > 1e-3 and (dx * vx) > 0.0:
-            dt = abs(dx / vx)
-        else:
-            dt = 1.5
-        dt = float(np.clip(dt, 0.05, 1.5))
+        # 4. Build 7-Dim Goal [x,y,z, nx,ny,nz, dt]
+        goal_phys = np.concatenate([pred_pos, target_normal, [dt]])
 
-        # 3. Build 7-dim Goal: [x, y, z, nx, ny, nz, dt]
-        goal_phys = np.concatenate([
-            pred_pos,     # (3)
-            pred_normal,  # (3)
-            [dt]          # (1)
-        ]).astype(np.float32)
-
-        # 4. Apply Noise (Updated for 3D normal vector)
+        # 5. Apply Noise (Optional)
         if self.goal_noise_scale > 0.0:
-            # Position noise
             goal_phys[:3] += np.random.normal(0.0, self.goal_noise_scale, size=3)
-            
-            # Normal vector noise (smaller scale, then re-normalized)
             goal_phys[3:6] += np.random.normal(0.0, self.goal_noise_scale * 0.1, size=3)
             goal_phys[3:6] /= (np.linalg.norm(goal_phys[3:6]) + 1e-9)
-            
-            # Time noise
-            goal_phys[6] += np.random.normal(0.0, self.goal_noise_scale * 0.5, size=1)
-            goal_phys[6] = np.clip(goal_phys[6], 0.05, 1.5)
 
-        return goal_phys
-    
-    def _flat(self, x):
-        return np.asarray(x, dtype=np.float32).reshape(-1)
+        return goal_phys.astype(np.float32)
     
     def _update_goal_tracker(self, obs_dict):
         ball_x = obs_dict["ball_pos"][0]
@@ -186,57 +181,49 @@ class TableTennisWorker(CustomEnv):
         is_hitting_zone = (abs(ball_x - paddle_x) < 0.20)
         is_contact = (current_touch > 0) or (ball_vel_x > 0.05) or self._prev_paddle_contact
         
-        should_track = (not is_contact) and \
-                    (not is_hitting_zone) and \
-                    (ball_x > paddle_x + 0.1) and \
-                    (ball_vel_x < -0.05)
+        should_track = (not is_contact) and (not is_hitting_zone) and \
+                       (ball_x > paddle_x + 0.1) and (ball_vel_x < -0.05)
 
         if should_track:
             new_pos, new_quat = self._predict(obs_dict)
-            new_normal = get_y_normal(new_quat) 
+            
+            relative_y = new_pos[1] - obs_dict["pelvis_pos"][1]
+            new_normal = get_y_normal(new_quat)
+            if relative_y <= -0.05:
+                new_normal = -new_normal
             
             dx = float(new_pos[0] - ball_x)
-            if abs(ball_vel_x) > 1e-3:
-                new_dt = abs(dx / ball_vel_x)
-            else:
-                new_dt = 1.5
-            new_dt = np.clip(new_dt, 0.05, 1.5)
+            new_dt = float(np.clip(abs(dx / ball_vel_x) if abs(ball_vel_x) > 1e-3 else 1.5, 0.05, 1.5))
             
-            # Target Goal is now: [x, y, z, nx, ny, nz, dt]
+            # Update target (Manager delta is 7-dim now)
             target_goal = np.concatenate([new_pos, new_normal, [new_dt]]) + self.manager_delta[:7]
             self._track_goal = target_goal.copy()
-            self.goal_start_time = float(obs_dict["time"])
 
         if self._track_goal is not None:
-            # --- 1. Smooth Position [0:3] ---
+            # Smooth Position
             curr_pos = self.current_goal[0:3]
             target_pos = self._track_goal[0:3]
             delta_pos = target_pos - curr_pos
             dist_pos = np.linalg.norm(delta_pos)
             
-            MAX_POS_DELTA = 0.05
-            if dist_pos > MAX_POS_DELTA:
-                self.current_goal[0:3] = curr_pos + (delta_pos * (MAX_POS_DELTA / (dist_pos + 1e-9)))
+            if dist_pos > 0.05: # MAX_POS_DELTA
+                self.current_goal[0:3] = curr_pos + (delta_pos * (0.05 / (dist_pos + 1e-9)))
             else:
                 self.current_goal[0:3] = target_pos
             
-            # --- 2. Smooth Normal Vector [3:6] ---
+            # Smooth Normal Vector
             curr_norm_target = self.current_goal[3:6]
             target_norm = self._track_goal[3:6]
             delta_norm = target_norm - curr_norm_target
             dist_norm = np.linalg.norm(delta_norm)
             
-            MAX_ROT_DELTA = 0.1 
-            if dist_norm > MAX_ROT_DELTA:
-                self.current_goal[3:6] += delta_norm * (MAX_ROT_DELTA / (dist_norm + 1e-9))
-                # Re-normalize to ensure it stays a unit vector
+            if dist_norm > 0.1: # MAX_ROT_DELTA
+                self.current_goal[3:6] += delta_norm * (0.1 / (dist_norm + 1e-9))
                 self.current_goal[3:6] /= (np.linalg.norm(self.current_goal[3:6]) + 1e-9)
             else:
                 self.current_goal[3:6] = target_norm
 
-            # --- 3. Update Time [6] ---
             self.current_goal[6] = self._track_goal[6]
-
     def _build_obs(self, obs_dict):
         # 1. Capture current face direction
         paddle_quat = obs_dict["paddle_ori"]
@@ -274,6 +261,9 @@ class TableTennisWorker(CustomEnv):
         ], axis=0)
         
         return obs.astype(np.float32)
+    
+    def _flat(self, x):
+        return np.asarray(x, dtype=np.float32).reshape(-1)
 
     # ==================================================
     # Gym API
@@ -358,15 +348,17 @@ class TableTennisWorker(CustomEnv):
         return obs, float(reward), terminated, truncated, info
     
     def _compute_reward(self, obs_dict, rwd_dict) -> Tuple[float, bool, Dict]:
-        # Indices: [0,1,2] = Pos, [3,4,5] = Normal, [6] = dt
+        # 1. Goal Extraction (7-dim goal: [0,1,2]=Pos, [3,4,5]=Normal, [6]=dt)
         goal_pos = self.current_goal[0:3]
-        goal_normal = self.current_goal[3:6] # NEW: Directly extracted
+        goal_normal = self.current_goal[3:6]
         
         paddle_pos = obs_dict["paddle_pos"]
         pelvis_pos = obs_dict["pelvis_pos"]
         
+        # 2. Status Flags
         is_env_success = bool(rwd_dict.get("solved", False))
         err_x = obs_dict["reach_err"][0] 
+        # Only reward alignment if the ball is still in front of the paddle
         active_mask = float(err_x > -0.05)
 
         touch_vec = obs_dict["touching_info"]
@@ -375,44 +367,47 @@ class TableTennisWorker(CustomEnv):
         raw_palm_dist = np.linalg.norm(obs_dict["palm_err"])
         is_holding = float(raw_palm_dist < 0.20)
 
+        # Mask to reward alignment only BEFORE contact and while holding
         active_alignment_mask = active_mask * \
                                 (1.0 - float(self._prev_paddle_contact or has_hit)) * \
                                 is_holding
 
-        # Position Alignment
+        # 3. Position Alignment (Y and Z height)
         pred_err_y = np.abs(paddle_pos[1] - goal_pos[1])
         pred_err_z = np.abs(paddle_pos[2] - goal_pos[2])
         alignment_y = active_alignment_mask * np.exp(-1.0 * pred_err_y)
         alignment_z = active_alignment_mask * np.exp(-1.0 * pred_err_z)
 
-        # Orientation Alignment
+        # 4. Orientation Alignment
         paddle_quat = obs_dict["paddle_ori"]
         curr_normal = get_y_normal(paddle_quat)
         
-        dot_abs = np.abs(np.dot(curr_normal, goal_normal))
-        dot_abs = np.clip(dot_abs, 0.0, 1.0)
-        paddle_face_err = np.arccos(dot_abs)
+        # face (Red or Black) dictated by the goal side-switch logic.
+        dot = np.dot(curr_normal, goal_normal)
+        dot_clipped = np.clip(dot, -1.0, 1.0)
         
+        # We use clip(dot, 0, 1) for the reward so that 'wrong face' hits get 0 reward
+        paddle_face_err = np.arccos(np.clip(dot_clipped, 0.0, 1.0))
         paddle_quat_reward = active_alignment_mask * np.exp(-2.0 * paddle_face_err)
         
-        # Pelvis Alignment
+        # 5. Pelvis Positioning (Encourage staying in hitting pocket)
         paddle_to_pelvis_offset = np.array([-0.2, 0.4])
         pelvis_target_xy = goal_pos[:2] + paddle_to_pelvis_offset
         pelvis_err = np.linalg.norm(pelvis_pos[:2] - pelvis_target_xy)
         pelvis_alignment = active_alignment_mask * np.exp(-5.0 * pelvis_err)
 
-        # Success Checks
+        # 6. Success Threshold Checks
         reach_dist = float(np.linalg.norm(paddle_pos - goal_pos, axis=-1))
         is_reach_good = reach_dist < self.reach_thr
         is_ori_good = paddle_face_err < self.paddle_ori_thr
         
-        # --- UPDATED TIME LOGIC (Index 6) ---
+        # Time Logic using Index 6 of Goal
         dt = float(self.goal_start_time + self.current_goal[6] - obs_dict["time"])
         is_time_good = dt > -self.time_thr
         
         is_goal_success = float(is_reach_good and is_ori_good and is_time_good)
 
-        # Reward Aggregation
+        # 7. Reward Aggregation
         reward = 0.0
         reward += 5.0 * alignment_y
         reward += 5.0 * alignment_z
@@ -420,24 +415,35 @@ class TableTennisWorker(CustomEnv):
         reward += 2.0 * paddle_quat_reward
         reward += 0.5 * pelvis_alignment
 
+        # 8. Penalties
         if not is_holding:
-            reward -= 0.5
+            reward -= 1.0 # Increased penalty for dropping paddle
         
         reward += 0.1 * float(rwd_dict.get("torso_up", 0.0))
 
         if dt < -self.time_thr:
-            reward -= 1.0 * abs(dt)
+            reward -= 1.0 * abs(dt) # Late penalty
 
+        # 9. Success Bonus
         if is_env_success:
             reward += 25.0
         
+        # Contact Bonus (Bonus for hitting with good alignment)
         is_contact_fresh = False
         if has_hit and not self._prev_paddle_contact:
-            if alignment_y > 0.5 and alignment_z > 0.5:
-                reward += 5.0
+            if alignment_y > 0.5 and alignment_z > 0.5 and dot > 0.7:
+                reward += 10.0 # High bonus for clean, aligned hit
                 is_contact_fresh = True
             else:
                 reward += 1.0 
+        
+        # 10. Future Hooks (Placeholders for Penalties 1 & 2)
+        # effort_penalty = 0.1 * np.mean(np.square(obs_dict["act"]))
+        # reward -= effort_penalty
+        
+        # elbow_flexion = obs_dict["body_qpos"][18]
+        # if elbow_flexion > 1.8:
+        #     reward -= 2.0 * (elbow_flexion - 1.8)
         
         self._prev_paddle_contact = has_hit
 
