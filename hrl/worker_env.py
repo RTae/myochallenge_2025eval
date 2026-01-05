@@ -143,9 +143,9 @@ class TableTennisWorker(CustomEnv):
         # Get the standard normal from the physics predictor
         base_normal = get_y_normal(pred_quat)
         
-        if relative_y > 0.0:
+        if relative_y < 0.0:
             # Flip to Forehand side (Black color)
-            target_normal = -base_normal
+            base_normal = -base_normal
 
         # 3. Calculate DT
         dx = float(pred_pos[0] - obs_dict["ball_pos"][0])
@@ -153,7 +153,7 @@ class TableTennisWorker(CustomEnv):
         dt = float(np.clip(abs(dx / vx) if abs(vx) > 1e-3 else 1.5, 0.05, 1.5))
 
         # 4. Build 7-Dim Goal [x,y,z, nx,ny,nz, dt]
-        goal_phys = np.concatenate([pred_pos, target_normal, [dt]])
+        goal_phys = np.concatenate([pred_pos, base_normal, [dt]])
 
         # 5. Apply Noise (Optional)
         if self.goal_noise_scale > 0.0:
@@ -184,7 +184,7 @@ class TableTennisWorker(CustomEnv):
             
             relative_y = new_pos[1] - obs_dict["pelvis_pos"][1]
             new_normal = get_y_normal(new_quat)
-            if relative_y > 0.0:
+            if relative_y < 0.0:
                 new_normal = -new_normal
             
             dx = float(new_pos[0] - ball_x)
