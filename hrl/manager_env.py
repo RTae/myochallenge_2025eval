@@ -78,7 +78,7 @@ class TableTennisManager(CustomEnv):
         self.action_space = gym.spaces.Box(
             low=-0.5, 
             high=0.5,
-            shape=(8,),
+            shape=(7,),
             dtype=np.float32,
         )
 
@@ -105,25 +105,38 @@ class TableTennisManager(CustomEnv):
         return self._build_obs(), {}
 
     def step(self, action: np.ndarray):
-        # Predict Base Goal (Heuristic)
+        """
+        Manager Step:
+        1. Get physics prediction from Worker.
+        2. Apply 7-Dim Delta (residual) from Manager policy.
+        3. Normalize the resulting Normal Vector.
+        4. Step Worker for 'decision_interval' steps.
+        """
+        # A. Access Worker internals
         worker_env_access = self.worker_env.envs[0].unwrapped
         obs_dict = worker_env_access.unwrapped.obs_dict
+        
+        # B. Predict Base Goal (Now returns 7-dim: [3-pos, 3-normal, 1-dt])
         goal_pred = worker_env_access.predict_goal_from_state(obs_dict)
 
-        # Apply Learned Residual & NORMALIZE
+        # C. Apply Manager's Learned Residual (7-dim)
         goal_delta = action.astype(np.float32)
         goal_final = goal_pred + goal_delta
 
-        # Re-normalize quaternion
-        quat_part = goal_final[3:7]
-        quat_norm = np.linalg.norm(quat_part)
-        if quat_norm > 1e-9:
-            goal_final[3:7] = quat_part / quat_norm
+        # D. RE-NORMALIZE the Normal Vector (Indices 3, 4, 5)
+        # This ensures the Manager's nudge doesn't 'stretch' the normal
+        norm_part = goal_final[3:6]
+        norm_val = np.linalg.norm(norm_part)
+        if norm_val > 1e-9:
+            goal_final[3:6] = norm_part / norm_val
         else:
-            goal_final[3:7] = np.array([1.0, 0.0, 0.0, 0.0])
+            # Fallback to standard 'Face' normal if vector collapses
+            goal_final[3:6] = np.array([0.0, 1.0, 0.0], dtype=np.float32)
 
-        # Clip Time
-        goal_final[7] = np.clip(goal_final[7], 0.05, 2.0)
+        # E. Clip Time-to-Intercept (Index 6)
+        goal_final[6] = np.clip(goal_final[6], 0.05, 2.0)
+        
+        # F. Inject into Worker
         worker_env_access.set_goal(goal_final, delta=goal_delta)
     
         accumulated_worker_reward = 0.0
@@ -131,8 +144,9 @@ class TableTennisManager(CustomEnv):
         env_success_any = False
         last_infos = {}
         
+        # G. Macro-Step: Run low-level for the decision interval
         for _ in range(self.decision_interval):
-            # Predict with Worker
+            # Predict with Worker Policy
             worker_actions, _ = self.worker_model.predict(
                 self._worker_obs, deterministic=True
             )
@@ -145,6 +159,7 @@ class TableTennisManager(CustomEnv):
             info = infos[0] 
             last_infos = info
             
+            # Track if any single frame hit the success criteria
             goal_success_any |= bool(info.get("is_goal_success", 0.0))
             env_success_any  |= bool(info.get("is_success", 0.0))
             accumulated_worker_reward += rewards[0]
@@ -152,12 +167,9 @@ class TableTennisManager(CustomEnv):
             if dones[0]:
                 break
 
-        # Compute Reward
+        # H. Compute Manager Reward
         self.success_buffer.append(1.0 if goal_success_any else 0.0)
-        if len(self.success_buffer) > 0:
-            success_rate = float(np.mean(self.success_buffer))
-        else:
-            success_rate = 0.0
+        success_rate = float(np.mean(self.success_buffer)) if self.success_buffer else 0.0
         
         delta_norm = float(np.linalg.norm(goal_delta))
 
@@ -169,10 +181,9 @@ class TableTennisManager(CustomEnv):
             worker_reward=accumulated_worker_reward, 
         )
 
-        # Build Output
+        # I. Build Output
         terminated = bool(env_success_any)
         truncated = bool(self.current_step >= self.max_episode_steps)
-
         obs_out = self._build_obs()
 
         info_out = {
@@ -185,7 +196,7 @@ class TableTennisManager(CustomEnv):
         }
         
         return obs_out, float(reward), terminated, truncated, info_out
-
+    
     def _build_obs(self) -> np.ndarray:
         worker_obs = self._worker_obs[0].astype(np.float32)
         t_frac = np.array([self.current_step / self.max_episode_steps], dtype=np.float32)
