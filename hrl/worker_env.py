@@ -38,7 +38,7 @@ class TableTennisWorker(CustomEnv):
         - target_face_normal (3)# nx, ny, nz world-space aim
         - target_time (1)       # dt to intercept
 
-    Observation: 432 + 7 = 439
+    Observation: 431 + 7 = 438
     """
 
     def __init__(self, config: Config):
@@ -47,7 +47,7 @@ class TableTennisWorker(CustomEnv):
         # ==================================================
         # Observation space
         # ==================================================
-        self.state_dim = 432
+        self.state_dim = 431
         self.goal_dim = 7
         self.observation_dim = self.state_dim + self.goal_dim
 
@@ -358,7 +358,10 @@ class TableTennisWorker(CustomEnv):
         return obs, float(reward), terminated, truncated, info
     
     def _compute_reward(self, obs_dict, rwd_dict) -> Tuple[float, bool, Dict]:
-        goal_pos = self.current_goal[:3]
+        # Indices: [0,1,2] = Pos, [3,4,5] = Normal, [6] = dt
+        goal_pos = self.current_goal[0:3]
+        goal_normal = self.current_goal[3:6] # NEW: Directly extracted
+        
         paddle_pos = obs_dict["paddle_pos"]
         pelvis_pos = obs_dict["pelvis_pos"]
         
@@ -369,7 +372,6 @@ class TableTennisWorker(CustomEnv):
         touch_vec = obs_dict["touching_info"]
         has_hit = float(touch_vec[0]) > 0.5
         
-        # Distance check for holding
         raw_palm_dist = np.linalg.norm(obs_dict["palm_err"])
         is_holding = float(raw_palm_dist < 0.20)
 
@@ -377,16 +379,15 @@ class TableTennisWorker(CustomEnv):
                                 (1.0 - float(self._prev_paddle_contact or has_hit)) * \
                                 is_holding
 
-        # Position & Orientation Alignment
+        # Position Alignment
         pred_err_y = np.abs(paddle_pos[1] - goal_pos[1])
         pred_err_z = np.abs(paddle_pos[2] - goal_pos[2])
         alignment_y = active_alignment_mask * np.exp(-1.0 * pred_err_y)
         alignment_z = active_alignment_mask * np.exp(-1.0 * pred_err_z)
 
+        # Orientation Alignment
         paddle_quat = obs_dict["paddle_ori"]
-        goal_quat = self.current_goal[3:7]
         curr_normal = get_y_normal(paddle_quat)
-        goal_normal = get_y_normal(goal_quat)
         
         dot_abs = np.abs(np.dot(curr_normal, goal_normal))
         dot_abs = np.clip(dot_abs, 0.0, 1.0)
@@ -404,12 +405,14 @@ class TableTennisWorker(CustomEnv):
         reach_dist = float(np.linalg.norm(paddle_pos - goal_pos, axis=-1))
         is_reach_good = reach_dist < self.reach_thr
         is_ori_good = paddle_face_err < self.paddle_ori_thr
-        dt = float(self.goal_start_time + self.current_goal[7] - obs_dict["time"])
+        
+        # --- UPDATED TIME LOGIC (Index 6) ---
+        dt = float(self.goal_start_time + self.current_goal[6] - obs_dict["time"])
         is_time_good = dt > -self.time_thr
         
         is_goal_success = float(is_reach_good and is_ori_good and is_time_good)
 
-        # Rewards
+        # Reward Aggregation
         reward = 0.0
         reward += 5.0 * alignment_y
         reward += 5.0 * alignment_z
@@ -417,17 +420,14 @@ class TableTennisWorker(CustomEnv):
         reward += 2.0 * paddle_quat_reward
         reward += 0.5 * pelvis_alignment
 
-        # DROP PENALTY
         if not is_holding:
             reward -= 0.5
         
         reward += 0.1 * float(rwd_dict.get("torso_up", 0.0))
 
-        # Time penalty
         if dt < -self.time_thr:
             reward -= 1.0 * abs(dt)
 
-        # Success Bonus
         if is_env_success:
             reward += 25.0
         
