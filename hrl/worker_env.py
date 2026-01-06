@@ -103,14 +103,9 @@ class TableTennisWorker(CustomEnv):
         
         relative_y = pred_pos[1] - obs_dict["pelvis_pos"][1]
         
-        # Side Switch Logic
         target_quat = pred_quat
         if relative_y > -0.05:
-             # Forehand: Flip
             target_quat = flip_quat_180_x(pred_quat)
-        else:
-            # Backhand: As is
-            target_quat = pred_quat
 
         dx = float(pred_pos[0] - obs_dict["ball_pos"][0])
         vx = float(obs_dict["ball_vel"][0])

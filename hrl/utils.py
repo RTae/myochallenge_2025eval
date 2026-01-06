@@ -111,12 +111,6 @@ def ensure_handle_down(q, handle_axis_local=np.array([1.0, 0.0, 0.0])):
 
     return quat_normalize(q)
 
-def debug_local_axes(q, name="q"):
-    xw = quat_rotate(q, np.array([1.0, 0.0, 0.0]))
-    yw = quat_rotate(q, np.array([0.0, 1.0, 0.0]))
-    zw = quat_rotate(q, np.array([0.0, 0.0, 1.0]))
-    print(f"[{name}] X_world={xw}, Y_world={yw}, Z_world={zw}")
-
 # ============================================================
 # Physics-only prediction (NO human tilt/roll here)
 # ============================================================
