@@ -331,6 +331,10 @@ class TableTennisWorker(CustomEnv):
 
         dot = np.dot(curr_n, goal_n)
         paddle_face_err = np.arccos(np.clip(dot, -1.0, 1.0))
+        
+        handle_world = quat_rotate(paddle_quat, np.array([1.0, 0.0, 0.0]))
+        # penalize if handle points upward in world z
+        handle_up_pen = max(0.0, handle_world[2])   # >0 means pointing up
 
         # only reward if it's the correct face (not backside)
         paddle_quat_reward = active_alignment_mask * np.exp(-2.0 * paddle_face_err)
