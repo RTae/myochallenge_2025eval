@@ -204,20 +204,7 @@ class TableTennisWorker(CustomEnv):
             self.current_goal[7] = self._track_goal[7]
             
     def _build_obs(self, obs_dict):
-        # 1. Agent State
-        paddle_quat = obs_dict["paddle_ori"]
-        curr_normal = get_z_normal(paddle_quat)
         
-        # 2. Goal State (Extract from 8-dim goal)
-        goal_pos = self.current_goal[0:3]
-        goal_quat = self.current_goal[3:7] # Now explicitly in obs
-        goal_normal = get_z_normal(goal_quat) # Derived for feature
-        
-        # 3. Explicit Errors
-        pos_err = goal_pos - obs_dict["paddle_pos"]
-        normal_dot = np.dot(curr_normal, goal_normal)
-
-        # 4. Concatenate (Size increased by 1 float due to Quat vs Normal)
         obs = np.concatenate([
             self._flat(obs_dict["time"]),           
             self._flat(obs_dict["pelvis_pos"]),     
@@ -233,8 +220,9 @@ class TableTennisWorker(CustomEnv):
             self._flat(obs_dict["palm_err"]),       
             self._flat(obs_dict["touching_info"]),  
             self._flat(obs_dict["act"]),            
-            self._flat(self.current_goal),          # 8 dims (pos, quat, dt)
+            self._flat(self.current_goal),
         ], axis=0)
+        
         return obs.astype(np.float32)
     
     def _flat(self, x):
