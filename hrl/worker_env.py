@@ -7,7 +7,7 @@ from myosuite.utils import gym
 from config import Config
 from custom_env import CustomEnv
 
-from hrl.utils import predict_ball_trajectory, get_y_normal
+from hrl.utils import predict_ball_trajectory, get_z_normal
 
 
 class TableTennisWorker(CustomEnv):
@@ -70,6 +70,7 @@ class TableTennisWorker(CustomEnv):
         self.goal_start_time: Optional[float] = None
         self.prev_reach_err: Optional[float] = None
         self._prev_paddle_contact = False
+        self.init_paddle_x = None
         
         # ==================================================
         # Curriculum state
@@ -141,9 +142,9 @@ class TableTennisWorker(CustomEnv):
         relative_y = pred_pos[1] - obs_dict["pelvis_pos"][1]
         
         # Get the standard normal from the physics predictor
-        base_normal = get_y_normal(pred_quat)
+        base_normal = get_z_normal(pred_quat)
         
-        if relative_y < 0.0:
+        if relative_y > 0.0:
             # Flip to Forehand side (Black color)
             base_normal = -base_normal
 
@@ -160,6 +161,9 @@ class TableTennisWorker(CustomEnv):
             goal_phys[:3] += np.random.normal(0.0, self.goal_noise_scale, size=3)
             goal_phys[3:6] += np.random.normal(0.0, self.goal_noise_scale * 0.1, size=3)
             goal_phys[3:6] /= (np.linalg.norm(goal_phys[3:6]) + 1e-9)
+            
+        if self.init_paddle_x is None:
+            self.init_paddle_x = pred_pos[0]
 
         return goal_phys.astype(np.float32)
     
@@ -168,23 +172,27 @@ class TableTennisWorker(CustomEnv):
         ball_vel_x = obs_dict["ball_vel"][0]
         paddle_x = obs_dict["paddle_pos"][0]
         touching = obs_dict.get('touching_info')
+        
         current_touch = 1.0 if (touching is not None and touching[0] > 0.1) else 0.0
         
         if current_touch > 0:
             self._prev_paddle_contact = True
 
-        is_hitting_zone = (abs(ball_x - paddle_x) < 0.20)
-        is_contact = (current_touch > 0) or (ball_vel_x > 0.05) or self._prev_paddle_contact
+        is_contact = (current_touch > 0) or self._prev_paddle_contact   # Ball hit a paddle
+        is_hitting_zone = (abs(ball_x - paddle_x) < 0.30)               # Ball and Paddle X-distance check
+        is_ball_passed = self.init_paddle_x - ball_x < -0.05            # Ball has passed initial paddle X
+        is_ball_towards_paddle = (ball_vel_x > 0)                       # Ball moving towards paddle
         
         should_track = (not is_contact) and (not is_hitting_zone) and \
-                       (ball_x > paddle_x + 0.1) and (ball_vel_x < -0.05)
+                    (not is_ball_passed) and is_ball_towards_paddle
 
         if should_track:
             new_pos, new_quat = self._predict(obs_dict)
             
             relative_y = new_pos[1] - obs_dict["pelvis_pos"][1]
-            new_normal = get_y_normal(new_quat)
-            if relative_y < 0.0:
+            new_normal = get_z_normal(new_quat)
+            
+            if relative_y > 0.0:
                 new_normal = -new_normal
             
             dx = float(new_pos[0] - ball_x)
@@ -222,7 +230,7 @@ class TableTennisWorker(CustomEnv):
     def _build_obs(self, obs_dict):
         # 1. Capture current face direction
         paddle_quat = obs_dict["paddle_ori"]
-        curr_normal = get_y_normal(paddle_quat)
+        curr_normal = get_z_normal(paddle_quat)
         
         # 2. Capture target face direction from our 7-dim goal
         goal_pos = self.current_goal[0:3]
@@ -375,7 +383,7 @@ class TableTennisWorker(CustomEnv):
 
         # 4. Orientation Alignment
         paddle_quat = obs_dict["paddle_ori"]
-        curr_normal = get_y_normal(paddle_quat)
+        curr_normal = get_z_normal(paddle_quat)
         
         # face (Red or Black) dictated by the goal side-switch logic.
         dot = np.dot(curr_normal, goal_normal)
