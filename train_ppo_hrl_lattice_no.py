@@ -117,7 +117,7 @@ def main():
         "gamma": cfg.ppo_gamma,
         "gae_lambda": cfg.ppo_lambda,
         "max_grad_norm": 0.3,
-        "vf_coef": 0.835671,
+        "vf_coef": 0.5,
         "clip_range_vf": cfg.ppo_clip_range,
 
         # ---------------------------

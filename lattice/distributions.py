@@ -417,7 +417,8 @@ class LatticeStateDependentNoiseDistribution(StateDependentNoiseDistribution):
             self._latent_sde, self.ind_exploration_mat, self.ind_exploration_matrices
         )
 
-        actions = self.clipped_mean_actions_net(self._latent_sde + latent_noise) + action_noise
+        latent_input = self._safe_latent(self._latent_sde + latent_noise)
+        actions = self.clipped_mean_actions_net(latent_input) + action_noise
 
         if self.bijector is not None:
             return self.bijector.forward(actions)
