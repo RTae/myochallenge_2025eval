@@ -136,3 +136,9 @@ def get_z_normal(q):
         2 * (qy*qz - qw*qx),
         1 - 2 * (qx**2 + qy**2)
     ])
+    
+def flip_quat_180_x(q):
+    """Rotates a quaternion 180 degrees around its local X-axis."""
+    w, x, y, z = q
+    # Result of multiplying q by [0, 1, 0, 0]
+    return np.array([-x, w, z, -y])
