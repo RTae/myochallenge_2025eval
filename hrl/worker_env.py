@@ -6,7 +6,7 @@ from myosuite.utils import gym
 
 from config import Config
 from custom_env import CustomEnv
-from hrl.utils import predict_ball_trajectory, get_z_normal, flip_quat_180_x, ensure_handle_down
+from hrl.utils import predict_ball_trajectory, get_z_normal, flip_quat_180_x, ensure_handle_down, quat_rotate
 
 class TableTennisWorker(CustomEnv):
     def __init__(self, config: Config):
@@ -302,7 +302,6 @@ class TableTennisWorker(CustomEnv):
     def _compute_reward(self, obs_dict, rwd_dict):
         goal_pos = self.current_goal[0:3]
         goal_quat = self.current_goal[3:7]
-        goal_normal = get_z_normal(goal_quat)
         
         paddle_pos = obs_dict["paddle_pos"]
         pelvis_pos = obs_dict["pelvis_pos"]
@@ -327,10 +326,18 @@ class TableTennisWorker(CustomEnv):
 
         # Orientation
         paddle_quat = obs_dict["paddle_ori"]
-        curr_normal = get_z_normal(paddle_quat)
-        
-        dot = np.dot(curr_normal, goal_normal)
+        curr_n = get_z_normal(paddle_quat)
+        goal_n = get_z_normal(goal_quat)
+
+        dot = np.dot(curr_n, goal_n)
         paddle_face_err = np.arccos(np.clip(dot, -1.0, 1.0))
+        
+        handle_world = quat_rotate(paddle_quat, np.array([1.0, 0.0, 0.0]))
+        # penalize if handle points upward in world z
+        handle_up_pen = max(0.0, handle_world[2])   # >0 means pointing up
+        reward -= 0.2 * handle_up_pen               # small weight
+
+        # only reward if it's the correct face (not backside)
         paddle_quat_reward = active_alignment_mask * np.exp(-2.0 * paddle_face_err) if dot > 0 else 0.0
         
         # Pelvis
@@ -347,9 +354,9 @@ class TableTennisWorker(CustomEnv):
         is_goal_success = float(is_reach_good and is_ori_good and is_time_good)
 
         reward = 0.0
-        reward += 5.0 * alignment_y
-        reward += 5.0 * alignment_z
-        reward += active_mask * 6.0 * (1.0 - np.tanh(reach_dist))
+        reward += 2.0 * alignment_y
+        reward += 2.0 * alignment_z
+        reward += active_mask * 2.0 * (1.0 - np.tanh(reach_dist))
         reward += 2.0 * paddle_quat_reward
         reward += 0.5 * pelvis_alignment
 
@@ -382,7 +389,7 @@ class TableTennisWorker(CustomEnv):
             "reach_error": reach_dist,
             "reach_y_err": pred_err_y,
             "reach_z_err": pred_err_z,
-            "paddle_err": paddle_face_err,
+            "paddle_degree_err": np.degrees(paddle_face_err),
             "time_err": dt,
             "abs_time_err": abs(dt),
             "is_ball_passed": float(is_ball_passed),
