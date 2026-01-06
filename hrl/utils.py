@@ -88,7 +88,8 @@ def quat_from_two_vectors(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 # Paddle face normal + building goal quat
 # ---------------------------
 
-FACE_AXIS_LOCAL = np.array([0.0, 0.0, -1.0], dtype=np.float64)  # matches get_face_normal()
+FACE_AXIS_LOCAL = np.array([0.0, 0.0, -1.0], dtype=np.float64)
+QUNT_FACE_AXIS_LOCAL = np.array([0.0, 0.0, 1.0], dtype=np.float64)
 
 def get_face_normal(q: np.ndarray) -> np.ndarray:
     return quat_rotate(q, FACE_AXIS_LOCAL)
@@ -98,7 +99,13 @@ def normal_to_quat_face_aligned(n_world: np.ndarray) -> np.ndarray:
     Rotate local FACE axis (-Z) -> n_world.
     """
     n_world = normalize_vec(n_world)
-    return quat_from_two_vectors(FACE_AXIS_LOCAL, n_world)
+    return quat_from_two_vectors(QUNT_FACE_AXIS_LOCAL, n_world)
+
+def flip_quat_180_x(q: np.ndarray) -> np.ndarray:
+    """Rotate quaternion 180 degrees around its LOCAL X-axis: q * [0,1,0,0]."""
+    q = np.asarray(q, dtype=np.float64)
+    r = np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float64)  # 180° about x
+    return normalize_quat(quat_mul(q, r))
 
 # ---------------------------
 # Handle-down constraint
