@@ -100,11 +100,10 @@ class TableTennisWorker(CustomEnv):
         
     def predict_goal_from_state(self, obs_dict):
         pred_pos, pred_quat = self._predict(obs_dict)
-        
-        relative_y = pred_pos[1] - obs_dict["pelvis_pos"][1]
-        
+                
         target_quat = pred_quat
-        if relative_y > -0.05:
+        is_forehand = pred_pos[1] > 0.0
+        if is_forehand:
             target_quat = flip_quat_180_x(pred_quat)
         
         target_quat = ensure_handle_down(target_quat)
@@ -163,11 +162,10 @@ class TableTennisWorker(CustomEnv):
         # 4. PREDICT
         if update_condition:
             new_pos, new_quat = self._predict(obs_dict)
-            
-            relative_y = new_pos[1] - obs_dict["pelvis_pos"][1]
-            
+                        
             target_quat = new_quat
-            if relative_y > -0.05:
+            is_forehand = new_pos[1] > 0.0
+            if is_forehand:
                 target_quat = flip_quat_180_x(new_quat)
             else:
                 target_quat = new_quat
