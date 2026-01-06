@@ -390,6 +390,7 @@ class TableTennisWorker(CustomEnv):
             "reach_y_err": pred_err_y,
             "reach_z_err": pred_err_z,
             "paddle_degree_err": np.degrees(paddle_face_err),
+            "handle_up_pen": handle_up_pen,
             "time_err": dt,
             "abs_time_err": abs(dt),
             "is_ball_passed": float(is_ball_passed),
