@@ -100,19 +100,19 @@ def main():
         # ---------------------------
         # PPO Batch & Rollout Settings
         # ---------------------------
-        "batch_size": 2048,
-        "n_steps": 1024,
+        "batch_size": 1024,
+        "n_steps": 512,
         "n_epochs": 10,
 
         # ---------------------------
         # Scheduler
         # ---------------------------
-        "learning_rate": lambda p: 3e-4 * 0.5 * (1 + math.cos(math.pi * (1 - p))),
+        "learning_rate": lambda p: 2e-4 * 0.5 * (1 + math.cos(math.pi * (1 - p))),
 
         # ---------------------------
         # PPO Hyperparameters
         # ---------------------------
-        "ent_coef": 0.001,
+        "ent_coef": 0.01,
         "clip_range": 0.2,
         "gamma": cfg.ppo_gamma,
         "gae_lambda": cfg.ppo_lambda,
@@ -124,7 +124,7 @@ def main():
         # SDE Exploration
         # ---------------------------
         "use_sde": True,
-        "sde_sample_freq": 8,
+        "sde_sample_freq": 16,
 
         # ---------------------------
         # Reproducibility
@@ -141,8 +141,8 @@ def main():
             full_std=False,
             ortho_init=False,
             
-            log_std_init=-1.5,
-            std_clip=(0.01, 0.3),
+            log_std_init=-2,
+            std_clip=(0.03, 0.5),
             expln_eps=1e-6,
             std_reg=1e-3,
 

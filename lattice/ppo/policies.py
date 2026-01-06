@@ -83,6 +83,7 @@ class LatticeActorCriticPolicy(ActorCriticPolicy):
         super().__init__(observation_space, action_space, lr_schedule, **kwargs)
         if use_lattice:
             if self.use_sde:
+                logger.info("Using Lattice State-Dependent Noise Distribution")
                 self.dist_kwargs.update(
                     {
                         "epsilon": expln_eps,
