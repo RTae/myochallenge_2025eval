@@ -6,7 +6,7 @@ from myosuite.utils import gym
 
 from config import Config
 from custom_env import CustomEnv
-from hrl.utils import predict_ball_trajectory, get_z_normal, flip_quat_180_x
+from hrl.utils import predict_ball_trajectory, get_z_normal, flip_quat_180_x, ensure_handle_down
 
 class TableTennisWorker(CustomEnv):
     def __init__(self, config: Config):
@@ -106,6 +106,8 @@ class TableTennisWorker(CustomEnv):
         target_quat = pred_quat
         if relative_y > -0.05:
             target_quat = flip_quat_180_x(pred_quat)
+        
+        target_quat = ensure_handle_down(target_quat)
 
         dx = float(pred_pos[0] - obs_dict["ball_pos"][0])
         vx = float(obs_dict["ball_vel"][0])
@@ -169,6 +171,8 @@ class TableTennisWorker(CustomEnv):
                 target_quat = flip_quat_180_x(new_quat)
             else:
                 target_quat = new_quat
+                
+            target_quat = ensure_handle_down(target_quat)
             
             dx = float(new_pos[0] - ball_x)
             new_dt = float(np.clip(abs(dx / ball_vel[0]) if abs(ball_vel[0]) > 1e-3 else 1.5, 0.05, 1.5))
