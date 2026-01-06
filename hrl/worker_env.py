@@ -260,7 +260,7 @@ class TableTennisWorker(CustomEnv):
 
         self._prev_paddle_contact = False
         self._track_goal = None
-        self.init_paddle_x = None
+        self.init_paddle_x = obs_dict["paddle_pos"][0]
         
         # Reset Bounce State
         self.has_bounced = False
