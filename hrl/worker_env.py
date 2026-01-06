@@ -277,8 +277,12 @@ class TableTennisWorker(CustomEnv):
     def step(self, action: np.ndarray):
         clean_action = np.nan_to_num(action, nan=0.0, posinf=1.0, neginf=-1.0)
         clamped_action = clean_action.copy()
-        clamped_action[self.grip_indices] = 1.0
-        clamped_action = np.clip(clamped_action, 0.0, 1.0)
+        
+        low  = self.action_space.low
+        high = self.action_space.high
+
+        clamped_action = np.clip(clean_action, low, high)
+        clamped_action[self.grip_indices] = np.clip(1.0, low[self.grip_indices], high[self.grip_indices])
 
         _, base_reward, terminated, truncated, info = super().step(clamped_action)
         
@@ -305,12 +309,14 @@ class TableTennisWorker(CustomEnv):
         
         paddle_pos = obs_dict["paddle_pos"]
         pelvis_pos = obs_dict["pelvis_pos"]
+        ball_x = obs_dict["ball_pos"][0]
+        touch_vec = obs_dict["touching_info"]
         
         is_env_success = bool(rwd_dict.get("solved", False))
-        err_x = obs_dict["reach_err"][0] 
-        active_mask = float(err_x > -0.05)
-        touch_vec = obs_dict["touching_info"]
-        has_hit = float(touch_vec[0]) > 0.5
+        is_ball_towards_paddle = (obs_dict["ball_vel"][0] > 0)
+        is_ball_passed = (self.init_paddle_x - ball_x) < -0.05
+        active_mask = float(is_ball_towards_paddle and not is_ball_passed)
+        has_hit = float(touch_vec[0]) > 0.1
         raw_palm_dist = np.linalg.norm(obs_dict["palm_err"])
         is_holding = float(raw_palm_dist < 0.20)
 
@@ -346,19 +352,22 @@ class TableTennisWorker(CustomEnv):
         reward = 0.0
         reward += 5.0 * alignment_y
         reward += 5.0 * alignment_z
-        reward += 10.0 * (1.0 - np.tanh(reach_dist))
+        reward += active_mask * 6.0 * (1.0 - np.tanh(reach_dist))
         reward += 2.0 * paddle_quat_reward
         reward += 0.5 * pelvis_alignment
 
         if not is_holding: reward -= 1.0 
         reward += 0.1 * float(rwd_dict.get("torso_up", 0.0))
-        if dt < -self.time_thr: reward -= 1.0 * abs(dt) 
+        
+        if dt < -self.time_thr:
+            reward -= 0.5 * np.tanh(max(0.0, -dt))
 
-        if is_env_success: reward += 25.0
+        if is_env_success:
+            reward += 25.0
         
         is_contact_fresh = False
         if has_hit and not self._prev_paddle_contact:
-            if alignment_y > 0.5 and alignment_z > 0.5 and dot > 0.7:
+            if alignment_y > 0.3 and alignment_z > 0.3 and dot > 0.3:
                 reward += 10.0 
                 is_contact_fresh = True
             else:
@@ -379,7 +388,7 @@ class TableTennisWorker(CustomEnv):
             "paddle_err": paddle_face_err,
             "time_err": dt,
             "abs_time_err": abs(dt),
-            "is_ball_passed": active_mask,
+            "is_ball_passed": float(is_ball_passed),
             "is_contact": float(is_contact_fresh),
             "pelvis_err": pelvis_err,
             "alignment_y": alignment_y,
