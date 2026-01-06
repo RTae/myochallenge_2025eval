@@ -30,6 +30,7 @@ from lattice.distributions import (
 )
 from sb3_contrib.common.recurrent.policies import RecurrentActorCriticPolicy
 from stable_baselines3.common.policies import ActorCriticPolicy
+from loguru import logger
 
 class LatticeRecurrentActorCriticPolicy(RecurrentActorCriticPolicy):
     def __init__(
@@ -47,6 +48,7 @@ class LatticeRecurrentActorCriticPolicy(RecurrentActorCriticPolicy):
         super().__init__(observation_space, action_space, lr_schedule, **kwargs)
         if use_lattice:
             if self.use_sde:
+                logger.info("Using Lattice State-Dependent Noise Distribution")
                 self.dist_kwargs.update(
                     {
                         "epsilon": expln_eps,

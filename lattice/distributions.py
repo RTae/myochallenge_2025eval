@@ -326,20 +326,43 @@ class LatticeStateDependentNoiseDistribution(StateDependentNoiseDistribution):
         log_std: torch.Tensor,
         latent_sde: torch.Tensor,
     ) -> "LatticeNoiseDistribution":
-        # Detach the last layer features because we do not want to update the noise generation
-        # to influence the features of the policy
         self._latent_sde = latent_sde if self.learn_features else latent_sde.detach()
-        corr_std, ind_std = self.get_std(log_std)
-        latent_corr_variance = torch.mm(self._latent_sde**2, corr_std**2)  # Variance of the hidden state
-        latent_ind_variance = torch.mm(self._latent_sde**2, ind_std**2) + self.std_reg**2  # Variance of the action
 
-        # First consider the correlated variance
-        sigma_mat = self.alpha**2 * (self.mean_actions_net.weight * latent_corr_variance[:, None, :]).matmul(
-            self.mean_actions_net.weight.T
+        corr_std, ind_std = self.get_std(log_std)
+
+        # Variances (always >= 0)
+        latent_corr_variance = torch.mm(self._latent_sde**2, corr_std**2)
+        latent_ind_variance  = torch.mm(self._latent_sde**2, ind_std**2) + self.std_reg**2
+
+        # ---- Build covariance ----
+        W = self.mean_actions_net.weight  # (action_dim, latent_dim)
+
+        # correlated term (batch, action_dim, action_dim)
+        sigma_mat = (self.alpha**2) * (W * latent_corr_variance[:, None, :]).matmul(W.T)
+
+        # add independent variance to diagonal
+        idx = torch.arange(self.action_dim, device=sigma_mat.device)
+        sigma_mat[:, idx, idx] += latent_ind_variance
+
+        # ---- Make it numerically safe / PD ----
+        # 1) Remove NaN/Inf
+        sigma_mat = torch.nan_to_num(sigma_mat, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # 2) Symmetrize (important for numerical noise)
+        sigma_mat = 0.5 * (sigma_mat + sigma_mat.transpose(-1, -2))
+
+        # 3) Ensure strictly positive diagonal
+        eps = 1e-6
+        sigma_mat[:, idx, idx] = torch.clamp(sigma_mat[:, idx, idx], min=eps)
+
+        # 4) Add jitter to guarantee PD (works in practice)
+        sigma_mat[:, idx, idx] += eps
+
+        self.distribution = MultivariateNormal(
+            loc=mean_actions,
+            covariance_matrix=sigma_mat,
+            validate_args=False,
         )
-        # Then the independent one, to be added to the diagonal
-        sigma_mat[:, range(self.action_dim), range(self.action_dim)] += latent_ind_variance
-        self.distribution = MultivariateNormal(loc=mean_actions, covariance_matrix=sigma_mat, validate_args=False)
         return self
 
     def log_prob(self, actions: torch.Tensor) -> torch.Tensor:
