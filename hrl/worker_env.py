@@ -335,7 +335,6 @@ class TableTennisWorker(CustomEnv):
         handle_world = quat_rotate(paddle_quat, np.array([1.0, 0.0, 0.0]))
         # penalize if handle points upward in world z
         handle_up_pen = max(0.0, handle_world[2])   # >0 means pointing up
-        reward -= 0.2 * handle_up_pen               # small weight
 
         # only reward if it's the correct face (not backside)
         paddle_quat_reward = active_alignment_mask * np.exp(-2.0 * paddle_face_err) if dot > 0 else 0.0
@@ -359,6 +358,7 @@ class TableTennisWorker(CustomEnv):
         reward += active_mask * 2.0 * (1.0 - np.tanh(reach_dist))
         reward += 2.0 * paddle_quat_reward
         reward += 0.5 * pelvis_alignment
+        reward -= 0.2 * handle_up_pen
 
         if not is_holding: reward -= 1.0 
         reward += 0.1 * float(rwd_dict.get("torso_up", 0.0))
