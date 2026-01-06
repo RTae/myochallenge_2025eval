@@ -1,14 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Tuple
 
 import numpy as np
-
-
-# ============================================================
-# Quaternion helpers (w, x, y, z)
-# ============================================================
 
 def quat_mul(q1, q2):
     w1,x1,y1,z1 = q1
@@ -30,67 +24,63 @@ def quat_rotate(q, v):
     qv = np.array([0.0, *v])
     return quat_mul(quat_mul(q, qv), quat_conj(q))[1:]
 
-def quat_from_axis_angle(axis: np.ndarray, angle_rad: float) -> np.ndarray:
-    axis = np.asarray(axis, dtype=np.float64)
-    n = np.linalg.norm(axis)
-    if n < 1e-12:
-        return np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
-    axis = axis / n
-    s = np.sin(angle_rad / 2.0)
-    return quat_normalize(np.array([np.cos(angle_rad / 2.0), axis[0]*s, axis[1]*s, axis[2]*s], dtype=np.float64))
+def get_face_normal(q: np.ndarray) -> np.ndarray:
+    return quat_rotate(q, np.array([0.0, 0.0, -1.0], dtype=np.float64))
 
-
-def get_z_normal(q: np.ndarray) -> np.ndarray:
-    """World direction of LOCAL +Z under quaternion q."""
-    return quat_rotate(q, np.array([0.0, 0.0, 1.0], dtype=np.float64))
-
-
-def normal_to_quat_z_aligned(n: np.ndarray) -> np.ndarray:
+def quat_from_two_vectors(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """
-    Shortest-arc quaternion that rotates [0,0,1] -> n.
+    Shortest-arc quaternion that rotates unit vector a -> unit vector b.
+    Returns wxyz.
+    Robust for near-opposite vectors (180°).
+    """
+    a = np.asarray(a, dtype=np.float64)
+    b = np.asarray(b, dtype=np.float64)
+
+    na = np.linalg.norm(a)
+    nb = np.linalg.norm(b)
+    if na < 1e-12 or nb < 1e-12:
+        return np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+
+    a = a / na
+    b = b / nb
+
+    c = np.dot(a, b)  # cos(theta)
+    if c > 1.0 - 1e-12:
+        # already aligned
+        return np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+
+    if c < -1.0 + 1e-12:
+        # 180°: choose any axis orthogonal to a
+        # pick the smallest component axis to avoid near-zero cross
+        if abs(a[0]) < abs(a[1]) and abs(a[0]) < abs(a[2]):
+            ortho = np.array([1.0, 0.0, 0.0])
+        elif abs(a[1]) < abs(a[2]):
+            ortho = np.array([0.0, 1.0, 0.0])
+        else:
+            ortho = np.array([0.0, 0.0, 1.0])
+
+        axis = np.cross(a, ortho)
+        axis = axis / (np.linalg.norm(axis) + 1e-12)
+        # 180° rotation: w=0, xyz=axis
+        return np.array([0.0, axis[0], axis[1], axis[2]], dtype=np.float64)
+
+    axis = np.cross(a, b)
+    q = np.array([1.0 + c, axis[0], axis[1], axis[2]], dtype=np.float64)
+    return quat_normalize(q)
+
+def normal_to_quat_face_aligned(n: np.ndarray) -> np.ndarray:
+    """
+    Rotate local FACE axis (-Z) -> n_world.
     Returns wxyz.
     """
-    n = np.asarray(n, dtype=np.float64)
-    nn = np.linalg.norm(n)
-    if nn < 1e-12:
-        return np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
-    n = n / nn
-
-    nx, ny, nz = n
-    # shortest arc from z=[0,0,1] to n:
-    qw = 1.0 + nz
-    qx = -ny
-    qy = nx
-    qz = 0.0
-
-    q = np.array([qw, qx, qy, qz], dtype=np.float64)
-    qn = np.linalg.norm(q)
-
-    # singularity: n ~ -z
-    if qn < 1e-12:
-        return np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float64)
-
-    return q / qn
-
+    n = quat_normalize(n)
+    return quat_from_two_vectors(np.array([0.0, 0.0, -1.0], dtype=np.float64), n)
 
 def flip_quat_180_x(q: np.ndarray) -> np.ndarray:
     """Rotate quaternion 180 degrees around its LOCAL X-axis: q * [0,1,0,0]."""
     q = np.asarray(q, dtype=np.float64)
     r = np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float64)  # 180deg about x
     return quat_normalize(quat_mul(q, r))
-
-
-def roll_about_local_x(q: np.ndarray, angle_rad: float) -> np.ndarray:
-    """Post-multiply by rotation around LOCAL X (handle axis)."""
-    r = quat_from_axis_angle(np.array([1.0, 0.0, 0.0], dtype=np.float64), angle_rad)
-    return quat_normalize(quat_mul(q, r))
-
-
-def tilt_about_local_y(q: np.ndarray, angle_rad: float) -> np.ndarray:
-    """Post-multiply by rotation around LOCAL Y."""
-    r = quat_from_axis_angle(np.array([0.0, 1.0, 0.0], dtype=np.float64), angle_rad)
-    return quat_normalize(quat_mul(q, r))
-
 
 def flip_around_local_z(q):
     # 180° rotation around local Z axis
@@ -218,62 +208,7 @@ def predict_ball_trajectory(
         n = n / n_norm
 
     # quaternion aligning local +Z to n (ROLL NEUTRAL)
-    raw_quat = normal_to_quat_z_aligned(n)
+    raw_quat = normal_to_quat_face_aligned(n)
     raw_quat = ensure_handle_down(raw_quat)
     
     return pred_pos, raw_quat
-
-
-# ============================================================
-# Human layer: forehand/backhand + comfort roll/tilt
-# ============================================================
-
-@dataclass
-class GripStyle:
-    # your observation: "in myo forehand is black"
-    # we'll map:
-    #   forehand -> apply 180deg local-X flip (or not) depending on visuals
-    # You can swap these if colors are opposite in your viewer.
-
-    forehand_flip_x: bool = True     # set True if forehand needs flip_quat_180_x
-    backhand_flip_x: bool = False
-
-    # handle comfort: negative roll makes handle "down" depending on convention
-    forehand_roll_deg: float = -8.0
-    backhand_roll_deg: float = -3.0
-
-    # optional: tilt slightly toward agent (makes face less skyward)
-    forehand_tilt_y_deg: float = 0.0
-    backhand_tilt_y_deg: float = 0.0
-
-    # switch threshold
-    y_threshold: float = -0.05
-
-
-def apply_grip_style(raw_quat: np.ndarray, pelvis_y: float, pred_y: float, style: GripStyle):
-    """
-    Decides forehand/backhand and applies:
-      - optional flip_quat_180_x (your old logic)
-      - roll around LOCAL X (handle comfort)  <-- where your "15deg" belongs
-      - optional small tilt
-    """
-    relative_y = pred_y - pelvis_y
-
-    is_backhand = (relative_y <= style.y_threshold)
-
-    if is_backhand:
-        q = raw_quat.copy()
-        mode = "BACKHAND"
-        if style.backhand_flip_x:
-            q = flip_quat_180_x(q)
-        q = roll_about_local_x(q, np.deg2rad(style.backhand_roll_deg))
-        q = tilt_about_local_y(q, np.deg2rad(style.backhand_tilt_y_deg))
-    else:
-        q = raw_quat.copy()
-        mode = "FOREHAND"
-        if style.forehand_flip_x:
-            q = flip_quat_180_x(q)
-        q = roll_about_local_x(q, np.deg2rad(style.forehand_roll_deg))
-        q = tilt_about_local_y(q, np.deg2rad(style.forehand_tilt_y_deg))
-
-    return quat_normalize(q), mode

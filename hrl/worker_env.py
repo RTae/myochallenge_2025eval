@@ -6,7 +6,7 @@ from myosuite.utils import gym
 
 from config import Config
 from custom_env import CustomEnv
-from hrl.utils import predict_ball_trajectory, get_z_normal, flip_quat_180_x, ensure_handle_down, quat_rotate
+from hrl.utils import predict_ball_trajectory, get_face_normal, flip_quat_180_x, ensure_handle_down, quat_rotate
 
 class TableTennisWorker(CustomEnv):
     def __init__(self, config: Config):
@@ -326,18 +326,14 @@ class TableTennisWorker(CustomEnv):
 
         # Orientation
         paddle_quat = obs_dict["paddle_ori"]
-        curr_n = get_z_normal(paddle_quat)
-        goal_n = get_z_normal(goal_quat)
+        curr_n = get_face_normal(paddle_quat)
+        goal_n = get_face_normal(goal_quat)
 
         dot = np.dot(curr_n, goal_n)
         paddle_face_err = np.arccos(np.clip(dot, -1.0, 1.0))
-        
-        handle_world = quat_rotate(paddle_quat, np.array([1.0, 0.0, 0.0]))
-        # penalize if handle points upward in world z
-        handle_up_pen = max(0.0, handle_world[2])   # >0 means pointing up
 
         # only reward if it's the correct face (not backside)
-        paddle_quat_reward = active_alignment_mask * np.exp(-2.0 * paddle_face_err) if dot > 0 else 0.0
+        paddle_quat_reward = active_alignment_mask * np.exp(-2.0 * paddle_face_err)
         
         # Pelvis
         paddle_to_pelvis_offset = np.array([-0.2, 0.4])
