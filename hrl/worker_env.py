@@ -9,11 +9,6 @@ from custom_env import CustomEnv
 from hrl.utils import predict_ball_trajectory, get_z_normal, flip_quat_180_x
 
 class TableTennisWorker(CustomEnv):
-    """
-    Goal-conditioned controller.
-    GOAL: [x, y, z, qw, qx, qy, qz, dt] (8 dims)
-    """
-
     def __init__(self, config: Config):
         super().__init__(config)
         
@@ -21,7 +16,6 @@ class TableTennisWorker(CustomEnv):
         # 3(pad) + 3(pad_v) + 4(pad_ori) + 3(reach) + 3(palm) + 3(palm_err) + 
         # 6(touch) + 273(act) = 424
         self.state_dim = 424
-        # Goal is now 8-dim (Pos 3 + Quat 4 + Time 1)
         self.goal_dim = 8 
         self.observation_dim = self.state_dim + self.goal_dim
 
@@ -30,7 +24,7 @@ class TableTennisWorker(CustomEnv):
         )
         self.grip_indices = [242, 243, 244, 245, 246, 247, 248, 249, 258, 260]
 
-        # Runtime
+        # Runtime State
         self.current_goal: Optional[np.ndarray] = None
         self._track_goal: Optional[np.ndarray] = None
         self.manager_delta: np.ndarray = np.zeros(self.goal_dim, dtype=np.float32)
@@ -40,10 +34,13 @@ class TableTennisWorker(CustomEnv):
         self._prev_paddle_contact = False
         self.init_paddle_x = None
         
+        # Bounce Logic State
+        self.has_bounced = False
+        self.bounce_time = 0.0
+        
         # Config
         self.goal_noise_scale = 0.0
         self.progress = 0.0
-        self.update_goal_freq = 10 
 
         # Thresholds
         self.reach_thr_base = 0.25
@@ -72,21 +69,28 @@ class TableTennisWorker(CustomEnv):
         return float(self.progress)
         
     def _predict(self, obs_dict):
-        # Uses your updated utils.py
+        # 1. Use Proxy Position (from Debugger Logic)
+        paddle_proxy = obs_dict["paddle_pos"].copy()
+        
+        if self.init_paddle_x is None:
+            self.init_paddle_x = obs_dict["paddle_pos"][0]
+        
+        if self.init_paddle_x is not None:
+            # Use fixed defensive line - 0.2m (as tested in debugger)
+            paddle_proxy[0] = self.init_paddle_x - 0.2
+            
         return predict_ball_trajectory(
             ball_pos=obs_dict["ball_pos"],
             ball_vel=obs_dict["ball_vel"],
-            paddle_pos=obs_dict["paddle_pos"],
+            paddle_pos=paddle_proxy, 
         )
 
     def set_goal(self, goal_phys: np.ndarray, delta: Optional[np.ndarray] = None):
         self.current_goal = goal_phys.astype(np.float32)
         if delta is not None:
-            # Resize delta to match new goal dim if needed, or assume it matches
             if delta.shape[0] == self.goal_dim:
                 self.manager_delta = delta.astype(np.float32)
             else:
-                # Fallback for old 7-dim deltas (pad with 0)
                 padded = np.zeros(self.goal_dim)
                 padded[:min(len(delta), self.goal_dim)] = delta
                 self.manager_delta = padded.astype(np.float32)
@@ -99,45 +103,43 @@ class TableTennisWorker(CustomEnv):
         
         relative_y = pred_pos[1] - obs_dict["pelvis_pos"][1]
         
-        # If Backhand (Left): Use pred_quat (Z-face aligned).
-        # If Forehand (Right): Use pred_quat BUT flipped 180 on X.
-        
-        # Wait, earlier we established:
-        # Left <= -0.05: Backhand (Blue) -> Use pred_quat (Base Normal)
-        # Right > -0.05: Forehand (Black) -> Use Flipped Quat (Negative Normal)
-        
+        # Side Switch Logic
         target_quat = pred_quat
         if relative_y > -0.05:
-             # Forehand: Flip the quaternion 180 deg around X-axis
+             # Forehand: Flip
             target_quat = flip_quat_180_x(pred_quat)
         else:
-            # Backhand: Use as is
+            # Backhand: As is
             target_quat = pred_quat
 
         dx = float(pred_pos[0] - obs_dict["ball_pos"][0])
         vx = float(obs_dict["ball_vel"][0])
         dt = float(np.clip(abs(dx / vx) if abs(vx) > 1e-3 else 1.5, 0.05, 1.5))
 
-        # Build 8-Dim Goal [pos(3), quat(4), dt(1)]
         goal_phys = np.concatenate([pred_pos, target_quat, [dt]])
 
         if self.goal_noise_scale > 0.0:
             goal_phys[:3] += np.random.normal(0.0, self.goal_noise_scale, size=3)
-            # Noise on quaternion is tricky, applying small random rotation is better
-            # For now, simple additive noise + normalize
             goal_phys[3:7] += np.random.normal(0.0, self.goal_noise_scale * 0.1, size=4)
             goal_phys[3:7] /= (np.linalg.norm(goal_phys[3:7]) + 1e-9)
-            
-        if self.init_paddle_x is None:
-            self.init_paddle_x = pred_pos[0]
 
         return goal_phys.astype(np.float32)
     
     def _update_goal_tracker(self, obs_dict):
-        ball_x = obs_dict["ball_pos"][0]
-        ball_vel_x = obs_dict["ball_vel"][0]
-        paddle_x = obs_dict["paddle_pos"][0]
+        current_time = obs_dict["time"]
+        ball_pos = obs_dict["ball_pos"]
+        ball_vel = obs_dict["ball_vel"]
+        paddle_pos = obs_dict["paddle_pos"]
         
+        ball_x = ball_pos[0]
+        paddle_x = paddle_pos[0]
+        
+        # 1. BOUNCE DETECTION LOGIC
+        if (not self.has_bounced) and (ball_x > -0.2) and (ball_vel[2] > 0.2):
+            self.has_bounced = True
+            self.bounce_time = current_time
+
+        # 2. SAFETY CHECKS
         touching = obs_dict.get('touching_info')
         current_touch = 1.0 if (touching is not None and touching[0] > 0.1) else 0.0
         if current_touch > 0: self._prev_paddle_contact = True
@@ -145,17 +147,28 @@ class TableTennisWorker(CustomEnv):
         is_contact = (current_touch > 0) or self._prev_paddle_contact
         is_hitting_zone = (abs(ball_x - paddle_x) < 0.30)
         is_ball_passed = (self.init_paddle_x - ball_x) < -0.05
-        is_ball_towards_paddle = (ball_vel_x > 0)
+        is_ball_towards_paddle = (ball_vel[0] > 0)
         
         should_track = (not is_contact) and (not is_hitting_zone) and \
                     (not is_ball_passed) and is_ball_towards_paddle
 
-        if should_track and (int(obs_dict["time"] * 100) % self.update_goal_freq == 0):
+        update_condition = False
+        
+        if should_track:
+            time_since_bounce = current_time - self.bounce_time
+            # Update if bounced AND delay > 0.05s
+            if self.has_bounced and (time_since_bounce > 0.05):
+                 update_condition = True
+            # Also allow initial prediction update if goal is empty
+            if self._track_goal is None:
+                 update_condition = True
+
+        # 4. PREDICT
+        if update_condition:
             new_pos, new_quat = self._predict(obs_dict)
             
             relative_y = new_pos[1] - obs_dict["pelvis_pos"][1]
             
-            # Logic: Flip Quat for Forehand
             target_quat = new_quat
             if relative_y > -0.05:
                 target_quat = flip_quat_180_x(new_quat)
@@ -163,9 +176,8 @@ class TableTennisWorker(CustomEnv):
                 target_quat = new_quat
             
             dx = float(new_pos[0] - ball_x)
-            new_dt = float(np.clip(abs(dx / ball_vel_x) if abs(ball_vel_x) > 1e-3 else 1.5, 0.05, 1.5))
+            new_dt = float(np.clip(abs(dx / ball_vel[0]) if abs(ball_vel[0]) > 1e-3 else 1.5, 0.05, 1.5))
             
-            # Add Manager Delta (Assuming delta is also 8-dim or padded)
             target_goal = np.concatenate([new_pos, target_quat, [new_dt]]) + self.manager_delta[:8]
             self._track_goal = target_goal.copy()
 
@@ -181,11 +193,10 @@ class TableTennisWorker(CustomEnv):
             else:
                 self.current_goal[0:3] = target_pos
             
-            # Smooth Quaternion (Linear Approx + Normalize)
+            # Smooth Quaternion
             curr_q = self.current_goal[3:7]
             target_q = self._track_goal[3:7]
             
-            # Ensure shortest path (flip sign if dot < 0)
             if np.dot(curr_q, target_q) < 0:
                 target_q = -target_q
                 
@@ -197,14 +208,11 @@ class TableTennisWorker(CustomEnv):
             else:
                 new_q = target_q
             
-            # KEY: Normalize Quaternion after smoothing
             new_q /= (np.linalg.norm(new_q) + 1e-9)
             self.current_goal[3:7] = new_q
-
             self.current_goal[7] = self._track_goal[7]
             
     def _build_obs(self, obs_dict):
-        
         obs = np.concatenate([
             self._flat(obs_dict["time"]),           
             self._flat(obs_dict["pelvis_pos"]),     
@@ -253,6 +261,11 @@ class TableTennisWorker(CustomEnv):
         self._prev_paddle_contact = False
         self._track_goal = None
         self.init_paddle_x = None
+        
+        # Reset Bounce State
+        self.has_bounced = False
+        self.bounce_time = 0.0
+        
         self.manager_delta = np.zeros(self.goal_dim, dtype=np.float32)
         
         goal = self.predict_goal_from_state(obs_dict)
@@ -287,7 +300,6 @@ class TableTennisWorker(CustomEnv):
     
     def _compute_reward(self, obs_dict, rwd_dict):
         goal_pos = self.current_goal[0:3]
-        
         goal_quat = self.current_goal[3:7]
         goal_normal = get_z_normal(goal_quat)
         
@@ -310,7 +322,7 @@ class TableTennisWorker(CustomEnv):
         alignment_y = active_alignment_mask * np.exp(-1.0 * pred_err_y)
         alignment_z = active_alignment_mask * np.exp(-1.0 * pred_err_z)
 
-        # Orientation (Compare Normals derived from Z-Face)
+        # Orientation
         paddle_quat = obs_dict["paddle_ori"]
         curr_normal = get_z_normal(paddle_quat)
         
