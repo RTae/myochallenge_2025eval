@@ -1,44 +1,90 @@
+"""
+Refactored HRL evaluation script
+- Same evaluation style as your single-model evaluator (evaluate_single_model + evaluate folders)
+- One episode runner used by both manager and worker
+- Fixes bugs: n_episodes vs trials mismatch, success_rate uses trials, consistent naming
+- Cleaner path handling + optional `use_best` and `eval_worker_too`
+
+Usage:
+  python eval_hrl_refactored.py
+
+It expects folders like:
+  <exp>/worker/worker_model.pkl OR <exp>/worker/best/best_model.zip
+  <exp>/worker/vecnormalize.pkl
+  <exp>/manager/manager_model.pkl OR <exp>/manager/best/best_model.zip
+"""
+
 import os
+import sys
 import glob
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
+
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-from typing import Optional, Dict, Any, List
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import VecNormalize, DummyVecEnv
 
+# ---- path (keep like yours) ----
+current_dir = os.path.dirname(os.path.abspath(__file__))
+root_dir = os.path.dirname(current_dir)
+sys.path.append(root_dir)
+
+# ---- your modules ----
 from config import Config
 from env_factory import build_manager_vec, build_worker_vec
 from hrl.worker_env import TableTennisWorker
 from lattice.ppo.policies import LatticeActorCriticPolicy
-
-# Your helpers
 from utils import resume_vecnormalize_on_training_env
 
 
-# ==================================================
-# Loaders (same as your train code)
-# ==================================================
-def load_worker_model(path: str):
-    return PPO.load(path, device="cuda", policy=LatticeActorCriticPolicy)
+# =============================================================================
+# Small helpers
+# =============================================================================
+
+def freeze_vecnormalize(env) -> None:
+    """If env is VecNormalize, freeze it for eval."""
+    if isinstance(env, VecNormalize):
+        env.training = False
+        env.norm_reward = False
 
 
-def load_worker_vecnormalize(path: str, venv: TableTennisWorker) -> VecNormalize:
-    env = DummyVecEnv([lambda: venv])
-    vecnorm = VecNormalize.load(path, env)
+def load_worker_model(model_path: str, device: str = "cuda") -> PPO:
+    # You were passing policy=... into PPO.load; keep it explicitly here
+    return PPO.load(model_path, device=device, policy=LatticeActorCriticPolicy)
+
+
+def load_worker_vecnormalize(vecnorm_path: str, base_env: TableTennisWorker) -> VecNormalize:
+    """
+    Loads VecNormalize stats onto a DummyVecEnv wrapping the base_env.
+    Used when manager needs a worker env instance with saved normalization.
+    """
+    env = DummyVecEnv([lambda: base_env])
+    vecnorm = VecNormalize.load(vecnorm_path, env)
     vecnorm.training = False
     vecnorm.norm_reward = False
     return vecnorm
 
 
-# ==================================================
-# Generic episode runner for VecEnv (num_envs=1 assumed)
-# ==================================================
-def run_episodes(model: PPO, env, n_episodes: int, deterministic: bool = True) -> Dict[str, Any]:
+# =============================================================================
+# Episode runner (VecEnv num_envs=1)
+# =============================================================================
+
+def run_vecenv_episodes(
+    model: PPO,
+    env,
+    trials: int,
+    deterministic: bool = True,
+) -> Dict[str, float]:
     """
-    Runs exactly n_episodes and aggregates episode reward, success rate, effort.
-    Assumes env is a VecEnv with num_envs=1 (like your eval usage).
+    Evaluate `trials` episodes on a VecEnv with num_envs=1.
+
+    Collects:
+      - episode reward (from info["episode"]["r"] if exists)
+      - effort (info.get("effort", 0.0))
+      - success (bool(info.get("is_success", False)))
     """
     ep_rewards: List[float] = []
     efforts: List[float] = []
@@ -46,7 +92,7 @@ def run_episodes(model: PPO, env, n_episodes: int, deterministic: bool = True) -
 
     obs = env.reset()
 
-    for _ in tqdm(range(n_episodes), desc="Evaluating"):
+    for _ in tqdm(range(trials), desc="Evaluating"):
         while True:
             action, _ = model.predict(obs, deterministic=deterministic)
             obs, rewards, dones, infos = env.step(action)
@@ -55,41 +101,76 @@ def run_episodes(model: PPO, env, n_episodes: int, deterministic: bool = True) -
             info = infos[0]
 
             if done:
-                # SB3 VecMonitor-style episode info
-                if "episode" in info and isinstance(info["episode"], dict) and "r" in info["episode"]:
+                # reward
+                if isinstance(info.get("episode"), dict) and "r" in info["episode"]:
                     ep_rewards.append(float(info["episode"]["r"]))
                 else:
-                    # fallback: if your env doesn’t provide "episode"
-                    # you can accumulate rewards manually, but keeping simple here
+                    # fallback (avoid crashing)
                     ep_rewards.append(0.0)
 
-                # optional custom keys
+                # effort + success
                 efforts.append(float(info.get("effort", 0.0)))
                 if bool(info.get("is_success", False)):
                     success_count += 1
                 break
 
-    ep_rewards = ep_rewards if len(ep_rewards) > 0 else [0.0]
-    efforts = efforts if len(efforts) > 0 else [0.0]
+    if not ep_rewards:
+        ep_rewards = [0.0]
+    if not efforts:
+        efforts = [0.0]
 
     return {
         "mean_reward": float(np.mean(ep_rewards)),
         "std_reward": float(np.std(ep_rewards)),
-        "success_rate": 100.0 * float(success_count) / float(n_episodes),
+        "success_rate": 100.0 * float(success_count) / float(trials),
         "mean_effort": float(np.mean(efforts)),
         "std_effort": float(np.std(efforts)),
-        "episodes": n_episodes,
     }
 
 
-# ==================================================
-# Build eval worker env (frozen VecNormalize)
-# ==================================================
+# =============================================================================
+# HRL Eval Config + Path resolver
+# =============================================================================
+
+@dataclass(frozen=True)
+class HRLEvalPaths:
+    worker_model: str
+    worker_vecnorm: str
+    manager_model: str
+
+
+def resolve_hrl_paths(exp_dir: str, use_best: bool) -> HRLEvalPaths:
+    worker_dir = os.path.join(exp_dir, "worker")
+    manager_dir = os.path.join(exp_dir, "manager")
+
+    if use_best:
+        worker_model = os.path.join(worker_dir, "best", "best_model.zip")
+        manager_model = os.path.join(manager_dir, "best", "best_model.zip")
+    else:
+        worker_model = os.path.join(worker_dir, "worker_model.pkl")
+        manager_model = os.path.join(manager_dir, "manager_model.pkl")
+
+    worker_vecnorm = os.path.join(worker_dir, "vecnormalize.pkl")
+
+    for p in [worker_model, manager_model, worker_vecnorm]:
+        if not os.path.exists(p):
+            raise FileNotFoundError(f"Missing required file: {p}")
+
+    return HRLEvalPaths(
+        worker_model=worker_model,
+        worker_vecnorm=worker_vecnorm,
+        manager_model=manager_model,
+    )
+
+
+# =============================================================================
+# Env builders (eval-frozen)
+# =============================================================================
+
 def make_eval_worker_env(cfg: Config, worker_vecnorm_path: Optional[str]):
 
     env = build_worker_vec(cfg=cfg, num_envs=1)
 
-    # If you saved vecnormalize.pkl during training, load it onto eval env
     if worker_vecnorm_path and os.path.exists(worker_vecnorm_path):
         env = resume_vecnormalize_on_training_env(
             env,
@@ -98,16 +179,10 @@ def make_eval_worker_env(cfg: Config, worker_vecnorm_path: Optional[str]):
             norm_reward=False,
         )
 
-    if isinstance(env, VecNormalize):
-        env.training = False
-        env.norm_reward = False
-
+    freeze_vecnormalize(env)
     return env
 
 
-# ==================================================
-# Build eval manager env (frozen worker inside)
-# ==================================================
 def make_eval_manager_env(
     cfg: Config,
     worker_model_path: str,
@@ -115,9 +190,9 @@ def make_eval_manager_env(
     decision_interval: int,
     max_episode_steps: int,
 ):
-
-    def worker_env_loader(path: str):
-        return load_worker_vecnormalize(path, TableTennisWorker(cfg))
+    def worker_env_loader(vecnorm_path: str):
+        # manager expects a callable that returns env with loaded vecnorm
+        return load_worker_vecnormalize(vecnorm_path, TableTennisWorker(cfg))
 
     env = build_manager_vec(
         cfg=cfg,
@@ -129,127 +204,122 @@ def make_eval_manager_env(
         decision_interval=decision_interval,
         max_episode_steps=max_episode_steps,
     )
+
+    freeze_vecnormalize(env)
     return env
 
 
-# ==================================================
-# Evaluate one HRL checkpoint folder
-# Expected structure (like your train code):
-#   <exp>/worker/worker_model.pkl
-#   <exp>/worker/vecnormalize.pkl
-#   <exp>/manager/manager_model.pkl
-# OR “best” folders if you want:
-#   <exp>/worker/best/best_model.zip
-#   <exp>/manager/best/best_model.zip
-# ==================================================
-def evaluate_one_experiment(
+# =============================================================================
+# Evaluate one experiment folder (HRL)
+# =============================================================================
+
+def evaluate_one_hrl_experiment(
     exp_dir: str,
-    n_episodes: int,
+    trials: int,
     use_best: bool = False,
     eval_worker_too: bool = False,
+    deterministic: bool = True,
 ) -> Dict[str, Any]:
 
-    cfg = Config()  # keep consistent config creation
-    cfg.logdir = exp_dir  # not required, but convenient
+    cfg = Config()
+    cfg.logdir = exp_dir  # optional convenience
 
-    worker_dir = os.path.join(exp_dir, "worker")
-    manager_dir = os.path.join(exp_dir, "manager")
+    paths = resolve_hrl_paths(exp_dir, use_best=use_best)
 
-    if use_best:
-        worker_model_path = os.path.join(worker_dir, "best", "best_model.zip")
-        manager_model_path = os.path.join(manager_dir, "best", "best_model.zip")
-    else:
-        worker_model_path = os.path.join(worker_dir, "worker_model.pkl")
-        manager_model_path = os.path.join(manager_dir, "manager_model.pkl")
-
-    worker_vecnorm_path = os.path.join(worker_dir, "vecnormalize.pkl")
-
-    # sanity checks
-    for p in [worker_model_path, manager_model_path, worker_vecnorm_path]:
-        if not os.path.exists(p):
-            raise FileNotFoundError(f"Missing required file: {p}")
-
-    # ----- MANAGER eval -----
+    # ---- manager eval ----
     manager_env = make_eval_manager_env(
         cfg=cfg,
-        worker_model_path=worker_model_path,
-        worker_vecnorm_path=worker_vecnorm_path,
+        worker_model_path=paths.worker_model,
+        worker_vecnorm_path=paths.worker_vecnorm,
         decision_interval=5,
         max_episode_steps=cfg.episode_len,
     )
-    manager_model = PPO.load(manager_model_path, env=manager_env, device="cpu")
-    mgr_stats = run_episodes(manager_model, manager_env, n_episodes=n_episodes, deterministic=True)
+    manager_model = PPO.load(paths.manager_model, env=manager_env, device="cpu")
+    mgr = run_vecenv_episodes(manager_model, manager_env, trials=trials, deterministic=deterministic)
     manager_env.close()
 
-    out: Dict[str, Any] = {
+    row: Dict[str, Any] = {
         "Experiment": os.path.basename(os.path.normpath(exp_dir)),
-        "Manager Mean Reward": mgr_stats["mean_reward"],
-        "Manager Std Reward": mgr_stats["std_reward"],
-        "Manager Success Rate (%)": mgr_stats["success_rate"],
-        "Manager Mean Effort": mgr_stats["mean_effort"],
-        "Manager Std Effort": mgr_stats["std_effort"],
+        "Manager Mean Reward": mgr["mean_reward"],
+        "Manager Std Reward": mgr["std_reward"],
+        "Manager Success Rate (%)": mgr["success_rate"],
+        "Manager Mean Effort": mgr["mean_effort"],
+        "Manager Std Effort": mgr["std_effort"],
     }
 
-    # ----- optional WORKER-only eval -----
+    # ---- optional worker-only eval ----
     if eval_worker_too:
-        worker_env = make_eval_worker_env(cfg=cfg, worker_vecnorm_path=worker_vecnorm_path)
-        worker_model = PPO.load(worker_model_path, env=worker_env, device="cuda", policy=LatticeActorCriticPolicy)
-        w_stats = run_episodes(worker_model, worker_env, n_episodes=n_episodes, deterministic=True)
+        worker_env = make_eval_worker_env(cfg=cfg, worker_vecnorm_path=paths.worker_vecnorm)
+        worker_model = PPO.load(
+            paths.worker_model,
+            env=worker_env,
+            device="cuda",
+            policy=LatticeActorCriticPolicy,
+        )
+        w = run_vecenv_episodes(worker_model, worker_env, trials=trials, deterministic=deterministic)
         worker_env.close()
 
-        out.update({
-            "Worker Mean Reward": w_stats["mean_reward"],
-            "Worker Std Reward": w_stats["std_reward"],
-            "Worker Success Rate (%)": w_stats["success_rate"],
-            "Worker Mean Effort": w_stats["mean_effort"],
-            "Worker Std Effort": w_stats["std_effort"],
+        row.update({
+            "Worker Mean Reward": w["mean_reward"],
+            "Worker Std Reward": w["std_reward"],
+            "Worker Success Rate (%)": w["success_rate"],
+            "Worker Mean Effort": w["mean_effort"],
+            "Worker Std Effort": w["std_effort"],
         })
 
-    return out
+    return row
 
 
-def evaluate_many(
-    exp_glob: str,
-    n_episodes: int = 100,
+# =============================================================================
+# Evaluate many folders (HRL) - styled like your single-model script
+# =============================================================================
+
+def evaluate_hrl_folders(
+    folders: List[str],
+    trials: int = 200,
     use_best: bool = False,
     eval_worker_too: bool = False,
-):
-    exp_dirs = sorted(glob.glob(exp_glob))
-    if not exp_dirs:
-        print(f"No experiment dirs found for glob: {exp_glob}")
-        return
+) -> Optional[pd.DataFrame]:
 
-    rows = []
-    print(f"Found {len(exp_dirs)} experiment dirs")
+    if not folders:
+        print("No experiment folders found.")
+        return None
 
-    for d in exp_dirs:
+    print(f"Found {len(folders)} experiment folders. Beginning evaluation...\n")
+    print("-" * 80)
+
+    rows: List[Dict[str, Any]] = []
+
+    for exp_dir in folders:
+        name = os.path.basename(os.path.normpath(exp_dir))
         try:
-            row = evaluate_one_experiment(
-                exp_dir=d,
-                n_episodes=n_episodes,
+            row = evaluate_one_hrl_experiment(
+                exp_dir=exp_dir,
+                trials=trials,
                 use_best=use_best,
                 eval_worker_too=eval_worker_too,
+                deterministic=True,
             )
             rows.append(row)
             print(
-                f"[OK] {row['Experiment']} | "
-                f"MgrR={row['Manager Mean Reward']:.2f} | "
+                f"Finished {name}: "
+                f"MgrR={row['Manager Mean Reward']:.2f}, "
                 f"MgrS={row['Manager Success Rate (%)']:.1f}%"
             )
         except Exception as e:
-            print(f"[FAIL] {d}: {e}")
+            print(f"Error evaluating {name}: {e}")
             raise
 
     df = pd.DataFrame(rows)
 
-    # aggregated summary (manager)
+    # ---- aggregated summary (manager) ----
     mgr_r_mean = df["Manager Mean Reward"].mean()
     mgr_r_std = df["Manager Mean Reward"].std()
     mgr_s_mean = df["Manager Success Rate (%)"].mean()
     mgr_s_std = df["Manager Success Rate (%)"].std()
 
     print("\n" + "=" * 90)
-    print("FINAL REPORT (Manager)")
+    print("FINAL AGGREGATED REPORT (Manager)")
     print("=" * 90)
     pd.set_option("display.max_columns", None)
     pd.set_option("display.width", 1200)
@@ -259,16 +329,33 @@ def evaluate_many(
     print(f"Manager Success Rate: {mgr_s_mean:.2f}% ± {mgr_s_std:.2f}")
     print("=" * 90)
 
+    # ---- if worker columns exist, print worker summary too ----
+    if eval_worker_too and "Worker Mean Reward" in df.columns:
+        w_r_mean = df["Worker Mean Reward"].mean()
+        w_r_std = df["Worker Mean Reward"].std()
+        w_s_mean = df["Worker Success Rate (%)"].mean()
+        w_s_std = df["Worker Success Rate (%)"].std()
+        print("\n" + "=" * 90)
+        print("FINAL AGGREGATED REPORT (Worker)")
+        print("=" * 90)
+        print(f"Worker Reward:        {w_r_mean:.2f} ± {w_r_std:.2f}")
+        print(f"Worker Success Rate:  {w_s_mean:.2f}% ± {w_s_std:.2f}")
+        print("=" * 90)
+
     return df
 
 
+# =============================================================================
+# Main
+# =============================================================================
+
 if __name__ == "__main__":
-    # Example:
-    #   python eval_hrl.py
-    # Evaluate folders like: ./logs/exp_*/  (adjust to your structure)
-    evaluate_many(
-        exp_glob="./logs/*/",
-        n_episodes=200,
-        use_best=False,        # set True to use best/best_model.zip
+    # HRL experiments like: ./logs/exp_*/  (adjust glob to your structure)
+    folders = sorted(glob.glob("./logs/*/"))
+
+    evaluate_hrl_folders(
+        folders=folders,
+        trials=200,
+        use_best=False,        # True => worker/best/best_model.zip and manager/best/best_model.zip
         eval_worker_too=True,  # also evaluate worker alone
     )
