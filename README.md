@@ -88,6 +88,7 @@ Also, you can adjust a training configuration in `configs.py` or directly in eac
 make build
 ```
 3.	Start training:
+After running a script you can check a log file in `logs/` directory and also TensorBoard.
 ```bash
 make train
 ```
@@ -97,3 +98,29 @@ make stop
 ```
 
 ## Evaluation
+```bash
+python scripts/eval_hrl_recurrentppo.py \
+  --logs ./logs \
+  --glob "ppo_hrl_lattice*/" \
+  --trials 200 \
+  --use-best \
+  --eval-worker
+```
+Example output:
+```
+Found 1 experiment folders. Beginning evaluation...
+
+--------------------------------------------------------------------------------
+Evaluating: 100%|████████████████████████████| 200/200 [00:41<00:00,  4.90it/s]
+Finished ppo_hrl_lattice_seed0: HighLevelR=18.42, HighLevelS=7.5%
+
+==========================================================================================
+FINAL AGGREGATED REPORT (High Level Policy)
+==========================================================================================
+           Experiment  High Level Policy Mean Reward  High Level Policy Std Reward  High Level Policy Success Rate (%)  High Level Policy Mean Effort  High Level Policy Std Effort
+ppo_hrl_lattice_seed0                        18.42                      5.12                              6.20                         0.18                     0.0410
+------------------------------------------------------------------------------------------
+High Level Policy Reward:       18.42 ± 5.12
+High Level Policy Success Rate: 6.20% ± 0.18
+==========================================================================================
+```
