@@ -6,7 +6,7 @@ from myosuite.utils import gym
 
 from config import Config
 from custom_env import CustomEnv
-from hrl.utils import predict_ball_trajectory, get_face_normal, ensure_handle_down, quat_rotate, flip_quat_180_x
+from utils import predict_ball_trajectory, get_face_normal, ensure_handle_down, quat_rotate, flip_quat_180_x
 
 class TableTennisWorker(CustomEnv):
     def __init__(self, config: Config):
@@ -22,7 +22,6 @@ class TableTennisWorker(CustomEnv):
         self.observation_space = gym.spaces.Box(
             low=-np.inf, high=np.inf, shape=(self.observation_dim,), dtype=np.float32,
         )
-        self.grip_indices = [242, 243, 244, 245, 246, 247, 248, 249, 258, 260]
 
         # Runtime State
         self.current_goal: Optional[np.ndarray] = None
@@ -232,27 +231,9 @@ class TableTennisWorker(CustomEnv):
     
     def _flat(self, x):
         return np.asarray(x, dtype=np.float32).reshape(-1)
-
-    def _force_start_grasp(self):
-        sim = self.env.unwrapped.sim
-        model = sim.model
-        data = sim.data
-        perfect_fingers = {
-            "cmc_abduction": -0.334, "cmc_flexion": 0.0562, "mp_flexion": -0.511, "ip_flexion": -0.881,
-            "mcp2_flexion": 1.49, "mcp2_abduction": 0.147, "pm2_flexion": 1.3, "md2_flexion": 1.25,
-            "mcp3_flexion": 1.42, "mcp3_abduction": -0.0131, "pm3_flexion": 1.35, "md3_flexion": 1.04,
-            "mcp4_flexion": 1.48, "mcp4_abduction": -0.0681, "pm4_flexion": 1.36, "md4_flexion": 1.07,
-            "mcp5_flexion": 1.39, "mcp5_abduction": -0.188, "pm5_flexion": 0.872, "md5_flexion": 1.57
-        }
-        for name, val in perfect_fingers.items():
-            try:
-                data.qpos[model.jnt_qposadr[model.joint_name2id(name)]] = val
-            except ValueError: pass
-        sim.forward()
         
     def reset(self, seed=None, options=None):
         _, info = super().reset(seed=seed)
-        self._force_start_grasp()
         obs_dict = self.env.unwrapped.obs_dict
 
         self._prev_paddle_contact = False
@@ -274,12 +255,9 @@ class TableTennisWorker(CustomEnv):
     def step(self, action: np.ndarray):
         clean_action = np.nan_to_num(action, nan=0.0, posinf=1.0, neginf=-1.0)
         clamped_action = clean_action.copy()
-        
         low  = self.action_space.low
         high = self.action_space.high
-
         clamped_action = np.clip(clean_action, low, high)
-        clamped_action[self.grip_indices] = np.clip(1.0, low[self.grip_indices], high[self.grip_indices])
 
         _, base_reward, terminated, truncated, info = super().step(clamped_action)
         
