@@ -4,7 +4,7 @@ from typing import Optional
 from stable_baselines3 import PPO
 from sb3_contrib import RecurrentPPO
 from stable_baselines3.common.callbacks import EvalCallback, CallbackList
-from stable_baselines3.common.vec_env import VecNormalize, DummyVecEnv
+from stable_baselines3.common.vec_env import VecNormalize, DummyVecEnv, SubprocVecEnv, VecMonitor
 from lattice.ppo.policies import LatticeRecurrentActorCriticPolicy
 
 from config import Config
@@ -30,6 +30,59 @@ def load_worker_model(path: str):
             policy=LatticeRecurrentActorCriticPolicy, 
     )
 
+def load_worker_on_specific_gpu(path: str, device_id: int):
+    """Loads the worker model onto a specific GPU (cuda:0, cuda:1, etc.)"""
+    return RecurrentPPO.load(
+            path,
+            device=f"cuda:{device_id}",
+            policy=LatticeRecurrentActorCriticPolicy, 
+    )
+
+def build_sharded_manager_vec(cfg: Config, num_envs: int, worker_model_path: str, worker_env_path: str, num_gpus: int = 4):
+    """
+    Spawns processes distributed across multiple GPUs.
+    Each subprocess loads its own Worker model onto a specific GPU based on its rank.
+    """
+    def make_env(rank: int):
+        def _init():
+            # Determine which GPU this env belongs to (e.g., Rank 0-39 -> GPU 0)
+            gpu_id = rank // (num_envs // num_gpus)
+            gpu_id = min(gpu_id, num_gpus - 1) 
+            
+            # Local worker loaders for this specific subprocess
+            def specific_model_loader(p):
+                return load_worker_on_specific_gpu(p, gpu_id)
+            
+            def specific_env_loader(p):
+                # Ensure the worker's internal env doesn't try to hog all GPUs
+                return load_worker_vecnormalize(p, TableTennisWorker(cfg))
+
+            # Create the Manager environment instance
+            env = TableTennisManager(
+                worker_env=specific_env_loader(worker_env_path),
+                worker_model=specific_model_loader(worker_model_path),
+                config=cfg,
+                decision_interval=5,
+                max_episode_steps=cfg.episode_len,
+            )
+            return env
+        return _init
+
+    env_fns = [make_env(i) for i in range(num_envs)]
+    
+    logger.info(f"Spawning {num_envs} Manager envs sharded across {num_gpus} GPUs...")
+    venv = SubprocVecEnv(env_fns)
+    
+    # Monitor for logging and wrap in VecNormalize
+    venv = VecMonitor(venv, info_keywords=("is_success",))
+    
+    return VecNormalize(
+        venv, 
+        norm_obs=True, 
+        norm_reward=True, 
+        clip_reward=10.0, 
+        gamma=cfg.ppo_gamma
+    )
 
 def load_worker_vecnormalize(path: str, venv: TableTennisWorker) -> VecNormalize:
     """
@@ -46,7 +99,7 @@ def main():
     cfg = Config()
     prepare_experiment_directory(cfg)
 
-    worker_total_timesteps = 50_000_000
+    worker_total_timesteps = 20_000_000
     manager_total_timesteps = 4_000_000
 
     # ==================================================
@@ -93,7 +146,7 @@ def main():
         # ---------------------------
         # Env + VecNormalize
         # ---------------------------
-        "env": worker_env,
+        "env": worker_env,                # this should be a VecNormalize-wrapped env
         "verbose": 1,
         "tensorboard_log": os.path.join(cfg.logdir),
         "device": "cuda",
@@ -101,20 +154,21 @@ def main():
         # ---------------------------
         # PPO Batch & Rollout Settings
         # ---------------------------
-        "batch_size": 2048,
-        "n_steps": 1024,
-        "n_epochs": 10,
+        "batch_size": 4096,
+        "n_steps": 256,
+        "n_epochs": 5,
 
         # ---------------------------
         # Scheduler
         # ---------------------------
-        "learning_rate": lambda p: 3e-4 * 0.5 * (1 + math.cos(math.pi * (1 - p))),
+        "learning_rate": lambda p: cfg.ppo_lr * 0.5 * (1 + math.cos(math.pi * (1 - p))),
+        "clip_range": 0.2,
 
         # ---------------------------
         # PPO Hyperparameters
         # ---------------------------
-        "ent_coef": 0.001,
-        "clip_range": 0.2,
+        "ent_coef": 3.62109e-06,
+        "clip_range": cfg.ppo_clip_range,
         "gamma": cfg.ppo_gamma,
         "gae_lambda": cfg.ppo_lambda,
         "max_grad_norm": 0.3,
@@ -125,7 +179,7 @@ def main():
         # SDE Exploration
         # ---------------------------
         "use_sde": True,
-        "sde_sample_freq": 8,
+        "sde_sample_freq": 1,
 
         # ---------------------------
         # Reproducibility
@@ -141,11 +195,10 @@ def main():
             use_expln=True,
             full_std=False,
             ortho_init=False,
-            
-            log_std_init=-1.5,
-            std_clip=(0.01, 0.3),
+            log_std_init=-2.0,
+            std_clip=(0.01, 1.0),
             expln_eps=1e-6,
-            std_reg=1e-3,
+            std_reg=0.0,
 
             # ===== Pi & V Network Sizes =====
             net_arch=
@@ -245,97 +298,68 @@ def main():
     # MANAGER
     # ==================================================
     cfg.logdir = MANAGER_DIR
-    
-    if LOAD_MANAGER_MODEL_PATH:
-        assert os.path.exists(SAVE_WORKER_MODEL_PATH)
-        assert os.path.exists(SAVE_WORKER_ENV_PATH)
+    TOTAL_MANAGER_ENVS = 160
+    NUM_AVAILABLE_GPUS = 4
 
-    def worker_env_loader(path: str):
-        return load_worker_vecnormalize(path, TableTennisWorker(cfg))
-
-    # Manager should use the worker produced by this run
-    manager_env = build_manager_vec(
+    # 1. Build the Sharded Manager Environments
+    manager_env = build_sharded_manager_vec(
         cfg=cfg,
-        num_envs=40,
-        worker_model_loader=load_worker_model,
-        worker_env_loader=worker_env_loader,
+        num_envs=TOTAL_MANAGER_ENVS,
         worker_model_path=SAVE_WORKER_MODEL_PATH,
         worker_env_path=SAVE_WORKER_ENV_PATH,
-        decision_interval=5,
-        max_episode_steps=cfg.episode_len,
+        num_gpus=NUM_AVAILABLE_GPUS
     )
     
-    manager_resumed = bool(LOAD_MANAGER_MODEL_PATH and os.path.exists(LOAD_MANAGER_MODEL_PATH))
-    
     manager_args = {
-        "device":"cpu",
-        "verbose":1,
-        "tensorboard_log":cfg.logdir,
-        "batch_size":1024,
-        "n_steps": 512,
+        "device": "cpu",
+        "verbose": 1,
+        "tensorboard_log": cfg.logdir,
+        "n_steps": 256,      
+        "batch_size": 4096,
         "learning_rate": lambda p: cfg.ppo_lr * 0.5 * (1 + math.cos(math.pi * (1 - p))),
-        "clip_range": lambda p: cfg.ppo_clip_range * p,
-        "gamma":0.995,
-        "gae_lambda":0.97,
-        "clip_range":cfg.ppo_clip_range,
-        "n_epochs":cfg.ppo_epochs,
-        "max_grad_norm":cfg.ppo_max_grad_norm,
-        "policy_kwargs":dict(net_arch=[256, 256]),
-        "seed":cfg.seed,
+        "clip_range": 0.2,
+        "gamma": 0.995,
+        "gae_lambda": 0.97,
+        "n_epochs": 10,
+        "max_grad_norm": 0.5,
+        "policy_kwargs": dict(net_arch=[256, 256]),
+        "seed": cfg.seed,
     }
-    
-    logger.info("#"*100)
-    logger.info("Manager hyperparameters:")
-    logger.info("#"*100)
-    for k, v in manager_args.items():
-        logger.info(f"{k} = {v}")
 
+    # 3. Create/Load Manager Model
+    manager_resumed = bool(LOAD_MANAGER_MODEL_PATH and os.path.exists(LOAD_MANAGER_MODEL_PATH))
     if manager_resumed:
-        logger.info(f"[Manager] Loading pretrained model from: {LOAD_MANAGER_MODEL_PATH}")
-        manager_model = PPO.load(
-            LOAD_MANAGER_MODEL_PATH,
-            env=manager_env,
-            **manager_args
-        )
+        manager_model = PPO.load(LOAD_MANAGER_MODEL_PATH, env=manager_env, **manager_args)
     else:
-        logger.info("[Manager] No pretrained manager model given/found. Training from scratch.")
-        manager_model = PPO(
-            "MlpPolicy",
-            manager_env,
-            **manager_args
-        )
+        manager_model = PPO("MlpPolicy", manager_env, **manager_args)
 
-    # ---- Manager evaluation ----
-    eval_manager_env = build_manager_vec(
-        cfg=cfg,
-        num_envs=1,
-        worker_model_loader=load_worker_model,
-        worker_env_loader=worker_env_loader,
-        worker_model_path=SAVE_WORKER_MODEL_PATH,
-        worker_env_path=SAVE_WORKER_ENV_PATH,
-        decision_interval=5,
-        max_episode_steps=cfg.episode_len,
+    # 4. Evaluation Callback Setup (GPU 0)
+    eval_manager_env = build_sharded_manager_vec(
+        cfg=cfg, num_envs=1, 
+        worker_model_path=SAVE_WORKER_MODEL_PATH, 
+        worker_env_path=SAVE_WORKER_ENV_PATH, 
+        num_gpus=1
     )
 
     eval_manager_cb = EvalCallback(
         eval_manager_env,
         best_model_save_path=os.path.join(cfg.logdir, "best"),
         log_path=os.path.join(cfg.logdir, "eval"),
-        eval_freq=int(cfg.eval_freq // cfg.num_envs),
-        n_eval_episodes=cfg.eval_episodes,
+        eval_freq=5000,
+        n_eval_episodes=10,
         deterministic=True,
-        render=False,
     )
 
-    # ---- Manager video (unchanged pattern) ----
-    video_worker_env = worker_env_loader(SAVE_WORKER_ENV_PATH)
-    frozen_worker_model = load_worker_model(SAVE_WORKER_MODEL_PATH)
+    # 5. Video Callback Setup
+    # Load dedicated worker/env for rendering on GPU 0
+    video_worker_model = load_worker_on_specific_gpu(SAVE_WORKER_MODEL_PATH, 0)
+    video_worker_env = load_worker_vecnormalize(SAVE_WORKER_ENV_PATH, TableTennisWorker(cfg))
 
     video_manager_cb = VideoCallback(
         env_func=TableTennisManager,
         env_args={
             "worker_env": video_worker_env,
-            "worker_model": frozen_worker_model,
+            "worker_model": video_worker_model,
             "config": cfg,
             "decision_interval": 1,
             "max_episode_steps": cfg.episode_len,
@@ -344,24 +368,16 @@ def main():
         predict_fn=make_predict_fn(manager_model),
     )
 
-    logger.info("Starting MANAGER training...")
-    logger.info(f"Manager total timesteps: {manager_total_timesteps}")
-
+    logger.info(f"Starting MANAGER training on 160 envs across {NUM_AVAILABLE_GPUS} GPUs...")
     manager_model.learn(
         total_timesteps=manager_total_timesteps,
         reset_num_timesteps=not manager_resumed,
         callback=CallbackList([eval_manager_cb, info_cb, video_manager_cb]),
     )
 
-    # ---- Save manager to SAVE paths ----
     manager_model.save(SAVE_MANAGER_MODEL_PATH)
-    logger.info(f"Saved MANAGER model to: {SAVE_MANAGER_MODEL_PATH}")
-
-    # ---- Close ----
     manager_env.close()
     eval_manager_env.close()
-    video_worker_env.close()
-
 
 if __name__ == "__main__":
     main()

@@ -185,7 +185,10 @@ class LatticeStateDependentNoiseDistribution(StateDependentNoiseDistribution):
         epsilon: float = 1e-6,
         std_clip: Tuple[float, float] = (1e-3, 1.0),
         std_reg: float = 0.0,
-        alpha: float = 1,
+        alpha: float = 1.0,
+        latent_clip: float = 10.0,     # clamp latent features used for noise
+        max_var: float = 10.0,         # clamp latent-induced variances
+        jitter: float = 1e-6,          # diag jitter for PD covariance
     ):
         super().__init__(
             action_dim=action_dim,
@@ -196,116 +199,124 @@ class LatticeStateDependentNoiseDistribution(StateDependentNoiseDistribution):
             learn_features=learn_features,
         )
         self.min_std, self.max_std = std_clip
-        self.std_reg = std_reg
-        self.alpha = alpha
+        self.std_reg = float(std_reg)
+        self.alpha = float(alpha)
 
-    def get_std(self, log_std: torch.Tensor) -> torch.Tensor:
-        """
-        Get the standard deviation from the learned parameter
-        (log of it by default). This ensures that the std is positive.
+        self.latent_clip = float(latent_clip)
+        self.max_var = float(max_var)
+        self.jitter = float(jitter)
 
-        :param log_std:
-        :return:
+        # SB3 fields we will set later in proba_distribution_net
+        self.mean_actions_net: Optional[nn.Module] = None
+        self.clipped_mean_actions_net: Optional[nn.Module] = None
+        self.latent_sde_dim: Optional[int] = None
+        self._latent_sde: Optional[torch.Tensor] = None
+
+        # exploration matrices (sampled in sample_weights)
+        self.corr_weights_dist: Optional[Normal] = None
+        self.ind_weights_dist: Optional[Normal] = None
+        self.corr_exploration_mat: Optional[torch.Tensor] = None
+        self.ind_exploration_mat: Optional[torch.Tensor] = None
+        self.corr_exploration_matrices: Optional[torch.Tensor] = None
+        self.ind_exploration_matrices: Optional[torch.Tensor] = None
+        
+    def _safe_latent(self, latent: torch.Tensor) -> torch.Tensor:
+        latent = torch.nan_to_num(latent, nan=0.0, posinf=0.0, neginf=0.0)
+        if self.latent_clip is not None and self.latent_clip > 0:
+            latent = torch.clamp(latent, -self.latent_clip, self.latent_clip)
+        return latent
+
+    def _make_pd(self, cov: torch.Tensor) -> torch.Tensor:
+        # cov: (batch, action_dim, action_dim)
+        cov = torch.nan_to_num(cov, nan=0.0, posinf=0.0, neginf=0.0)
+        cov = 0.5 * (cov + cov.transpose(-1, -2))
+        idx = torch.arange(cov.size(-1), device=cov.device)
+        cov[:, idx, idx] = torch.clamp(cov[:, idx, idx], min=self.jitter)
+        cov[:, idx, idx] += self.jitter
+        return cov
+
+    # -------------------------
+    # Std parametrization
+    # -------------------------
+    def get_std(self, log_std: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
+        Returns:
+          corr_std: (latent_sde_dim, latent_sde_dim)
+          ind_std:  (latent_sde_dim, action_dim)
+        """
+        assert self.latent_sde_dim is not None, "Call proba_distribution_net() first."
+
         log_min = float(np.log(self.min_std))
         log_max = float(np.log(self.max_std))
 
-        log_std = torch.nan_to_num(
-            log_std,
-            nan=log_min,
-            posinf=log_max,
-            neginf=log_min,
-        )
-        
-        # Apply correction to remove scaling of action std as a function of the latent
-        # dimension (see paper for details)
-        log_std = log_std.clip(min=log_min, max=log_max)
+        log_std = torch.nan_to_num(log_std, nan=log_min, posinf=log_max, neginf=log_min)
+        log_std = torch.clamp(log_std, log_min, log_max)
+
+        # correction from paper / SB3 gSDE
         log_std = log_std - 0.5 * np.log(self.latent_sde_dim)
 
         if self.use_expln:
-            # From gSDE paper, it allows to keep variance
-            # above zero and prevent it from growing too fast
-            below_threshold = torch.exp(log_std) * (log_std <= 0)
-            # Avoid NaN: zeros values that are below zero
-            safe_log_std = log_std * (log_std > 0) + self.epsilon
-            above_threshold = (torch.log1p(safe_log_std) + 1.0) * (log_std > 0)
-            std = below_threshold + above_threshold
+            below = torch.exp(log_std) * (log_std <= 0)
+            safe = log_std * (log_std > 0) + self.epsilon
+            above = (torch.log1p(safe) + 1.0) * (log_std > 0)
+            std = below + above
         else:
-            # Use normal exponential
             std = torch.exp(log_std)
 
-        std = torch.nan_to_num(
-            std,
-            nan=self.min_std,
-            posinf=self.max_std,
-            neginf=self.min_std,
-        )
+        std = torch.nan_to_num(std, nan=self.min_std, posinf=self.max_std, neginf=self.min_std)
         std = std.clamp(min=self.min_std, max=self.max_std)
 
         if self.full_std:
-            assert std.shape == (
-                self.latent_sde_dim,
-                self.latent_sde_dim + self.action_dim,
-            )
+            # std shape: (latent_sde_dim, latent_sde_dim + action_dim)
+            assert std.shape == (self.latent_sde_dim, self.latent_sde_dim + self.action_dim), std.shape
             corr_std = std[:, : self.latent_sde_dim]
             ind_std = std[:, -self.action_dim :]
         else:
-            # Reduce the number of parameters:
+            # std shape: (latent_sde_dim, 2)
             assert std.shape == (self.latent_sde_dim, 2), std.shape
-            corr_std = torch.ones(self.latent_sde_dim, self.latent_sde_dim).to(log_std.device) * std[:, 0:1]
-            ind_std = torch.ones(self.latent_sde_dim, self.action_dim).to(log_std.device) * std[:, 1:]
+            corr_std = torch.ones(self.latent_sde_dim, self.latent_sde_dim, device=std.device) * std[:, 0:1]
+            ind_std = torch.ones(self.latent_sde_dim, self.action_dim, device=std.device) * std[:, 1:]
+
         return corr_std, ind_std
 
+    # -------------------------
+    # Exploration matrix sampling
+    # -------------------------
     def sample_weights(self, log_std: torch.Tensor, batch_size: int = 1) -> None:
-        """
-        Sample weights for the noise exploration matrix,
-        using a centered Gaussian distribution.
-
-        :param log_std:
-        :param batch_size:
-        """
         corr_std, ind_std = self.get_std(log_std)
+
         self.corr_weights_dist = Normal(torch.zeros_like(corr_std), corr_std)
         self.ind_weights_dist = Normal(torch.zeros_like(ind_std), ind_std)
 
-        # Reparametrization trick to pass gradients
         self.corr_exploration_mat = self.corr_weights_dist.rsample()
         self.ind_exploration_mat = self.ind_weights_dist.rsample()
 
-        # Pre-compute matrices in case of parallel exploration
         self.corr_exploration_matrices = self.corr_weights_dist.rsample((batch_size,))
         self.ind_exploration_matrices = self.ind_weights_dist.rsample((batch_size,))
 
+    # -------------------------
+    # Network creation (SB3 API)
+    # -------------------------
     def proba_distribution_net(
         self,
         latent_dim: int,
-        log_std_init: float = 0,
+        log_std_init: float = 0.0,
         latent_sde_dim: Optional[int] = None,
-        clip_mean: float = 0,
+        clip_mean: float = 0.0,
     ) -> Tuple[nn.Module, nn.Parameter]:
         """
-        Create the layers and parameter that represent the distribution:
-        one output will be the deterministic action, the other parameter will be the
-        standard deviation of the distribution that control the weights of the noise matrix,
-        both for the action perturbation and the latent perturbation.
-
-        :param latent_dim: Dimension of the last layer of the policy (before the action layer)
-        :param log_std_init: Initial value for the log standard deviation
-        :param latent_sde_dim: Dimension of the last layer of the features extractor
-            for gSDE. By default, it is shared with the policy network.
-        :param clip_mean: From SB3 implementation of SAC, add possibility to hard clip the
-            mean of the actions.
-        :return:
+        Returns (mean_actions_net, log_std_param)
         """
-        # Note: we always consider that the noise is based on the features of the last
-        # layer, so latent_sde_dim is the same as latent_dim
         self.mean_actions_net = nn.Linear(latent_dim, self.action_dim)
-        if clip_mean > 0:
+
+        if clip_mean and clip_mean > 0:
             self.clipped_mean_actions_net = nn.Sequential(
                 self.mean_actions_net,
-                nn.Hardtanh(min_val=-clip_mean, max_val=clip_mean))
+                nn.Hardtanh(min_val=-clip_mean, max_val=clip_mean),
+            )
         else:
             self.clipped_mean_actions_net = self.mean_actions_net
+
         self.latent_sde_dim = latent_dim if latent_sde_dim is None else latent_sde_dim
 
         log_std = (
@@ -314,43 +325,67 @@ class LatticeStateDependentNoiseDistribution(StateDependentNoiseDistribution):
             else torch.ones(self.latent_sde_dim, 2)
         )
 
-        # Transform it into a parameter so it can be optimized
-        log_std = nn.Parameter(log_std * log_std_init, requires_grad=True)
-        # Sample an exploration matrix
+        log_std = nn.Parameter(log_std * float(log_std_init), requires_grad=True)
+
+        # initial sample
         self.sample_weights(log_std)
         return self.clipped_mean_actions_net, log_std
 
+    # -------------------------
+    # Distribution building (SB3 API)
+    # -------------------------
     def proba_distribution(
         self,
         mean_actions: torch.Tensor,
         log_std: torch.Tensor,
         latent_sde: torch.Tensor,
-    ) -> "LatticeNoiseDistribution":
-        # Detach the last layer features because we do not want to update the noise generation
-        # to influence the features of the policy
-        self._latent_sde = latent_sde if self.learn_features else latent_sde.detach()
-        corr_std, ind_std = self.get_std(log_std)
-        latent_corr_variance = torch.mm(self._latent_sde**2, corr_std**2)  # Variance of the hidden state
-        latent_ind_variance = torch.mm(self._latent_sde**2, ind_std**2) + self.std_reg**2  # Variance of the action
+    ) -> "LatticeStateDependentNoiseDistribution":
+        assert self.mean_actions_net is not None, "Call proba_distribution_net() first."
+        assert self.latent_sde_dim is not None, "Call proba_distribution_net() first."
 
-        # First consider the correlated variance
-        sigma_mat = self.alpha**2 * (self.mean_actions_net.weight * latent_corr_variance[:, None, :]).matmul(
-            self.mean_actions_net.weight.T
+        latent = latent_sde if self.learn_features else latent_sde.detach()
+        latent = self._safe_latent(latent)
+        self._latent_sde = latent
+
+        corr_std, ind_std = self.get_std(log_std)
+
+        # variances (safe)
+        latent_sq = latent.pow(2)
+        latent_corr_variance = torch.mm(latent_sq, corr_std.pow(2))
+        latent_ind_variance = torch.mm(latent_sq, ind_std.pow(2)) + (self.std_reg ** 2)
+
+        if self.max_var is not None and self.max_var > 0:
+            latent_corr_variance = torch.clamp(latent_corr_variance, 0.0, self.max_var)
+            latent_ind_variance = torch.clamp(latent_ind_variance, 0.0, self.max_var)
+
+        # covariance
+        W = self.mean_actions_net.weight  # (action_dim, latent_dim)
+        sigma_mat = (self.alpha ** 2) * (W * latent_corr_variance[:, None, :]).matmul(W.T)
+
+        idx = torch.arange(self.action_dim, device=sigma_mat.device)
+        sigma_mat[:, idx, idx] += latent_ind_variance
+
+        sigma_mat = self._make_pd(sigma_mat)
+
+        mean_actions = torch.nan_to_num(mean_actions, nan=0.0, posinf=0.0, neginf=0.0)
+
+        self.distribution = MultivariateNormal(
+            loc=mean_actions,
+            covariance_matrix=sigma_mat,
+            validate_args=False,
         )
-        # Then the independent one, to be added to the diagonal
-        sigma_mat[:, range(self.action_dim), range(self.action_dim)] += latent_ind_variance
-        self.distribution = MultivariateNormal(loc=mean_actions, covariance_matrix=sigma_mat, validate_args=False)
         return self
 
+    # -------------------------
+    # Log prob / entropy (SB3 API)
+    # -------------------------
     def log_prob(self, actions: torch.Tensor) -> torch.Tensor:
         if self.bijector is not None:
             gaussian_actions = self.bijector.inverse(actions)
         else:
             gaussian_actions = actions
         log_prob = self.distribution.log_prob(gaussian_actions)
-
         if self.bijector is not None:
-            # Squash correction
             log_prob -= torch.sum(self.bijector.log_prob_correction(gaussian_actions), dim=1)
         return log_prob
 
@@ -359,27 +394,32 @@ class LatticeStateDependentNoiseDistribution(StateDependentNoiseDistribution):
             return None
         return self.distribution.entropy()
 
-    def get_noise(
-        self,
-        latent_sde: torch.Tensor,
-        exploration_mat: torch.Tensor,
-        exploration_matrices: torch.Tensor,
-    ) -> torch.Tensor:
-        latent_sde = latent_sde if self.learn_features else latent_sde.detach()
-        # Default case: only one exploration matrix
-        if len(latent_sde) == 1 or len(latent_sde) != len(exploration_matrices):
-            return torch.mm(latent_sde, exploration_mat)
-        # Use batch matrix multiplication for efficient computation
-        # (batch_size, n_features) -> (batch_size, 1, n_features)
-        latent_sde = latent_sde.unsqueeze(dim=1)
-        # (batch_size, 1, n_actions)
-        noise = torch.bmm(latent_sde, exploration_matrices)
+    # -------------------------
+    # Sampling (SB3 API)
+    # -------------------------
+    def get_noise(self, latent_sde, exploration_mat, exploration_matrices) -> torch.Tensor:
+        latent = latent_sde if self.learn_features else latent_sde.detach()
+        latent = self._safe_latent(latent)
+
+        if len(latent) == 1 or len(latent) != len(exploration_matrices):
+            return torch.mm(latent, exploration_mat)
+
+        latent = latent.unsqueeze(dim=1)  # (batch, 1, n_features)
+        noise = torch.bmm(latent, exploration_matrices)  # (batch, 1, n_actions)
         return noise.squeeze(dim=1)
 
     def sample(self) -> torch.Tensor:
-        latent_noise = self.alpha * self.get_noise(self._latent_sde, self.corr_exploration_mat, self.corr_exploration_matrices)
-        action_noise = self.get_noise(self._latent_sde, self.ind_exploration_mat, self.ind_exploration_matrices)
-        actions = self.clipped_mean_actions_net(self._latent_sde + latent_noise) + action_noise
+        assert self._latent_sde is not None, "proba_distribution() must be called before sample()."
+        latent_noise = self.alpha * self.get_noise(
+            self._latent_sde, self.corr_exploration_mat, self.corr_exploration_matrices
+        )
+        action_noise = self.get_noise(
+            self._latent_sde, self.ind_exploration_mat, self.ind_exploration_matrices
+        )
+
+        latent_input = self._safe_latent(self._latent_sde + latent_noise)
+        actions = self.clipped_mean_actions_net(latent_input) + action_noise
+
         if self.bijector is not None:
             return self.bijector.forward(actions)
         return actions
