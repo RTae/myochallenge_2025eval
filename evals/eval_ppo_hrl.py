@@ -301,7 +301,7 @@ def evaluate(
 def _parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--logs", type=str, default="./logs", help="Root folder containing experiment subfolders")
-    p.add_argument("--glob", type=str, default="*/", help="Glob under logs root to select experiments")
+    p.add_argument("--glob", type=str, default="ppo_hrl*/", help="Glob under logs root to select experiments")
     p.add_argument("--trials", type=int, default=1000)
     p.add_argument("--use-best", action="store_true", help="Use best/best_model.zip instead of *_model.pkl")
     p.add_argument("--eval-worker", action="store_true", help="Also evaluate worker policy alone")

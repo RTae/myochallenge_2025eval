@@ -208,7 +208,7 @@ def evaluate_folders(
 def _parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--logs", type=str, default="./logs", help="Root folder containing experiment subfolders")
-    p.add_argument("--glob", type=str, default="ppo_seed*/", help="Glob under logs root to select experiments")
+    p.add_argument("--glob", type=str, default="ppo*/", help="Glob under logs root to select experiments")
     p.add_argument("--trials", type=int, default=1000)
     p.add_argument("--use-best", action="store_true", help="Kept for interface consistency (path is best_model.zip)")
     return p.parse_args()

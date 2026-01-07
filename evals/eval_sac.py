@@ -1,18 +1,37 @@
+"""
+SAC EVAL script (single-model) in the SAME “shape” as your HRL eval scripts:
+
+- freeze_vecnormalize
+- run_vecenv_episodes
+- resolve_single_paths
+- make_eval_env
+- evaluate_one_experiment
+- evaluate_folders
+- CLI: --logs/--glob/--trials/--use-best
+
+Assumed training layout (from your SAC train code):
+  <exp_dir>/
+    model.pkl
+    best_model/best_model.zip   (optional, from EvalCallback)
+
+Update the glob default to match your folder names.
+"""
+
 import os
 import sys
 import glob
 import argparse
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+
+from stable_baselines3 import SAC
 from stable_baselines3.common.vec_env import VecNormalize
 
-from sb3_contrib import RecurrentPPO
-from lattice.ppo.policies import LatticeRecurrentActorCriticPolicy
-
+# Fix path to allow importing from root (keep same style)
 current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(current_dir)
 sys.path.append(root_dir)
@@ -31,50 +50,34 @@ def freeze_vecnormalize(env) -> None:
         env.norm_reward = False
 
 
-def load_recurrent_model(model_path: str, env, device="cuda") -> RecurrentPPO:
-    return RecurrentPPO.load(
-        model_path,
-        device=device, 
-        policy=LatticeRecurrentActorCriticPolicy
-    )
-
-
-def run_recurrent_vecenv_episodes(
-    model: RecurrentPPO,
+def run_vecenv_episodes(
+    model: SAC,
     env,
     trials: int,
     deterministic: bool = True,
 ) -> Dict[str, float]:
     """
-    VecEnv num_envs=1 evaluation for recurrent policies (LSTM).
-    Mirrors your original logic: maintain lstm_states + episode_starts.
+    VecEnv num_envs=1 evaluation for SAC (non-recurrent).
+    Metrics match your other eval scripts:
+      - episode reward from info["episode"]["r"] if available
+      - effort from info.get("effort", 0.0)
+      - success from info.get("is_success", False)
     """
     ep_rewards: List[float] = []
     efforts: List[float] = []
     success_count = 0
 
     obs = env.reset()
-    lstm_states = None
-    episode_starts = np.ones((1,), dtype=bool)  # num_envs=1
 
     for _ in tqdm(range(trials), desc="Evaluating"):
         while True:
-            action, lstm_states = model.predict(
-                obs,
-                state=lstm_states,
-                episode_start=episode_starts,
-                deterministic=deterministic,
-            )
+            action, _ = model.predict(obs, deterministic=deterministic)
             obs, _, dones, infos = env.step(action)
-
-            # critical for recurrent policies
-            episode_starts = dones
 
             done = bool(dones[0])
             info = infos[0]
 
             if done:
-                # keep the same episode reward source
                 if isinstance(info.get("episode"), dict) and "r" in info["episode"]:
                     ep_rewards.append(float(info["episode"]["r"]))
                 else:
@@ -104,23 +107,36 @@ def run_recurrent_vecenv_episodes(
 # =============================================================================
 
 @dataclass(frozen=True)
-class SingleEvalPaths:
+class SACEvalPaths:
     model_path: str
 
 
-def resolve_single_paths(exp_dir: str, use_best: bool) -> SingleEvalPaths:
+def resolve_sac_paths(exp_dir: str, use_best: bool) -> SACEvalPaths:
     """
-    Your single-model layout:
-      <exp_dir>/best_model/best_model.zip   (always)
-    If you want "use_best" to mean something else later, it's already in the signature.
+    If use_best:
+        <exp_dir>/best_model/best_model.zip
+    Else:
+        <exp_dir>/model.pkl
     """
-    # keep identical to your original pathing
-    model_path = os.path.join(exp_dir, "best_model", "best_model.zip")
+    if use_best:
+        model_path = os.path.join(exp_dir, "best_model", "best_model.zip")
+    else:
+        model_path = os.path.join(exp_dir, "model.pkl")
 
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Missing required file: {model_path}")
 
-    return SingleEvalPaths(model_path=model_path)
+    return SACEvalPaths(model_path=model_path)
+
+
+# =============================================================================
+# Env builder
+# =============================================================================
+
+def make_eval_env(cfg: Config):
+    env = create_default_env(cfg, num_envs=1)
+    freeze_vecnormalize(env)
+    return env
 
 
 # =============================================================================
@@ -136,14 +152,12 @@ def evaluate_one_experiment(
     cfg = Config()
     cfg.logdir = exp_dir  # convenience only
 
-    paths = resolve_single_paths(exp_dir, use_best=use_best)
+    paths = resolve_sac_paths(exp_dir, use_best=use_best)
 
-    env = create_default_env(cfg, num_envs=1)
-    freeze_vecnormalize(env)
-
+    env = make_eval_env(cfg)
     try:
-        model = load_recurrent_model(paths.model_path, env)
-        stats = run_recurrent_vecenv_episodes(model, env, trials=trials, deterministic=deterministic)
+        model = SAC.load(paths.model_path, env=env)
+        stats = run_vecenv_episodes(model, env, trials=trials, deterministic=deterministic)
     finally:
         env.close()
 
@@ -158,12 +172,12 @@ def evaluate_one_experiment(
 
 
 # =============================================================================
-# Evaluate many folders (same report style as your HRL eval)
+# Evaluate many folders
 # =============================================================================
 
 def evaluate_folders(
     folders: List[str],
-    trials: int = 1000,
+    trials: int = 200,
     use_best: bool = False,
 ) -> Optional[pd.DataFrame]:
     if not folders:
@@ -231,9 +245,9 @@ def evaluate_folders(
 def _parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--logs", type=str, default="./logs", help="Root folder containing experiment subfolders")
-    p.add_argument("--glob", type=str, default="ppo_lattice*/", help="Glob under logs root to select experiments")
+    p.add_argument("--glob", type=str, default="sac*/", help="Glob under logs root to select experiments")
     p.add_argument("--trials", type=int, default=1000)
-    p.add_argument("--use-best", action="store_true", help="Kept for interface consistency (path is already best_model.zip)")
+    p.add_argument("--use-best", action="store_true", help="Use best_model/best_model.zip instead of model.pkl")
     return p.parse_args()
 
 
