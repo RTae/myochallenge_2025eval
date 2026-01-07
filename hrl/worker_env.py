@@ -1,12 +1,10 @@
-from __future__ import annotations
-
 from typing import Optional
 import numpy as np
 from myosuite.utils import gym
 
 from config import Config
 from custom_env import CustomEnv
-from utils import predict_ball_trajectory, get_face_normal, ensure_handle_down, quat_rotate, flip_quat_180_x
+from hrl.utils import predict_ball_trajectory, get_face_normal, ensure_handle_down, quat_rotate, flip_quat_180_x
 
 class TableTennisWorker(CustomEnv):
     def __init__(self, config: Config):
