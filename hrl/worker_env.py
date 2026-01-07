@@ -304,7 +304,6 @@ class TableTennisWorker(CustomEnv):
         # If you still want a "boolean", keep for logs only
         is_holding = float(raw_palm_dist < d0)
 
-        # ✅ IMPORTANT: do NOT gate all shaping by is_holding
         active_alignment_mask = active_mask * pre_contact_mask
 
         # --------------------------
