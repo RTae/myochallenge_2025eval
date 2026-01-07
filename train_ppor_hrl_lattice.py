@@ -224,6 +224,7 @@ def main():
 
     worker_model.learn(
         total_timesteps=worker_total_timesteps,
+        progress_bar=True,
         reset_num_timesteps=not worker_resumed,  # continue curves if resumed
         callback=CallbackList([eval_worker_cb, info_cb, video_worker_cb, ann_worker_cb]),
     )
@@ -349,6 +350,7 @@ def main():
 
     manager_model.learn(
         total_timesteps=manager_total_timesteps,
+        progress_bar=True,
         reset_num_timesteps=not manager_resumed,
         callback=CallbackList([eval_manager_cb, info_cb, video_manager_cb]),
     )

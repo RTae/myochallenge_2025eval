@@ -64,6 +64,7 @@ def main():
     
     model.learn(
         total_timesteps=cfg.ppo_total_timesteps,
+        progress_bar=True,
         callback=CallbackList([info_cb, eval_cb, video_cb]),
     )
     
