@@ -290,7 +290,8 @@ class TableTennisWorker(CustomEnv):
         active_mask = float(is_ball_towards_paddle and not is_ball_passed)
         has_hit = float(touch_vec[0]) > 0.1
         raw_palm_dist = np.linalg.norm(obs_dict["palm_err"])
-        is_holding = float(raw_palm_dist < 0.20)
+        d0 = 0.15
+        is_holding = float(raw_palm_dist < d0)
 
         active_alignment_mask = active_mask * (1.0 - float(self._prev_paddle_contact or has_hit)) * is_holding
 
@@ -335,9 +336,12 @@ class TableTennisWorker(CustomEnv):
         reward += 2.0 * paddle_quat_reward
         reward += 0.5 * pelvis_alignment
         reward -= 0.2 * handle_up_pen
-
-        if not is_holding: reward -= 1.0 
-        reward += 0.1 * float(rwd_dict.get("torso_up", 0.0))
+        
+        # Penalize Excessive Palm Distance
+        excess = max(0.0, raw_palm_dist - d0)
+        reward -= 1.0 * (excess / d0)
+                
+        reward += 0.2 * float(rwd_dict.get("torso_up", 0.0))
         
         if dt < -self.time_thr:
             reward -= 0.5 * np.tanh(max(0.0, -dt))
