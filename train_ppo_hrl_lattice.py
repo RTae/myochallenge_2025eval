@@ -100,10 +100,10 @@ def main():
         # ---------------------------
         # PPO Rollout / Batch (match their stable ratios)
         # ---------------------------
-        # rollout = n_steps * n_envs = 4096 * 4 = 16384
-        "n_steps": 4096,
-        "batch_size": 2048,     # 16384 / 2048 = 8 minibatches (nice)
-        "n_epochs": 10,
+        # rollout = n_steps * n_envs = 512 * 100 = 51200
+        "n_steps": 512,
+        "batch_size": 2048,     # 51200 / 2048 = 25 minibatches (nice)
+        "n_epochs": 3,
 
         # ---------------------------
         # LR schedule (simple + stable)
