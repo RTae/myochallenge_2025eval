@@ -1,13 +1,27 @@
-# MyoChallenge2025 Table Tennis Rally  - Synergy-Driven Hierarchical Policies
+# MyoChallenge 2025 Table Tennis Rally — Synergy-Driven Hierarchical Policies
 
-In this study, we investigate the NeurIPS 2025 MyoChallenge Table Tennis Rallytask,  where  an  agent  must  control  a  high-dimensional  musculoskeletal  modelto  return  a  ball  to  the  opponent’s  side  of  the  table.   The  key  difficulty  is  ex-ploration  in  an  overactuated  control  space;  naive  deep  reinforcement  learning(DeepRL)  methods  such  as  SAC  or  PPO  often  fail  to  discover  coherent,  task-relevant  muscle  activation  patterns.   Our  work  combines  exploration  methodsfor overactuated systems with a hierarchical controller.  The low-level policy istrained to move the paddle toward spatial sub-goals in 3D using structured ex-ploration  that  encourages  muscle  synergies,  while  the  high-level  policy  selectsthose  sub-goals  over  time.   Our  objective  is  to  achieve  a  relatively  strong  per-formance  and  empirically  evaluate  whether  this  combined  approach  improvesexploration  and  control  quality  in  the  MyoChallenge  table  tennis  environmentcompared  to  deep  reinforcement  learning  baselines.  
+This project studies the **NeurIPS 2025 MyoChallenge Table Tennis Rally** task, where an agent controls a high-dimensional musculoskeletal model to return a ball to the opponent’s side. The main challenge is **exploration in an overactuated action space**: standard Deep RL methods such as **SAC** or **PPO** often struggle to discover coherent, task-relevant muscle activation patterns.
+
+We combine **structured exploration for overactuated systems** with a **hierarchical controller**. The **low-level policy** learns to move the paddle toward 3D spatial sub-goals using exploration that encourages muscle synergies, while the **high-level policy** selects those sub-goals over time. Our goal is to achieve strong performance and empirically evaluate whether this combined approach improves exploration and control quality compared to Deep RL baselines.
+
 
 ## Demo
-### Baseline PPO
 
+### Baseline PPO
+<div style="display:flex; gap:12px; justify-content:center; align-items:flex-start;">
+  <img src="https://raw.githubusercontent.com/RTae/myochallenge_2025eval/main/assert/ppo_1.gif" width="360" />
+  <img src="https://raw.githubusercontent.com/RTae/myochallenge_2025eval/main/assert/ppo_2.gif" width="360" />
+</div>
+
+### Our Method (Hierarchical Policy with Synergy-Driven Exploration)
+<div style="display:flex; gap:12px; justify-content:center; align-items:flex-start;">
+  <img src="https://raw.githubusercontent.com/RTae/myochallenge_2025eval/main/assert/ppo_1.gif" width="360" />
+  <img src="https://raw.githubusercontent.com/RTae/myochallenge_2025eval/main/assert/ppo_2.gif" width="360" />
+</div>
 
 ## Build
-### Base image (Optional)
+
+### Base image (optional)
 ```bash
 docker build \
   -t ghcr.io/rtae/myochallenge/myochallenge-base:latest \
@@ -21,49 +35,63 @@ docker build \
   -f Dockerfile.train .
 ```
 
+---
 
-## Deverlopment
-### Run with local python
-1. Create uv environment with package dependencies
+## Development environment
+### Run locally (Python)
+1.	Create a uv environment and install dependencies.
 ```bash
 uv install
 uv sync
 ```
 
-2. Run training script
+2. Run training script.
 ```bash
 python train.py
 ```
+Plan: I’ll rewrite your README section with cleaner wording + consistent headings, keep your side-by-side demo, and fix small typos (task name, “Development”, etc.) without changing meaning.
 
-## Train with Docker
-
+## Train a model
 ### Prerequisites
-1. Make sure you already pull these image below into your local.
+1.	Pull the required base image:
 ```bash
 docker pull tensorflow/tensorflow:2.15.0
 ```
-2. Install docker gpu https://docs.docker.com/engine/containers/resource_constraints/#gpu
+
+2.	Install Docker GPU support:
+- https://docs.docker.com/engine/containers/resource_constraints/#gpu
 
 ### Steps
-1. Edit *Dockerfile.train* to train specific task
-Change the line below to your desired task
+1.	Choose the training entrypoint in Dockerfile.train.
+Change:
 ```Dockerfile
 CMD ["python", "train.py"]
 ```
-to
-```Dockerfile
+To one of the following:
+```Dpockerfile
 CMD ["python", "train_ppo_hrl_lattice.py"]
 ```
-2. Build Docker image
+Available scripts:
+- train_ppo_hrl_lattice.py
+- train_ppo_hrl.py
+- train_ppo_lattice.py
+- train_ppo.py
+- train_sac_hrl_lattice.py
+- train_sac_hrl.py
+- train_sac_lattice.py
+- train_sac.py
+
+Also, you can adjust a training configuration in `configs.py` or directly in each training script.
+
+2.	Build the Docker image:
 ```bash
 make build
 ```
-3. Run training container
+3.	Start training:
 ```bash
 make train
 ```
-4. Stop training container (optional)
-You don't need to do it everytime you can just run *make train* again after build a image from *make build*
+4.	Stop training (optional):
 ```bash
 make stop
 ```
