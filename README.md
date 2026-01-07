@@ -6,6 +6,10 @@ This challenge consists of developing controllers for a physiologically realisti
 
 - A) **PingPong task** -- Successfully tally a incoming pingpong ball (`myoChallengeTableTennisP1-v0`).
 
+## Demo
+### Baseline PPO
+
+
 ## Build
 ### Base image (Optional)
 ```bash
@@ -45,7 +49,15 @@ docker pull tensorflow/tensorflow:2.15.0
 2. Install docker gpu https://docs.docker.com/engine/containers/resource_constraints/#gpu
 
 ### Steps
-1. Edit *Dockerfile.train*
+1. Edit *Dockerfile.train* to train specific task
+Change the line below to your desired task
+```Dockerfile
+CMD ["python", "train.py"]
+```
+to
+```Dockerfile
+CMD ["python", "train_ppo_hrl_lattice.py"]
+```
 2. Build Docker image
 ```bash
 make build
@@ -59,3 +71,5 @@ You don't need to do it everytime you can just run *make train* again after buil
 ```bash
 make stop
 ```
+
+## Evaluation
