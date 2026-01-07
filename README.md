@@ -1,10 +1,6 @@
-# 2025 NeurIPS - MyoChallenge
+# MyoChallenge2025 Table Tennis Rally  - Synergy-Driven Hierarchical Policies
 
-Welcome to the [**2025 NeurIPS - MyoChallenge: Towards Human Athletic Intelligence**](https://sites.google.com/view/myosuite/myochallenge/myochallenge-2025).
-
-This challenge consists of developing controllers for a physiologically realistic musculoskeletal model to achieve upper and lower limb athletic tasks:
-
-- A) **PingPong task** -- Successfully tally a incoming pingpong ball (`myoChallengeTableTennisP1-v0`).
+In this study, we investigate the NeurIPS 2025 MyoChallenge Table Tennis Rallytask,  where  an  agent  must  control  a  high-dimensional  musculoskeletal  modelto  return  a  ball  to  the  opponent’s  side  of  the  table.   The  key  difficulty  is  ex-ploration  in  an  overactuated  control  space;  naive  deep  reinforcement  learning(DeepRL)  methods  such  as  SAC  or  PPO  often  fail  to  discover  coherent,  task-relevant  muscle  activation  patterns.   Our  work  combines  exploration  methodsfor overactuated systems with a hierarchical controller.  The low-level policy istrained to move the paddle toward spatial sub-goals in 3D using structured ex-ploration  that  encourages  muscle  synergies,  while  the  high-level  policy  selectsthose  sub-goals  over  time.   Our  objective  is  to  achieve  a  relatively  strong  per-formance  and  empirically  evaluate  whether  this  combined  approach  improvesexploration  and  control  quality  in  the  MyoChallenge  table  tennis  environmentcompared  to  deep  reinforcement  learning  baselines.  
 
 ## Demo
 ### Baseline PPO
