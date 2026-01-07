@@ -1,109 +1,128 @@
 import sys
 import os
 
+# Fix path to allow importing from root (keep same style)
 current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(current_dir)
 sys.path.append(root_dir)
 
 import glob
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
+
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import VecNormalize
 
-# Import your custom modules
 from config import Config
 from env_factory import create_default_env
 
-def evaluate_single_model(model_path, env, trials=1000):
+
+# =============================================================================
+# Small helpers (same behavior, cleaner)
+# =============================================================================
+
+def freeze_vecnormalize(env) -> None:
+    """If env is VecNormalize, freeze it for eval."""
+    if isinstance(env, VecNormalize):
+        env.training = False
+        env.norm_reward = False
+
+
+@dataclass(frozen=True)
+class EvalResult:
+    seed: str
+    mean_reward: float
+    success_rate: float
+    mean_effort: float
+
+
+def resolve_model_path(folder_path: str) -> Optional[str]:
+    """Keep your layout: <folder>/best_model/best_model.zip"""
+    model_path = os.path.join(folder_path, "best_model", "best_model.zip")
+    return model_path if os.path.exists(model_path) else None
+
+
+def evaluate_single_model(model_path: str, env, trials: int = 1000) -> Tuple[float, float, float]:
     """
-    Runs evaluation for a single model instance.
+    Runs evaluation for a single PPO model instance.
+    Keeps the same metrics + logic as your original code.
     """
-    # Load model
     model = PPO.load(model_path, env=env)
     obs = env.reset()
-    
-    all_rewards = []
-    efforts = []
+
+    all_rewards: List[float] = []
+    efforts: List[float] = []
     success_count = 0
-        
-    for _ in tqdm(range(trials), desc=f"Evaluating {model_path}"):    
+
+    for _ in tqdm(range(trials), desc=f"Evaluating {model_path}"):
         while True:
             action, _ = model.predict(obs, deterministic=True)
-            
             obs, _, dones, infos = env.step(action)
-            
-            done = dones[0]
-            info = infos[0]
-            
-            if done:
-                all_rewards.append(info["episode"]["r"])
-                efforts.append(info.get('effort', 0.0))
-                if info["is_success"]:
-                    success_count += 1
-                    
-                break
-        
-    mean_reward = np.mean(all_rewards) if all_rewards else 0.0
-    success_rate = (success_count / trials) * 100
-    efforts_mean = np.mean(efforts) if efforts else 0.0
-    return mean_reward, success_rate, efforts_mean
 
-def evaluate(folders, trials=1000):
-    
-    # 1. Setup the Standardized Environment
+            done = bool(dones[0])
+            info = infos[0]
+
+            if done:
+                all_rewards.append(float(info["episode"]["r"]))
+                efforts.append(float(info.get("effort", 0.0)))
+                if bool(info.get("is_success", False)):
+                    success_count += 1
+                break
+
+    mean_reward = float(np.mean(all_rewards)) if all_rewards else 0.0
+    success_rate = 100.0 * float(success_count) / float(trials)
+    mean_effort = float(np.mean(efforts)) if efforts else 0.0
+    return mean_reward, success_rate, mean_effort
+
+
+def evaluate(folders: List[str], trials: int = 1000):
     cfg = Config()
-    results = []
+    results: List[EvalResult] = []
 
     print(f"Found {len(folders)} experiment folders. Beginning evaluation...\n")
     print("-" * 60)
 
     for folder_path in folders:
-
         seed_name = os.path.basename(os.path.normpath(folder_path))
-        
-        # Construct Path
-        model_path = os.path.join(folder_path, "best_model", "best_model.zip")
-        
-        if not os.path.exists(model_path):
-            print(f"Skipping {seed_name}: {model_path} not found.")
+
+        model_path = resolve_model_path(folder_path)
+        if model_path is None:
+            print(f"Skipping {seed_name}: best_model/best_model.zip not found.")
             continue
 
-        # Run Evaluation
+        env = None
         try:
             env = create_default_env(cfg, num_envs=1)
-            
-            if isinstance(env, VecNormalize):
-                env.training = False
-                env.norm_reward = False
-                
-            mean_r, success_r, efforts_mean = evaluate_single_model(model_path, env, trials=trials)
-            
-            results.append({
-                "Seed": seed_name,
-                "Mean Reward": mean_r,
-                "Success Rate": success_r,
-                "Mean Effort": efforts_mean
-            })
-            
-            print(f"Finished {seed_name}: R={mean_r:.2f}, S={success_r:.1f}%, E={efforts_mean:.4f}")
-            
-            env.close()
-            
-        except Exception as e:
-            # Better error printing so we see WHICH seed failed
-            print(f"Error evaluating {seed_name}: {e}")
-            raise e
+            freeze_vecnormalize(env)
 
-    # 3. Report Results
+            mean_r, success_r, mean_e = evaluate_single_model(model_path, env, trials=trials)
+
+            results.append(EvalResult(seed=seed_name, mean_reward=mean_r, success_rate=success_r, mean_effort=mean_e))
+            print(f"Finished {seed_name}: R={mean_r:.2f}, S={success_r:.1f}%, E={mean_e:.4f}")
+
+        except Exception as e:
+            # Keep your “fail fast” behavior but ensure env closes first
+            print(f"Error evaluating {seed_name}: {e}")
+            raise
+        finally:
+            if env is not None:
+                env.close()
+
     if not results:
         print("No models evaluated.")
         return
 
-    df = pd.DataFrame(results)
-    
-    # Calculate stats
+    # Report Results (same format)
+    df = pd.DataFrame([{
+        "Seed": r.seed,
+        "Mean Reward": r.mean_reward,
+        "Success Rate": r.success_rate,
+        "Mean Effort": r.mean_effort,
+    } for r in results])
+
     avg_reward = df["Mean Reward"].mean()
     std_reward = df["Mean Reward"].std()
     avg_success = df["Success Rate"].mean()
@@ -111,24 +130,24 @@ def evaluate(folders, trials=1000):
     avg_effort = df["Mean Effort"].mean()
     std_effort = df["Mean Effort"].std()
 
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("FINAL AGGREGATED REPORT")
-    print("="*80)
-    # Ensure pandas prints all columns and doesn't truncate
-    pd.set_option('display.max_rows', None)
-    pd.set_option('display.max_columns', None)
-    pd.set_option('display.width', 1000)
-    
+    print("=" * 80)
+
+    pd.set_option("display.max_rows", None)
+    pd.set_option("display.max_columns", None)
+    pd.set_option("display.width", 1000)
+
     print(df.to_string(index=False))
     print("-" * 80)
     print(f"Average Reward:       {avg_reward:.2f} ± {std_reward:.2f}")
     print(f"Average Success Rate: {avg_success:.2f}% ± {std_success:.2f}")
     print(f"Average Effort:       {avg_effort:.4f} ± {std_effort:.4f}")
-    print("="*80)
+    print("=" * 80)
+
 
 if __name__ == "__main__":
-    
     evaluate(
         folders=sorted(glob.glob("./logs/ppo_seed*/")),
-        trials=1000 # Change back to 10000 when ready
+        trials=1000,
     )

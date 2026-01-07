@@ -3,6 +3,7 @@ import sys
 import glob
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
+import argparse
 
 import numpy as np
 import pandas as pd
@@ -11,12 +12,10 @@ from tqdm import tqdm
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import VecNormalize, DummyVecEnv
 
-# ---- path (keep like yours) ----
 current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(current_dir)
 sys.path.append(root_dir)
 
-# ---- your modules ----
 from config import Config
 from env_factory import build_manager_vec, build_worker_vec
 from hrl.worker_env import TableTennisWorker
@@ -224,11 +223,11 @@ def evaluate_one_hrl_experiment(
 
     row: Dict[str, Any] = {
         "Experiment": os.path.basename(os.path.normpath(exp_dir)),
-        "Manager Mean Reward": mgr["mean_reward"],
-        "Manager Std Reward": mgr["std_reward"],
-        "Manager Success Rate (%)": mgr["success_rate"],
-        "Manager Mean Effort": mgr["mean_effort"],
-        "Manager Std Effort": mgr["std_effort"],
+        "High Level Policy Mean Reward": mgr["mean_reward"],
+        "High Level Policy Std Reward": mgr["std_reward"],
+        "High Level Policy Success Rate (%)": mgr["success_rate"],
+        "High Level Policy Mean Effort": mgr["mean_effort"],
+        "High Level Policy Std Effort": mgr["std_effort"],
     }
 
     # ---- optional worker-only eval ----
@@ -244,11 +243,11 @@ def evaluate_one_hrl_experiment(
         worker_env.close()
 
         row.update({
-            "Worker Mean Reward": w["mean_reward"],
-            "Worker Std Reward": w["std_reward"],
-            "Worker Success Rate (%)": w["success_rate"],
-            "Worker Mean Effort": w["mean_effort"],
-            "Worker Std Effort": w["std_effort"],
+            "Low Level Policy Mean Reward": w["mean_reward"],
+            "Low Level Policy Std Reward": w["std_reward"],
+            "Low Level Policy Success Rate (%)": w["success_rate"],
+            "Low Level Policy Mean Effort": w["mean_effort"],
+            "Low Level Policy Std Effort": w["std_effort"],
         })
 
     return row
@@ -287,8 +286,8 @@ def evaluate_hrl_folders(
             rows.append(row)
             print(
                 f"Finished {name}: "
-                f"MgrR={row['Manager Mean Reward']:.2f}, "
-                f"MgrS={row['Manager Success Rate (%)']:.1f}%"
+                f"HighLevelR={row['High Level Policy Mean Reward']:.2f}, "
+                f"HighLevelS={row['High Level Policy Success Rate (%)']:.1f}%"
             )
         except Exception as e:
             print(f"Error evaluating {name}: {e}")
@@ -296,50 +295,57 @@ def evaluate_hrl_folders(
 
     df = pd.DataFrame(rows)
 
-    # ---- aggregated summary (manager) ----
-    mgr_r_mean = df["Manager Mean Reward"].mean()
-    mgr_r_std = df["Manager Mean Reward"].std()
-    mgr_s_mean = df["Manager Success Rate (%)"].mean()
-    mgr_s_std = df["Manager Success Rate (%)"].std()
+    # ---- aggregated summary ----
+    mgr_r_mean = df["High Level Policy Mean Reward"].mean()
+    mgr_r_std = df["High Level Policy Mean Reward"].std()
+    mgr_s_mean = df["High Level Policy Success Rate (%)"].mean()
+    mgr_s_std = df["High Level Policy Success Rate (%)"].std()
 
     print("\n" + "=" * 90)
-    print("FINAL AGGREGATED REPORT (Manager)")
+    print("FINAL AGGREGATED REPORT (High Level Policy)")
     print("=" * 90)
     pd.set_option("display.max_columns", None)
     pd.set_option("display.width", 1200)
     print(df.to_string(index=False))
     print("-" * 90)
-    print(f"Manager Reward:       {mgr_r_mean:.2f} ± {mgr_r_std:.2f}")
-    print(f"Manager Success Rate: {mgr_s_mean:.2f}% ± {mgr_s_std:.2f}")
+    print(f"High Level Policy Reward:       {mgr_r_mean:.2f} ± {mgr_r_std:.2f}")
+    print(f"High Level Policy Success Rate: {mgr_s_mean:.2f}% ± {mgr_s_std:.2f}")
     print("=" * 90)
 
     # ---- if worker columns exist, print worker summary too ----
-    if eval_worker_too and "Worker Mean Reward" in df.columns:
-        w_r_mean = df["Worker Mean Reward"].mean()
-        w_r_std = df["Worker Mean Reward"].std()
-        w_s_mean = df["Worker Success Rate (%)"].mean()
-        w_s_std = df["Worker Success Rate (%)"].std()
+    if eval_worker_too and "Low Level Policy Mean Reward" in df.columns:
+        w_r_mean = df["Low Level Policy Mean Reward"].mean()
+        w_r_std = df["Low Level Policy Mean Reward"].std()
+        w_s_mean = df["Low Level Policy Success Rate (%)"].mean()
+        w_s_std = df["Low Level Policy Success Rate (%)"].std()
         print("\n" + "=" * 90)
-        print("FINAL AGGREGATED REPORT (Worker)")
+        print("FINAL AGGREGATED REPORT (Low Level Policy)")
         print("=" * 90)
-        print(f"Worker Reward:        {w_r_mean:.2f} ± {w_r_std:.2f}")
-        print(f"Worker Success Rate:  {w_s_mean:.2f}% ± {w_s_std:.2f}")
+        print(f"Low Level Policy Reward:        {w_r_mean:.2f} ± {w_r_std:.2f}")
+        print(f"Low Level Policy Success Rate:  {w_s_mean:.2f}% ± {w_s_std:.2f}")
         print("=" * 90)
 
     return df
 
+def _parse_args():
+    p = argparse.ArgumentParser()
+    p.add_argument("--logs", type=str, default="./logs", help="Root folder containing experiment subfolders")
+    p.add_argument("--glob", type=str, default="*/", help="Glob under logs root to select experiments")
+    p.add_argument("--trials", type=int, default=1000)
+    p.add_argument("--use-best", action="store_true", help="Use best/best_model.zip instead of *_model.pkl")
+    p.add_argument("--eval-worker", action="store_true", help="Also evaluate worker policy alone")
+    return p.parse_args()
 
 # =============================================================================
 # Main
 # =============================================================================
 
 if __name__ == "__main__":
-    # HRL experiments like: ./logs/exp_*/  (adjust glob to your structure)
-    folders = sorted(glob.glob("./logs/*/"))
-
+    args = _parse_args()
+    folders = sorted(glob.glob(os.path.join(args.logs, args.glob)))
     evaluate_hrl_folders(
         folders=folders,
-        trials=200,
-        use_best=False,        # True => worker/best/best_model.zip and manager/best/best_model.zip
-        eval_worker_too=True,  # also evaluate worker alone
+        trials=args.trials,
+        use_best=args.use_best,
+        eval_worker_too=args.eval_worker,
     )
