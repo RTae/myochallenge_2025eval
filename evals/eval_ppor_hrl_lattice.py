@@ -1,24 +1,3 @@
-"""
-HRL EVAL script that matches your training code:
-- Worker: RecurrentPPO + LatticeRecurrentActorCriticPolicy (device=cuda)
-- Manager: PPO "MlpPolicy" (device=cpu)
-- Worker VecNormalize: worker/vecnormalize.pkl
-
-It evaluates:
-- Manager policy on Manager env (which internally runs frozen worker)
-- Optionally evaluates Worker alone on Worker env
-- Supports evaluating either "latest" (worker_model.pkl / manager_model.pkl)
-  or "best" (best/best_model.zip)
-
-Metrics collected per episode (same style as your example):
-- mean/std episode reward from info["episode"]["r"] if present
-- success_rate from info.get("is_success", False)
-- mean/std effort from info.get("effort", 0.0)
-
-Usage:
-  python eval_hrl.py --logs ./logs --trials 200 --use-best --eval-worker
-"""
-
 import os
 import sys
 import glob
@@ -34,12 +13,10 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import VecNormalize, DummyVecEnv
 from sb3_contrib import RecurrentPPO
 
-# ---- path (keep like yours) ----
 current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(current_dir)
 sys.path.append(root_dir)
 
-# ---- your modules ----
 from config import Config
 from env_factory import build_manager_vec, build_worker_vec
 from hrl.worker_env import TableTennisWorker
