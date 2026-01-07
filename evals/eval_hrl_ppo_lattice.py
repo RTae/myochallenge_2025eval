@@ -3,7 +3,7 @@ import glob
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-from typing import Optional, Dict, Any, Tuple, List
+from typing import Optional, Dict, Any, List
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import VecNormalize, DummyVecEnv
@@ -11,7 +11,6 @@ from stable_baselines3.common.vec_env import VecNormalize, DummyVecEnv
 from config import Config
 from env_factory import build_manager_vec, build_worker_vec
 from hrl.worker_env import TableTennisWorker
-from hrl.manager_env import TableTennisManager
 from lattice.ppo.policies import LatticeActorCriticPolicy
 
 # Your helpers
