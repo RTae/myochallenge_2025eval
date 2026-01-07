@@ -177,124 +177,124 @@ def main():
     worker_env.close()
     eval_worker_env.close()
 
-    # # ==================================================
-    # # MANAGER
-    # # ==================================================
-    # cfg.logdir = MANAGER_DIR
+    # ==================================================
+    # MANAGER
+    # ==================================================
+    cfg.logdir = MANAGER_DIR
     
-    # if LOAD_MANAGER_MODEL_PATH:
-    #     assert os.path.exists(SAVE_WORKER_MODEL_PATH)
-    #     assert os.path.exists(SAVE_WORKER_ENV_PATH)
+    if LOAD_MANAGER_MODEL_PATH:
+        assert os.path.exists(SAVE_WORKER_MODEL_PATH)
+        assert os.path.exists(SAVE_WORKER_ENV_PATH)
 
-    # def worker_env_loader(path: str):
-    #     # Manager loads a frozen worker env via VecNormalize + fresh env_fn
-    #     return load_worker_vecnormalize(path, lambda: TableTennisWorker(cfg))
+    def worker_env_loader(path: str):
+        # Manager loads a frozen worker env via VecNormalize + fresh env_fn
+        return load_worker_vecnormalize(path, lambda: TableTennisWorker(cfg))
 
-    # # Manager should use the worker produced by this run
-    # manager_env = build_manager_vec(
-    #     cfg=cfg,
-    #     num_envs=cfg.num_envs,
-    #     worker_model_loader=load_worker_model,
-    #     worker_env_loader=worker_env_loader,
-    #     worker_model_path=SAVE_WORKER_MODEL_PATH,
-    #     worker_env_path=SAVE_WORKER_ENV_PATH,
-    #     decision_interval=5,
-    #     max_episode_steps=cfg.episode_len,
-    # )
+    # Manager should use the worker produced by this run
+    manager_env = build_manager_vec(
+        cfg=cfg,
+        num_envs=cfg.num_envs,
+        worker_model_loader=load_worker_model,
+        worker_env_loader=worker_env_loader,
+        worker_model_path=SAVE_WORKER_MODEL_PATH,
+        worker_env_path=SAVE_WORKER_ENV_PATH,
+        decision_interval=5,
+        max_episode_steps=cfg.episode_len,
+    )
 
-    # manager_resumed = bool(LOAD_MANAGER_MODEL_PATH and os.path.exists(LOAD_MANAGER_MODEL_PATH))
+    manager_resumed = bool(LOAD_MANAGER_MODEL_PATH and os.path.exists(LOAD_MANAGER_MODEL_PATH))
 
-    # if manager_resumed:
-    #     logger.info(f"[Manager] Loading pretrained model from: {LOAD_MANAGER_MODEL_PATH}")
-    #     manager_model = SAC.load(
-    #         LOAD_MANAGER_MODEL_PATH,
-    #         env=manager_env,
-    #         verbose=0,
-    #         device="cpu",
-    #         tensorboard_log=cfg.logdir,
-    #         n_steps=1,
-    #         batch_size=cfg.sac_batch_size,
-    #         train_freq=16,
-    #         gradient_steps=16,
-    #         tau=0.005,
-    #         gamma=cfg.sac_gamma,
-    #         learning_rate=cfg.sac_lr,
-    #         seed=cfg.seed+1,
-    #     )
-    # else:
-    #     logger.info("[Manager] No pretrained manager model given/found. Training from scratch.")
-    #     manager_model = SAC(
-    #         "MlpPolicy",
-    #         env=manager_env,
-    #         verbose=0,
-    #         device="cpu",
-    #         tensorboard_log=cfg.logdir,
-    #         n_steps=1,
-    #         batch_size=cfg.sac_batch_size,
-    #         train_freq=16,
-    #         gradient_steps=16,
-    #         tau=0.005,
-    #         gamma=cfg.sac_gamma,
-    #         learning_rate=cfg.sac_lr,
-    #         seed=cfg.seed+1,
-    #     )
+    if manager_resumed:
+        logger.info(f"[Manager] Loading pretrained model from: {LOAD_MANAGER_MODEL_PATH}")
+        manager_model = SAC.load(
+            LOAD_MANAGER_MODEL_PATH,
+            env=manager_env,
+            verbose=0,
+            device="cpu",
+            tensorboard_log=cfg.logdir,
+            n_steps=1,
+            batch_size=cfg.sac_batch_size,
+            train_freq=16,
+            gradient_steps=16,
+            tau=0.005,
+            gamma=cfg.sac_gamma,
+            learning_rate=cfg.sac_lr,
+            seed=cfg.seed+1,
+        )
+    else:
+        logger.info("[Manager] No pretrained manager model given/found. Training from scratch.")
+        manager_model = SAC(
+            "MlpPolicy",
+            env=manager_env,
+            verbose=0,
+            device="cpu",
+            tensorboard_log=cfg.logdir,
+            n_steps=1,
+            batch_size=cfg.sac_batch_size,
+            train_freq=16,
+            gradient_steps=16,
+            tau=0.005,
+            gamma=cfg.sac_gamma,
+            learning_rate=cfg.sac_lr,
+            seed=cfg.seed+1,
+        )
 
-    # # ---- Manager evaluation ----
-    # eval_manager_env = build_manager_vec(
-    #     cfg=cfg,
-    #     num_envs=1,
-    #     worker_model_loader=load_worker_model,
-    #     worker_env_loader=worker_env_loader,
-    #     worker_model_path=SAVE_WORKER_MODEL_PATH,
-    #     worker_env_path=SAVE_WORKER_ENV_PATH,
-    #     decision_interval=5,
-    #     max_episode_steps=cfg.episode_len,
-    # )
+    # ---- Manager evaluation ----
+    eval_manager_env = build_manager_vec(
+        cfg=cfg,
+        num_envs=1,
+        worker_model_loader=load_worker_model,
+        worker_env_loader=worker_env_loader,
+        worker_model_path=SAVE_WORKER_MODEL_PATH,
+        worker_env_path=SAVE_WORKER_ENV_PATH,
+        decision_interval=5,
+        max_episode_steps=cfg.episode_len,
+    )
 
-    # eval_manager_cb = EvalCallback(
-    #     eval_manager_env,
-    #     best_model_save_path=os.path.join(cfg.logdir, "best"),
-    #     log_path=os.path.join(cfg.logdir, "eval"),
-    #     eval_freq=int(cfg.eval_freq // cfg.num_envs),
-    #     n_eval_episodes=cfg.eval_episodes,
-    #     deterministic=True,
-    #     render=False,
-    # )
+    eval_manager_cb = EvalCallback(
+        eval_manager_env,
+        best_model_save_path=os.path.join(cfg.logdir, "best"),
+        log_path=os.path.join(cfg.logdir, "eval"),
+        eval_freq=int(cfg.eval_freq // cfg.num_envs),
+        n_eval_episodes=cfg.eval_episodes,
+        deterministic=True,
+        render=False,
+    )
 
-    # # ---- Manager video (unchanged pattern) ----
-    # video_worker_env = worker_env_loader(SAVE_WORKER_ENV_PATH)
-    # frozen_worker_model = load_worker_model(SAVE_WORKER_MODEL_PATH)
+    # ---- Manager video (unchanged pattern) ----
+    video_worker_env = worker_env_loader(SAVE_WORKER_ENV_PATH)
+    frozen_worker_model = load_worker_model(SAVE_WORKER_MODEL_PATH)
 
-    # video_manager_cb = VideoCallback(
-    #     env_func=TableTennisManager,
-    #     env_args={
-    #         "worker_env": video_worker_env,
-    #         "worker_model": frozen_worker_model,
-    #         "config": cfg,
-    #         "decision_interval": 1,
-    #         "max_episode_steps": cfg.episode_len,
-    #     },
-    #     cfg=cfg,
-    #     predict_fn=make_predict_fn(manager_model),
-    # )
+    video_manager_cb = VideoCallback(
+        env_func=TableTennisManager,
+        env_args={
+            "worker_env": video_worker_env,
+            "worker_model": frozen_worker_model,
+            "config": cfg,
+            "decision_interval": 1,
+            "max_episode_steps": cfg.episode_len,
+        },
+        cfg=cfg,
+        predict_fn=make_predict_fn(manager_model),
+    )
 
-    # logger.info("Starting MANAGER training...")
-    # logger.info(f"Manager total timesteps: {manager_total_timesteps}")
+    logger.info("Starting MANAGER training...")
+    logger.info(f"Manager total timesteps: {manager_total_timesteps}")
 
-    # manager_model.learn(
-    #     total_timesteps=manager_total_timesteps,
-    #     reset_num_timesteps=not manager_resumed,
-    #     callback=CallbackList([eval_manager_cb, info_cb, video_manager_cb]),
-    # )
+    manager_model.learn(
+        total_timesteps=manager_total_timesteps,
+        reset_num_timesteps=not manager_resumed,
+        callback=CallbackList([eval_manager_cb, info_cb, video_manager_cb]),
+    )
 
-    # # ---- Save manager to SAVE paths ----
-    # manager_model.save(SAVE_MANAGER_MODEL_PATH)
-    # logger.info(f"Saved MANAGER model to: {SAVE_MANAGER_MODEL_PATH}")
+    # ---- Save manager to SAVE paths ----
+    manager_model.save(SAVE_MANAGER_MODEL_PATH)
+    logger.info(f"Saved MANAGER model to: {SAVE_MANAGER_MODEL_PATH}")
 
-    # # ---- Close ----
-    # manager_env.close()
-    # eval_manager_env.close()
-    # video_worker_env.close()
+    # ---- Close ----
+    manager_env.close()
+    eval_manager_env.close()
+    video_worker_env.close()
 
 
 if __name__ == "__main__":
