@@ -90,41 +90,43 @@ def main():
 
     worker_args = {
         # ---------------------------
-        # Env + VecNormalize
+        # Env + Logging
         # ---------------------------
-        "env": worker_env,
+        "env": worker_env,  # should be VecNormalize-wrapped, num_envs=4
         "verbose": 1,
         "tensorboard_log": os.path.join(cfg.logdir),
         "device": "cuda",
 
         # ---------------------------
-        # PPO Batch & Rollout Settings
+        # PPO Rollout / Batch (match their stable ratios)
         # ---------------------------
-        "batch_size": 1024,
-        "n_steps": 512,
+        # rollout = n_steps * n_envs = 4096 * 4 = 16384
+        "n_steps": 4096,
+        "batch_size": 2048,     # 16384 / 2048 = 8 minibatches (nice)
         "n_epochs": 10,
 
         # ---------------------------
-        # Scheduler
+        # LR schedule (simple + stable)
         # ---------------------------
-        "learning_rate": lambda p: 2e-4 * 0.5 * (1 + math.cos(math.pi * (1 - p))),
+        # Their style: linear schedule (SB3 uses progress_remaining in [1..0])
+        "learning_rate": (lambda p: 1e-4 * p),
 
         # ---------------------------
         # PPO Hyperparameters
         # ---------------------------
-        "ent_coef": 0.01,
+        "ent_coef": 1e-4,       # much lower than 0.01
         "clip_range": 0.2,
         "gamma": cfg.ppo_gamma,
         "gae_lambda": cfg.ppo_lambda,
-        "max_grad_norm": 0.3,
+        "max_grad_norm": 0.5,   # slightly looser than 0.3 (more standard)
         "vf_coef": 0.5,
         "clip_range_vf": cfg.ppo_clip_range,
 
         # ---------------------------
-        # SDE Exploration
+        # Exploration (match them)
         # ---------------------------
         "use_sde": True,
-        "sde_sample_freq": 16,
+        "sde_sample_freq": 4,
 
         # ---------------------------
         # Reproducibility
@@ -132,27 +134,26 @@ def main():
         "seed": cfg.seed,
 
         # ---------------------------
-        # Policy Network Architecture
+        # Policy Network + Std (match them closer)
         # ---------------------------
         "policy_kwargs": dict(
-            # ===== Lattice Noise Settings =====
             use_lattice=True,
             use_expln=True,
             full_std=False,
-            ortho_init=False,
-            
-            log_std_init=-2,
-            std_clip=(0.03, 0.5),
-            expln_eps=1e-6,
-            std_reg=1e-3,
+            ortho_init=True,
 
-            # ===== Pi & V Network Sizes =====
-            net_arch=
-                dict(
-                    pi=[256, 256],
-                    vf=[256, 256],
-                ),
-            activation_fn=nn.Tanh,  # smooth control
+            # Wider/healthier exploration early
+            log_std_init=-0.5,
+            std_clip=(1e-3, 10.0),
+            expln_eps=1e-6,
+            std_reg=0.0,
+
+            # Net arch (their defaults)
+            net_arch=dict(
+                pi=[512, 512],
+                vf=[256, 256],
+            ),
+            activation_fn=nn.SiLU,
         ),
     }
     
