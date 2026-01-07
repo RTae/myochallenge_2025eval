@@ -274,113 +274,138 @@ class TableTennisWorker(CustomEnv):
             "paddle_ori_threshold": self.paddle_ori_thr,
         })
         return self._build_obs(obs_dict), float(reward), terminated, truncated, info
-    
+
     def _compute_reward(self, obs_dict, rwd_dict):
         goal_pos = self.current_goal[0:3]
         goal_quat = self.current_goal[3:7]
-        
+
         paddle_pos = obs_dict["paddle_pos"]
         pelvis_pos = obs_dict["pelvis_pos"]
         ball_x = obs_dict["ball_pos"][0]
         touch_vec = obs_dict["touching_info"]
-        
+
         is_env_success = bool(rwd_dict.get("solved", False))
         is_ball_towards_paddle = (obs_dict["ball_vel"][0] > 0)
         is_ball_passed = (self.init_paddle_x - ball_x) < -0.05
         active_mask = float(is_ball_towards_paddle and not is_ball_passed)
+
         has_hit = float(touch_vec[0]) > 0.1
-        raw_palm_dist = np.linalg.norm(obs_dict["palm_err"])
+        pre_contact_mask = (1.0 - float(self._prev_paddle_contact or has_hit))
+
+        # --------------------------
+        # HOLDING (smooth, always on)
+        # --------------------------
+        raw_palm_dist = float(np.linalg.norm(obs_dict["palm_err"]))
         d0 = 0.15
+
+        # smooth closeness in (0,1], close->1
+        hold = float(np.exp(-raw_palm_dist / d0))
+
+        # If you still want a "boolean", keep for logs only
         is_holding = float(raw_palm_dist < d0)
 
-        active_alignment_mask = active_mask * (1.0 - float(self._prev_paddle_contact or has_hit)) * is_holding
+        # ✅ IMPORTANT: do NOT gate all shaping by is_holding
+        active_alignment_mask = active_mask * pre_contact_mask
 
-        # Position
-        pred_err_y = np.abs(paddle_pos[1] - goal_pos[1])
-        pred_err_z = np.abs(paddle_pos[2] - goal_pos[2])
-        alignment_y = active_alignment_mask * np.exp(-1.0 * pred_err_y)
-        alignment_z = active_alignment_mask * np.exp(-1.0 * pred_err_z)
+        # --------------------------
+        # Position alignment
+        # --------------------------
+        pred_err_y = float(np.abs(paddle_pos[1] - goal_pos[1]))
+        pred_err_z = float(np.abs(paddle_pos[2] - goal_pos[2]))
 
-        # Orientation
+        # make these slightly sharper if needed: exp(-5*err)
+        alignment_y = active_alignment_mask * np.exp(-2.0 * pred_err_y)
+        alignment_z = active_alignment_mask * np.exp(-2.0 * pred_err_z)
+
+        # --------------------------
+        # Orientation alignment
+        # --------------------------
         paddle_quat = obs_dict["paddle_ori"]
         curr_n = get_face_normal(paddle_quat)
         goal_n = get_face_normal(goal_quat)
 
-        dot = np.dot(curr_n, goal_n)
-        paddle_face_err = np.arccos(np.clip(dot, -1.0, 1.0))
-        
-        handle_world = quat_rotate(paddle_quat, np.array([1.0, 0.0, 0.0]))
-        # penalize if handle points upward in world z
-        handle_up_pen = max(0.0, handle_world[2])   # >0 means pointing up
+        dot = float(np.dot(curr_n, goal_n))
+        paddle_face_err = float(np.arccos(np.clip(dot, -1.0, 1.0)))
 
-        # only reward if it's the correct face (not backside)
-        paddle_quat_reward = active_alignment_mask * np.exp(-2.0 * paddle_face_err)
-        
-        # Pelvis
-        paddle_to_pelvis_offset = np.array([-0.2, 0.4])
+        handle_world = quat_rotate(paddle_quat, np.array([1.0, 0.0, 0.0], dtype=np.float32))
+        handle_up_pen = float(max(0.0, handle_world[2]))
+
+        paddle_quat_reward = active_alignment_mask * np.exp(-2.5 * paddle_face_err)
+
+        # --------------------------
+        # Pelvis alignment
+        # --------------------------
+        paddle_to_pelvis_offset = np.array([-0.2, 0.4], dtype=np.float32)
         pelvis_target_xy = goal_pos[:2] + paddle_to_pelvis_offset
-        pelvis_err = np.linalg.norm(pelvis_pos[:2] - pelvis_target_xy)
-        pelvis_alignment = active_alignment_mask * np.exp(-5.0 * pelvis_err)
+        pelvis_err = float(np.linalg.norm(pelvis_pos[:2] - pelvis_target_xy))
+        pelvis_alignment = active_alignment_mask * np.exp(-4.0 * pelvis_err)
 
-        reach_dist = float(np.linalg.norm(paddle_pos - goal_pos, axis=-1))
-        is_reach_good = reach_dist < self.reach_thr
+        # --------------------------
+        # Reach / timing / success proxy
+        # --------------------------
+        reach_dist = float(np.linalg.norm(paddle_pos - goal_pos))
         dt = float(self.goal_start_time + self.current_goal[7] - obs_dict["time"])
-        is_time_good = dt > -self.time_thr
-        is_ori_good = paddle_face_err < self.paddle_ori_thr
-        is_goal_success = float(is_reach_good and is_ori_good and is_time_good)
 
+        # --------------------------
+        # Build reward (bounded, smooth)
+        # --------------------------
         reward = 0.0
+
+        # Core shaping (pre-contact only)
         reward += 2.0 * alignment_y
         reward += 2.0 * alignment_z
-        reward += active_mask * 2.0 * (1.0 - np.tanh(reach_dist))
         reward += 2.0 * paddle_quat_reward
         reward += 0.5 * pelvis_alignment
+
+        # Reach shaping (don’t gate by pre_contact; but keep by active_mask)
+        reward += active_mask * 1.5 * (1.0 - np.tanh(reach_dist))
+
+        # Holding shaping (always gives signal)
+        # encourages closeness without cliffs
+        reward += active_mask * 1.0 * hold
+        reward -= active_mask * 0.3 * (1.0 - hold)
+
+        # Keep your handle penalty (small)
         reward -= 0.2 * handle_up_pen
-        
-        # Penalize Excessive Palm Distance
-        excess = max(0.0, raw_palm_dist - d0)
-        reward -= 1.0 * (excess / d0)
-                
-        reward += 0.2 * float(rwd_dict.get("torso_up", 0.0))
-        
+
+        # Time penalty (only if late)
         if dt < -self.time_thr:
             reward -= 0.5 * np.tanh(max(0.0, -dt))
 
+        reward += 0.2 * float(rwd_dict.get("torso_up", 0.0))
+
+        # Env success bonus
         if is_env_success:
             reward += 25.0
-        
+
+        # Contact bonus (use pre-contact computed values, not masked by holding)
         is_contact_fresh = False
         if has_hit and not self._prev_paddle_contact:
             if alignment_y > 0.3 and alignment_z > 0.3 and dot > 0.3:
-                reward += 10.0 
+                reward += 10.0
                 is_contact_fresh = True
             else:
-                reward += 1.0 
-        
+                reward += 1.0
+
         self._prev_paddle_contact = has_hit
-        
-        # elbow_flexion = obs_dict["body_qpos"][18] 
-        # if elbow_flexion > 2.0:
-        #     reward -= 2.0 * (elbow_flexion - 2.0)
-        
 
         logs = {
-            "is_goal_success": is_goal_success,            
             "reach_error": reach_dist,
             "reach_y_err": pred_err_y,
             "reach_z_err": pred_err_z,
             "paddle_degree_err": np.degrees(paddle_face_err),
             "handle_up_pen": handle_up_pen,
             "time_err": dt,
-            "abs_time_err": abs(dt),
             "is_ball_passed": float(is_ball_passed),
             "is_contact": float(is_contact_fresh),
             "pelvis_err": pelvis_err,
-            "alignment_y": alignment_y,
-            "alignment_z": alignment_z,
-            "quat_reward": paddle_quat_reward,
-            "pelvis_reward": pelvis_alignment,
+            "alignment_y": float(alignment_y),
+            "alignment_z": float(alignment_z),
+            "quat_reward": float(paddle_quat_reward),
+            "pelvis_reward": float(pelvis_alignment),
             "palm_dist": raw_palm_dist,
+            "hold": hold,
+            "is_holding": is_holding,
         }
 
         return float(reward), False, logs
