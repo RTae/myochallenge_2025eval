@@ -35,7 +35,6 @@ def freeze_vecnormalize(env) -> None:
 
 
 def load_worker_model(model_path: str, device: str = "cuda") -> PPO:
-    # You were passing policy=... into PPO.load; keep it explicitly here
     return PPO.load(model_path, device=device, policy=LatticeActorCriticPolicy)
 
 
@@ -257,7 +256,7 @@ def evaluate_one_hrl_experiment(
 # Evaluate many folders (HRL) - styled like your single-model script
 # =============================================================================
 
-def evaluate_hrl_folders(
+def evaluate(
     folders: List[str],
     trials: int = 200,
     use_best: bool = False,
@@ -343,7 +342,7 @@ def _parse_args():
 if __name__ == "__main__":
     args = _parse_args()
     folders = sorted(glob.glob(os.path.join(args.logs, args.glob)))
-    evaluate_hrl_folders(
+    evaluate(
         folders=folders,
         trials=args.trials,
         use_best=args.use_best,

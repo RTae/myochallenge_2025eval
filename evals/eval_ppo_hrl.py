@@ -230,7 +230,7 @@ def evaluate_one_hrl_experiment(
 # Evaluate many folders
 # =============================================================================
 
-def evaluate_hrl_folders(
+def evaluate(
     folders: List[str],
     trials: int = 200,
     use_best: bool = False,
@@ -311,7 +311,7 @@ def _parse_args():
 if __name__ == "__main__":
     args = _parse_args()
     folders = sorted(glob.glob(os.path.join(args.logs, args.glob)))
-    evaluate_hrl_folders(
+    evaluate(
         folders=folders,
         trials=args.trials,
         use_best=args.use_best,
