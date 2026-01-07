@@ -2,9 +2,10 @@ import os
 from typing import Optional
 
 from stable_baselines3 import PPO
+from sb3_contrib import RecurrentPPO
 from stable_baselines3.common.callbacks import EvalCallback, CallbackList
 from stable_baselines3.common.vec_env import VecNormalize, DummyVecEnv
-from lattice.ppo.policies import LatticeActorCriticPolicy
+from lattice.ppo.policies import LatticeRecurrentActorCriticPolicy
 
 from config import Config
 from env_factory import build_manager_vec, build_worker_vec
@@ -23,10 +24,10 @@ import math
 # Worker loaders
 # ==================================================
 def load_worker_model(path: str):
-    return PPO.load(
+    return RecurrentPPO.load(
             path,
             device="cuda",
-            policy=LatticeActorCriticPolicy, 
+            policy=LatticeRecurrentActorCriticPolicy, 
     )
 
 
@@ -45,7 +46,7 @@ def main():
     cfg = Config()
     prepare_experiment_directory(cfg)
 
-    worker_total_timesteps = 30_000_000
+    worker_total_timesteps = 50_000_000
     manager_total_timesteps = 4_000_000
 
     # ==================================================
@@ -90,43 +91,41 @@ def main():
 
     worker_args = {
         # ---------------------------
-        # Env + Logging
+        # Env + VecNormalize
         # ---------------------------
-        "env": worker_env,  # should be VecNormalize-wrapped, num_envs=4
+        "env": worker_env,
         "verbose": 1,
         "tensorboard_log": os.path.join(cfg.logdir),
         "device": "cuda",
 
         # ---------------------------
-        # PPO Rollout / Batch (match their stable ratios)
+        # PPO Batch & Rollout Settings
         # ---------------------------
-        # rollout = n_steps * n_envs = 4096 * 4 = 16384
-        "n_steps": 4096,
-        "batch_size": 2048,     # 16384 / 2048 = 8 minibatches (nice)
+        "batch_size": 2048,
+        "n_steps": 1024,
         "n_epochs": 10,
 
         # ---------------------------
-        # LR schedule (simple + stable)
+        # Scheduler
         # ---------------------------
-        # Their style: linear schedule (SB3 uses progress_remaining in [1..0])
-        "learning_rate": (lambda p: 1e-4 * p),
+        "learning_rate": lambda p: 3e-4 * 0.5 * (1 + math.cos(math.pi * (1 - p))),
 
         # ---------------------------
         # PPO Hyperparameters
         # ---------------------------
-        "ent_coef": 1e-4,       # much lower than 0.01
+        "ent_coef": 0.001,
         "clip_range": 0.2,
         "gamma": cfg.ppo_gamma,
         "gae_lambda": cfg.ppo_lambda,
-        "max_grad_norm": 0.5,   # slightly looser than 0.3 (more standard)
-        "vf_coef": 0.5,
+        "max_grad_norm": 0.3,
+        "vf_coef": 0.835671,
         "clip_range_vf": cfg.ppo_clip_range,
 
         # ---------------------------
-        # Exploration (match them)
+        # SDE Exploration
         # ---------------------------
         "use_sde": True,
-        "sde_sample_freq": 4,
+        "sde_sample_freq": 8,
 
         # ---------------------------
         # Reproducibility
@@ -134,26 +133,28 @@ def main():
         "seed": cfg.seed,
 
         # ---------------------------
-        # Policy Network + Std (match them closer)
+        # Policy Network Architecture
         # ---------------------------
         "policy_kwargs": dict(
+            # ===== Lattice Noise Settings =====
             use_lattice=True,
             use_expln=True,
             full_std=False,
-            ortho_init=True,
-
-            # Wider/healthier exploration early
-            log_std_init=-0.5,
-            std_clip=(1e-3, 10.0),
+            ortho_init=False,
+            
+            log_std_init=-1.5,
+            std_clip=(0.01, 0.3),
             expln_eps=1e-6,
-            std_reg=0.0,
+            std_reg=1e-3,
 
-            # Net arch (their defaults)
-            net_arch=dict(
-                pi=[512, 512],
-                vf=[256, 256],
-            ),
-            activation_fn=nn.SiLU,
+            # ===== Pi & V Network Sizes =====
+            net_arch=
+                dict(
+                    pi=[256, 256],
+                    vf=[256, 256],
+                ),
+            activation_fn=nn.Tanh,  # smooth control
+            lstm_hidden_size=128,
         ),
     }
     
@@ -166,15 +167,15 @@ def main():
 
     if worker_resumed:
         logger.info(f"[Worker] Loading pretrained model from: {LOAD_WORKER_MODEL_PATH}")
-        worker_model = PPO.load(
+        worker_model = RecurrentPPO.load(
             LOAD_WORKER_MODEL_PATH,
-            policy=LatticeActorCriticPolicy, 
+            policy=LatticeRecurrentActorCriticPolicy, 
             **worker_args
         )
     else:
         logger.info("[Worker] No pretrained worker model given/found. Training from scratch.")        
-        worker_model = PPO(
-            policy=LatticeActorCriticPolicy,
+        worker_model = RecurrentPPO(
+            policy=LatticeRecurrentActorCriticPolicy,
             **worker_args
         )
 
@@ -255,7 +256,7 @@ def main():
     # Manager should use the worker produced by this run
     manager_env = build_manager_vec(
         cfg=cfg,
-        num_envs=cfg.num_envs,
+        num_envs=40,
         worker_model_loader=load_worker_model,
         worker_env_loader=worker_env_loader,
         worker_model_path=SAVE_WORKER_MODEL_PATH,

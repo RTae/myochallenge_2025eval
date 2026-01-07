@@ -1,24 +1,30 @@
 """
-Refactored HRL evaluation script
-- Same evaluation style as your single-model evaluator (evaluate_single_model + evaluate folders)
-- One episode runner used by both manager and worker
-- Fixes bugs: n_episodes vs trials mismatch, success_rate uses trials, consistent naming
-- Cleaner path handling + optional `use_best` and `eval_worker_too`
+HRL EVAL script that matches your training code:
+- Worker: RecurrentPPO + LatticeRecurrentActorCriticPolicy (device=cuda)
+- Manager: PPO "MlpPolicy" (device=cpu)
+- Worker VecNormalize: worker/vecnormalize.pkl
+
+It evaluates:
+- Manager policy on Manager env (which internally runs frozen worker)
+- Optionally evaluates Worker alone on Worker env
+- Supports evaluating either "latest" (worker_model.pkl / manager_model.pkl)
+  or "best" (best/best_model.zip)
+
+Metrics collected per episode (same style as your example):
+- mean/std episode reward from info["episode"]["r"] if present
+- success_rate from info.get("is_success", False)
+- mean/std effort from info.get("effort", 0.0)
 
 Usage:
-  python eval_hrl_refactored.py
-
-It expects folders like:
-  <exp>/worker/worker_model.pkl OR <exp>/worker/best/best_model.zip
-  <exp>/worker/vecnormalize.pkl
-  <exp>/manager/manager_model.pkl OR <exp>/manager/best/best_model.zip
+  python eval_hrl.py --logs ./logs --trials 200 --use-best --eval-worker
 """
 
 import os
 import sys
 import glob
+import argparse
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -26,6 +32,7 @@ from tqdm import tqdm
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import VecNormalize, DummyVecEnv
+from sb3_contrib import RecurrentPPO
 
 # ---- path (keep like yours) ----
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -36,7 +43,7 @@ sys.path.append(root_dir)
 from config import Config
 from env_factory import build_manager_vec, build_worker_vec
 from hrl.worker_env import TableTennisWorker
-from lattice.ppo.policies import LatticeActorCriticPolicy
+from lattice.ppo.policies import LatticeRecurrentActorCriticPolicy
 from utils import resume_vecnormalize_on_training_env
 
 
@@ -51,9 +58,12 @@ def freeze_vecnormalize(env) -> None:
         env.norm_reward = False
 
 
-def load_worker_model(model_path: str, device: str = "cuda") -> PPO:
-    # You were passing policy=... into PPO.load; keep it explicitly here
-    return PPO.load(model_path, device=device, policy=LatticeActorCriticPolicy)
+def load_worker_model(model_path: str, device: str = "cuda") -> RecurrentPPO:
+    """
+    Worker is RecurrentPPO in your training script.
+    Keep policy explicit so it loads custom lattice recurrent policy correctly.
+    """
+    return RecurrentPPO.load(model_path, device=device, policy=LatticeRecurrentActorCriticPolicy)
 
 
 def load_worker_vecnormalize(vecnorm_path: str, base_env: TableTennisWorker) -> VecNormalize:
@@ -73,7 +83,7 @@ def load_worker_vecnormalize(vecnorm_path: str, base_env: TableTennisWorker) -> 
 # =============================================================================
 
 def run_vecenv_episodes(
-    model: PPO,
+    model,
     env,
     trials: int,
     deterministic: bool = True,
@@ -82,7 +92,7 @@ def run_vecenv_episodes(
     Evaluate `trials` episodes on a VecEnv with num_envs=1.
 
     Collects:
-      - episode reward (from info["episode"]["r"] if exists)
+      - episode reward (from info["episode"]["r"] if exists, else fallback 0)
       - effort (info.get("effort", 0.0))
       - success (bool(info.get("is_success", False)))
     """
@@ -105,7 +115,6 @@ def run_vecenv_episodes(
                 if isinstance(info.get("episode"), dict) and "r" in info["episode"]:
                     ep_rewards.append(float(info["episode"]["r"]))
                 else:
-                    # fallback (avoid crashing)
                     ep_rewards.append(0.0)
 
                 # effort + success
@@ -168,7 +177,9 @@ def resolve_hrl_paths(exp_dir: str, use_best: bool) -> HRLEvalPaths:
 # =============================================================================
 
 def make_eval_worker_env(cfg: Config, worker_vecnorm_path: Optional[str]):
-
+    """
+    Worker eval env = build_worker_vec(num_envs=1) + load vecnorm stats if present.
+    """
     env = build_worker_vec(cfg=cfg, num_envs=1)
 
     if worker_vecnorm_path and os.path.exists(worker_vecnorm_path):
@@ -190,8 +201,12 @@ def make_eval_manager_env(
     decision_interval: int,
     max_episode_steps: int,
 ):
+    """
+    Manager eval env = build_manager_vec(num_envs=1) and wire frozen worker:
+      - worker_model_loader: loads RecurrentPPO worker
+      - worker_env_loader: returns worker env with loaded VecNormalize
+    """
     def worker_env_loader(vecnorm_path: str):
-        # manager expects a callable that returns env with loaded vecnorm
         return load_worker_vecnormalize(vecnorm_path, TableTennisWorker(cfg))
 
     env = build_manager_vec(
@@ -220,9 +235,8 @@ def evaluate_one_hrl_experiment(
     eval_worker_too: bool = False,
     deterministic: bool = True,
 ) -> Dict[str, Any]:
-
     cfg = Config()
-    cfg.logdir = exp_dir  # optional convenience
+    cfg.logdir = exp_dir  # convenience; not strictly required
 
     paths = resolve_hrl_paths(exp_dir, use_best=use_best)
 
@@ -250,11 +264,11 @@ def evaluate_one_hrl_experiment(
     # ---- optional worker-only eval ----
     if eval_worker_too:
         worker_env = make_eval_worker_env(cfg=cfg, worker_vecnorm_path=paths.worker_vecnorm)
-        worker_model = PPO.load(
+        worker_model = RecurrentPPO.load(
             paths.worker_model,
             env=worker_env,
             device="cuda",
-            policy=LatticeActorCriticPolicy,
+            policy=LatticeRecurrentActorCriticPolicy,
         )
         w = run_vecenv_episodes(worker_model, worker_env, trials=trials, deterministic=deterministic)
         worker_env.close()
@@ -271,7 +285,7 @@ def evaluate_one_hrl_experiment(
 
 
 # =============================================================================
-# Evaluate many folders (HRL) - styled like your single-model script
+# Evaluate many folders
 # =============================================================================
 
 def evaluate_hrl_folders(
@@ -280,7 +294,6 @@ def evaluate_hrl_folders(
     use_best: bool = False,
     eval_worker_too: bool = False,
 ) -> Optional[pd.DataFrame]:
-
     if not folders:
         print("No experiment folders found.")
         return None
@@ -349,13 +362,23 @@ def evaluate_hrl_folders(
 # Main
 # =============================================================================
 
+def _parse_args():
+    p = argparse.ArgumentParser()
+    p.add_argument("--logs", type=str, default="./logs", help="Root folder containing experiment subfolders")
+    p.add_argument("--glob", type=str, default="*/", help="Glob under logs root to select experiments")
+    p.add_argument("--trials", type=int, default=200)
+    p.add_argument("--use-best", action="store_true", help="Use best/best_model.zip instead of *_model.pkl")
+    p.add_argument("--eval-worker", action="store_true", help="Also evaluate worker policy alone")
+    return p.parse_args()
+
+
 if __name__ == "__main__":
-    # HRL experiments like: ./logs/exp_*/  (adjust glob to your structure)
-    folders = sorted(glob.glob("./logs/*/"))
+    args = _parse_args()
+    folders = sorted(glob.glob(os.path.join(args.logs, args.glob)))
 
     evaluate_hrl_folders(
         folders=folders,
-        trials=200,
-        use_best=False,        # True => worker/best/best_model.zip and manager/best/best_model.zip
-        eval_worker_too=True,  # also evaluate worker alone
+        trials=args.trials,
+        use_best=args.use_best,
+        eval_worker_too=args.eval_worker,
     )
