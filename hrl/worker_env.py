@@ -228,37 +228,19 @@ class TableTennisWorker(CustomEnv):
 
     def step(self, action: np.ndarray):
         if not np.all(np.isfinite(action)):
-            # 1. Identify which muscles/joints are NaN
             bad_mask = ~np.isfinite(action)
             bad_indices = np.where(bad_mask)[0]
             bad_values = action[bad_indices]
 
-            # 2. Log details
-            logger.error("="*30)
-            logger.error(f"[CRITICAL] NaN/Inf detected in ACTION output!")
-            logger.error(f"Count:   {len(bad_indices)} bad values")
-            logger.error(f"Indices: {bad_indices}")
-            logger.error(f"Values:  {bad_values}")
-            logger.error("="*30)
-
-            # 3. Raise Error (Training is likely dead anyway if policy outputs NaN)
-            raise RuntimeError(f"Policy output NaN/Inf action at indices {bad_indices}")
+            raise RuntimeError(f"Policy output NaN/Inf action at indices {bad_indices}, values {bad_values}")
 
         obs_base, base_reward, terminated, truncated, info = super().step(action)
         
         # Check for NaN/Inf
         if not np.all(np.isfinite(obs_base)):
             bad_mask = ~np.isfinite(obs_base)
-            
-            # 2. Get the specific indices
             bad_indices = np.where(bad_mask)[0]
-            
-            # 3. Get the actual bad values
             bad_values = obs_base[bad_indices]
-
-            logger.error(f"Found {len(bad_indices)} non-finite values.")
-            logger.error(f"Indices: {bad_indices}")
-            logger.error(f"Values:  {bad_values}")
             
             raise RuntimeError(f"[NaN/Inf] detected at indices {bad_indices} with values {bad_values}")
         

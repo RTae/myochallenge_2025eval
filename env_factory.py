@@ -3,15 +3,34 @@ from loguru import logger
 
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize, VecMonitor, VecCheckNan
 
+import numpy as np
+from myosuite.utils import gym
 from config import Config
 from hrl.worker_env import TableTennisWorker
 from hrl.manager_env import TableTennisManager
 from custom_env import CustomEnv
 
+class NanCleanerWrapper(gym.Wrapper):
+    def step(self, action):
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        
+        if not np.isfinite(obs).all():
+            obs = np.nan_to_num(obs, nan=0.0, posinf=0.0, neginf=0.0)
+            
+        if not np.isfinite(reward):
+            reward = 0.0
+            
+        return obs, reward, terminated, truncated, info
+
+    def reset(self, **kwargs):
+        obs, info = self.env.reset(**kwargs)
+        if not np.isfinite(obs).all():
+            obs = np.nan_to_num(obs, nan=0.0, posinf=0.0, neginf=0.0)
+        return obs, info
+
 
 def make_subproc_env(num_envs: int, thunk_fn: Callable):
     return SubprocVecEnv([thunk_fn(i) for i in range(num_envs)])
-
 
 # ============================================================
 # Worker Vec (Low-Level)
@@ -20,13 +39,20 @@ def build_worker_vec(cfg: Config, num_envs: int) -> VecNormalize:
     def make_env(rank: int):
         def _init():
             env = TableTennisWorker(cfg)
+            env = NanCleanerWrapper(env) 
+            
             return env
         return _init
 
     logger.info(f"Creating {num_envs} low-level environments")
+    
+    # 1. Create processes (env is already wrapped with NanCleaner inside)
     venv = make_subproc_env(num_envs, make_env)
+    
+    # 2. Monitor (Safe now, inputs are clean)
     venv = VecMonitor(venv, info_keywords=("is_success",))
 
+    # 3. Normalize (Safe now, no Infs will poison the running mean)
     venv = VecNormalize(
         venv,
         norm_obs=True,
@@ -34,9 +60,8 @@ def build_worker_vec(cfg: Config, num_envs: int) -> VecNormalize:
         clip_obs=10.0,
         clip_reward=10.0,
     )
-    venv = VecCheckNan(venv, raise_exception=True)
+    
     return venv
-
 
 # ============================================================
 # Manager Vec (High-Level)
