@@ -13,9 +13,9 @@ class TableTennisWorker(CustomEnv):
         
         # 1(time) + 3(pelvis) + 58(qpos) + 58(qvel) + 3(ball) + 3(ball_v) + 
         # 3(pad) + 3(pad_v) + 4(pad_ori) + 3(reach) + 3(palm) + 3(palm_err) + 
-        # 6(touch) + 273(act) = 424
-        self.state_dim = 424
-        self.goal_dim = 8 
+        # 6(touch) + 273(act) = 425
+        self.state_dim = 417
+        self.goal_dim = 8
         self.observation_dim = self.state_dim + self.goal_dim
 
         self.observation_space = gym.spaces.Box(
@@ -28,7 +28,6 @@ class TableTennisWorker(CustomEnv):
         self.manager_delta: np.ndarray = np.zeros(self.goal_dim, dtype=np.float32)
         
         self.goal_start_time: Optional[float] = None
-        self.prev_reach_err: Optional[float] = None
         self._prev_paddle_contact = False
         self.init_paddle_x = None
         
@@ -208,20 +207,12 @@ class TableTennisWorker(CustomEnv):
             self.current_goal[7] = self._track_goal[7]
             
     def _build_obs(self, obs_base: np.ndarray):
-        obs = np.concatenate([
-            obs_base,
-            self._flat(self.current_goal),
-        ], axis=0)
-        
-        return obs.astype(np.float32)
-    
-    def _flat(self, x):
-        return np.asarray(x, dtype=np.float32).reshape(-1)
-        
-    def reset(self, seed=None, options=None):
-        _, info = super().reset(seed=seed)
-        obs_dict = self.env.unwrapped.obs_dict
+        return np.concatenate([obs_base, self.current_goal]).astype(np.float32)
 
+    def reset(self, seed=None, options=None):
+        obs, info = super().reset(seed=seed)
+        
+        obs_dict = self.env.unwrapped.obs_dict
         self._prev_paddle_contact = False
         self._track_goal = None
         self.init_paddle_x = obs_dict["paddle_pos"][0]
@@ -229,14 +220,11 @@ class TableTennisWorker(CustomEnv):
         # Reset Bounce State
         self.has_bounced = False
         self.bounce_time = 0.0
-        
         self.manager_delta = np.zeros(self.goal_dim, dtype=np.float32)
         
         goal = self.predict_goal_from_state(obs_dict)
         self.set_goal(goal, delta=None)
-        
-        self.prev_reach_err = np.linalg.norm(obs_dict["paddle_pos"] - self.current_goal[:3])
-        return self._build_obs(obs_dict), info
+        return self._build_obs(obs), info
 
     def step(self, action: np.ndarray):
         if not np.all(np.isfinite(action)):
