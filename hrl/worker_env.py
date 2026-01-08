@@ -266,7 +266,7 @@ class TableTennisWorker(CustomEnv):
         reward, _, logs = self._compute_reward(obs_dict, rwd_dict)
         if not np.isfinite(reward): raise RuntimeError(f"[NaN/Inf] reward={reward}")
         
-        reward += base_reward
+        reward = float(reward)
         info.update(logs)
         info.update({
             "time_threshold": self.time_thr,
@@ -349,6 +349,16 @@ class TableTennisWorker(CustomEnv):
         pelvis_target_xy = pred_xy + paddle_to_pelvis_offset
         pelvis_err = float(np.linalg.norm(pelvis_xy - pelvis_target_xy))
         pelvis_alignment = float(active_alignment_mask * np.exp(-5.0 * pelvis_err))
+        
+        # ---------------------------
+        # Plam Reward
+        # ---------------------------
+        plam_r = rwd_dict["palm_dist"]
+        
+        # ---------------------------
+        # Posture Reward
+        # --------------------------
+        torso_up_r = rwd_dict["torso_up"]
 
         # --------------------------
         # Combine
@@ -363,6 +373,8 @@ class TableTennisWorker(CustomEnv):
             + w_z * alignment_z
             + w_q * paddle_quat_reward_goal
             + w_p * pelvis_alignment
+            + plam_r
+            + torso_up_r
         )
 
         # Update contact memory (same concept as wrapper)
