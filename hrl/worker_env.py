@@ -273,7 +273,14 @@ class TableTennisWorker(CustomEnv):
             "reach_threshold": self.reach_thr,
             "paddle_ori_threshold": self.paddle_ori_thr,
         })
-        return self._build_obs(obs_dict), float(reward), terminated, truncated, info
+                
+        obs = self._build_obs(obs_dict)
+        obs = np.nan_to_num(obs, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+
+        reward = float(np.nan_to_num(reward, nan=0.0, posinf=0.0, neginf=0.0))
+        reward = float(np.clip(reward, -50.0, 50.0))
+
+        return obs, float(reward), terminated, truncated, info
 
     def _compute_reward(self, obs_dict, rwd_dict):
         goal_pos = self.current_goal[0:3]

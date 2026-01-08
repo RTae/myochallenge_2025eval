@@ -100,16 +100,16 @@ def main():
         # ---------------------------
         # PPO Rollout / Batch (match their stable ratios)
         # ---------------------------
-        # rollout = n_steps * n_envs = 512 * 100 = 51200
-        "n_steps": 512,
-        "batch_size": 2048,     # 51200 / 2048 = 25 minibatches (nice)
+        # rollout = n_steps * n_envs = 64 * 100 = 6400
+        "n_steps": 64,
+        "batch_size": 800,     # 6400 / 800 = 8 minibatches (nice)
         "n_epochs": 3,
 
         # ---------------------------
         # LR schedule (simple + stable)
         # ---------------------------
         # Their style: linear schedule (SB3 uses progress_remaining in [1..0])
-        "learning_rate": (lambda p: 1e-4 * p),
+        "learning_rate": (lambda p: 3e-4 * p),
 
         # ---------------------------
         # PPO Hyperparameters
@@ -138,7 +138,7 @@ def main():
         # ---------------------------
         "policy_kwargs": dict(
             use_lattice=True,
-            use_expln=True,
+            use_expln=False,
             full_std=False,
             ortho_init=True,
 
