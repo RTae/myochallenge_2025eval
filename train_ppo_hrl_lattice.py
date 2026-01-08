@@ -119,7 +119,7 @@ def main():
         # ---------------------------
         # PPO Hyperparameters
         # ---------------------------
-        "ent_coef": 1e-4,
+        "ent_coef": 1e-3,
         "clip_range": 0.2,
         "gamma": cfg.ppo_gamma,
         "gae_lambda": cfg.ppo_lambda,
@@ -143,7 +143,7 @@ def main():
         # ---------------------------
         "policy_kwargs": dict(
             use_lattice=True,
-            use_expln=False,
+            use_expln=True,
             full_std=False,
             ortho_init=True,
             
