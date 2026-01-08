@@ -1,7 +1,7 @@
 from typing import Callable
 from loguru import logger
 
-from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize, VecMonitor
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize, VecMonitor, VecCheckNan
 
 from config import Config
 from hrl.worker_env import TableTennisWorker
@@ -34,6 +34,7 @@ def build_worker_vec(cfg: Config, num_envs: int) -> VecNormalize:
         clip_obs=10.0,
         clip_reward=10.0,
     )
+    venv = VecCheckNan(venv, raise_exception=True)
     return venv
 
 
@@ -97,8 +98,7 @@ def create_default_env(cfg: Config, num_envs: int) -> VecNormalize:
     venv = make_subproc_env(num_envs, make_env)
     
     venv = VecMonitor(venv, info_keywords=("is_success",))
-    
-    return VecNormalize(
+    venv = VecNormalize(
         venv,
         norm_obs=True,
         norm_reward=False,
@@ -106,3 +106,6 @@ def create_default_env(cfg: Config, num_envs: int) -> VecNormalize:
         clip_reward=10.0,
         gamma=cfg.ppo_gamma,
     )
+    venv = VecCheckNan(venv, raise_exception=True)
+    
+    return venv
