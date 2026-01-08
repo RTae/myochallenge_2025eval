@@ -15,8 +15,8 @@ We combine **structured exploration for overactuated systems** with a **hierarch
 
 ### Our Method (Hierarchical Policy with Synergy-Driven Exploration)
 <div style="display:flex; gap:12px; justify-content:center; align-items:flex-start;">
-  <img src="https://raw.githubusercontent.com/RTae/myochallenge_2025eval/main/assert/ppo_1.gif" width="360" />
-  <img src="https://raw.githubusercontent.com/RTae/myochallenge_2025eval/main/assert/ppo_2.gif" width="360" />
+  <img src="https://raw.githubusercontent.com/RTae/myochallenge_2025eval/main/assert/our_1.gif" width="360" />
+  <img src="https://raw.githubusercontent.com/RTae/myochallenge_2025eval/main/assert/our_1.gif" width="360" />
 </div>
 
 ## Build
