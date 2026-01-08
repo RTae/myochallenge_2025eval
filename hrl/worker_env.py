@@ -341,24 +341,37 @@ class TableTennisWorker(CustomEnv):
         # --------------------------
         # Pelvis Alignment Reward
         # --------------------------
-        pelvis_xy = np.asarray(pelvis_pos[:2], dtype=np.float32)
-        paddle_xy = np.asarray(paddle_pos[:2], dtype=np.float32)
-        pred_xy = np.asarray(goal_pos[:2], dtype=np.float32)
-
-        paddle_to_pelvis_offset = pelvis_xy - paddle_xy
-        pelvis_target_xy = pred_xy + paddle_to_pelvis_offset
-        pelvis_err = float(np.linalg.norm(pelvis_xy - pelvis_target_xy))
-        pelvis_alignment = float(active_alignment_mask * np.exp(-5.0 * pelvis_err))
+        ideal_offset = np.array([-0.2, -0.4])
+        pelvis_target_xy = goal_pos[:2] + ideal_offset
+        pelvis_err = float(np.linalg.norm(pelvis_pos[:2] - pelvis_target_xy))
+        
+        pelvis_alignment = float(active_alignment_mask * np.exp(-2.0 * pelvis_err))
         
         # ---------------------------
         # Plam Reward
         # ---------------------------
-        plam_r = rwd_dict["palm_dist"]
+        plam_r = float(rwd_dict["palm_dist"])
         
         # ---------------------------
         # Posture Reward
         # --------------------------
-        torso_up_r = rwd_dict["torso_up"]
+        torso_up_r = float(rwd_dict["torso_up"])
+        
+        # --------------------------
+        # Paddle Hit Reward
+        # --------------------------
+        is_fresh_contact = has_hit and (not self._prev_paddle_contact)
+        hit_r = 10.0 if is_fresh_contact else 0.0
+        
+        # --------------------------
+        # Solved Reward
+        # --------------------------
+        solved_r = 50.0 if bool(rwd_dict['solved']) else 0.0
+        
+        # --------------------------
+        # Act Penalty
+        # --------------------------
+        act_reg_r = float(rwd_dict.get('act_reg', 0.0))
 
         # --------------------------
         # Combine
@@ -375,6 +388,9 @@ class TableTennisWorker(CustomEnv):
             + w_p * pelvis_alignment
             + plam_r
             + torso_up_r
+            + hit_r
+            + solved_r
+            - 0.1 * act_reg_r
         )
 
         # Update contact memory (same concept as wrapper)
@@ -392,7 +408,7 @@ class TableTennisWorker(CustomEnv):
             "active_mask": active_mask,
             "pre_contact_mask": pre_contact_mask,
             "is_ball_passed": is_ball_passed,
-            "has_hit": float(has_hit),
+            "has_hit": float(is_fresh_contact),
         }
 
         return float(reward), False, logs
