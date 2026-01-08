@@ -390,7 +390,7 @@ class TableTennisWorker(CustomEnv):
             + torso_up_r
             + hit_r
             + solved_r
-            - 0.1 * act_reg_r
+            + 0.1 * act_reg_r
         )
 
         # Update contact memory (same concept as wrapper)
