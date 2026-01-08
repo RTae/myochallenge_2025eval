@@ -93,7 +93,7 @@ def main():
         # ---------------------------
         # Env + Logging
         # ---------------------------
-        "env": worker_env,  # Assumed num_envs=100 based on your math below
+        "env": worker_env,  # Assumed num_envs=8 based on your math below
         "verbose": 1,
         "tensorboard_log": os.path.join(cfg.logdir),
         "device": "cuda",
@@ -102,14 +102,13 @@ def main():
         # PPO Rollout / Batch
         # ---------------------------
         # ROLLOUT MATH:
-        # n_steps = 128 (Covers your full 120-step episode in one go -> Higher quality Advantage)
-        # buffer_size = 128 * 100 envs = 12,800 steps
-        "n_steps": 128,
+        # n_steps = 512 steps * 8 envs = 4,096 steps per rollout
+        "n_steps": 512,
 
         # BATCH MATH:
-        # 12,800 steps / 1,600 batch size = 8 mini-batches per epoch
-        "batch_size": 1600,
-        "n_epochs": 3,
+        # 4,096 steps / 256 batch size = 16 mini-batches per epoch
+        "batch_size": 256,
+        "n_epochs": 10,
 
         # ---------------------------
         # LR schedule
@@ -157,7 +156,6 @@ def main():
                 vf=[256, 256],
             ),
             activation_fn=nn.SiLU,
-            optimizer_kwargs=dict(eps=1e-5)
         ),
     }
     
