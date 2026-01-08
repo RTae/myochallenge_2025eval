@@ -5,6 +5,7 @@ from myosuite.utils import gym
 from config import Config
 from custom_env import CustomEnv
 from hrl.utils import predict_ball_trajectory, get_face_normal, ensure_handle_down, flip_quat_180_x
+from loguru import logger
 
 class TableTennisWorker(CustomEnv):
     def __init__(self, config: Config):
@@ -206,22 +207,9 @@ class TableTennisWorker(CustomEnv):
             self.current_goal[3:7] = new_q
             self.current_goal[7] = self._track_goal[7]
             
-    def _build_obs(self, obs_dict):
+    def _build_obs(self, obs_base: np.ndarray):
         obs = np.concatenate([
-            self._flat(obs_dict["time"]),           
-            self._flat(obs_dict["pelvis_pos"]),     
-            self._flat(obs_dict["body_qpos"]),      
-            self._flat(obs_dict["body_qvel"]),      
-            self._flat(obs_dict["ball_pos"]),       
-            self._flat(obs_dict["ball_vel"]),       
-            self._flat(obs_dict["paddle_pos"]),     
-            self._flat(obs_dict["paddle_vel"]),     
-            self._flat(obs_dict["paddle_ori"]),                
-            self._flat(obs_dict["reach_err"]),      
-            self._flat(obs_dict["palm_pos"]),       
-            self._flat(obs_dict["palm_err"]),       
-            self._flat(obs_dict["touching_info"]),  
-            self._flat(obs_dict["act"]),            
+            obs_base,
             self._flat(self.current_goal),
         ], axis=0)
         
@@ -251,13 +239,40 @@ class TableTennisWorker(CustomEnv):
         return self._build_obs(obs_dict), info
 
     def step(self, action: np.ndarray):
-        clean_action = np.nan_to_num(action, nan=0.0, posinf=1.0, neginf=-1.0)
-        clamped_action = clean_action.copy()
-        low  = self.action_space.low
-        high = self.action_space.high
-        clamped_action = np.clip(clean_action, low, high)
+        if not np.all(np.isfinite(action)):
+            # 1. Identify which muscles/joints are NaN
+            bad_mask = ~np.isfinite(action)
+            bad_indices = np.where(bad_mask)[0]
+            bad_values = action[bad_indices]
 
-        _, base_reward, terminated, truncated, info = super().step(clamped_action)
+            # 2. Log details
+            logger.error("="*30)
+            logger.error(f"[CRITICAL] NaN/Inf detected in ACTION output!")
+            logger.error(f"Count:   {len(bad_indices)} bad values")
+            logger.error(f"Indices: {bad_indices}")
+            logger.error(f"Values:  {bad_values}")
+            logger.error("="*30)
+
+            # 3. Raise Error (Training is likely dead anyway if policy outputs NaN)
+            raise RuntimeError(f"Policy output NaN/Inf action at indices {bad_indices}")
+
+        obs_base, base_reward, terminated, truncated, info = super().step(action)
+        
+        # Check for NaN/Inf
+        if not np.all(np.isfinite(obs_base)):
+            bad_mask = ~np.isfinite(obs_base)
+            
+            # 2. Get the specific indices
+            bad_indices = np.where(bad_mask)[0]
+            
+            # 3. Get the actual bad values
+            bad_values = obs_base[bad_indices]
+
+            logger.error(f"Found {len(bad_indices)} non-finite values.")
+            logger.error(f"Indices: {bad_indices}")
+            logger.error(f"Values:  {bad_values}")
+            
+            raise RuntimeError(f"[NaN/Inf] detected at indices {bad_indices} with values {bad_values}")
         
         obs_dict = info["obs_dict"]
         rwd_dict = info["rwd_dict"]
@@ -274,7 +289,7 @@ class TableTennisWorker(CustomEnv):
             "paddle_ori_threshold": self.paddle_ori_thr,
         })
                 
-        obs = self._build_obs(obs_dict)
+        obs = self._build_obs(obs_base)
         obs = np.nan_to_num(obs, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
 
         reward = float(np.nan_to_num(reward, nan=0.0, posinf=0.0, neginf=0.0))
