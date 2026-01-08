@@ -365,9 +365,6 @@ class TableTennisWorker(CustomEnv):
             + w_p * pelvis_alignment
         )
 
-        if bool(rwd_dict.get("solved", False)):
-            reward += 25.0
-
         # Update contact memory (same concept as wrapper)
         self._prev_paddle_contact = has_hit
 
