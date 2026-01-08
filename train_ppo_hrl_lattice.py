@@ -90,46 +90,48 @@ def main():
 
     worker_args = {
         # Env + Logging
-        "env": worker_env,  # VecNormalize-wrapped, num_envs=100
+        "env": worker_env,
         "verbose": 1,
         "tensorboard_log": os.path.join(cfg.logdir),
         "device": "cuda",
 
-        # Rollout / Batch
-        # rollout = 256 * 100 = 25600 transitions per update (much stabler than 6400)
-        "n_steps": 256,
-        "batch_size": 2048,      # 25600 / 2048 = 12.5 (SB3 allows last minibatch smaller; OK)
-        "n_epochs": 4,
+        # Rollout / batch
+        # rollout = n_steps * n_envs = 128 * 100 = 12_800
+        "n_steps": 128,
+        "batch_size": 1600,     # 12_800 / 1600 = 8 minibatches
+        "n_epochs": 3,          # keep low when batch is huge
 
-        # LR schedule (lower)
-        "learning_rate": (lambda p: 3e-5 + (1e-4 - 3e-5) * p),  # warm-high -> low
+        # LR
+        "learning_rate": (lambda p: 1e-4 * p),  # lower than 3e-4 for stability at 100 envs
 
-        # PPO hypers
-        "ent_coef": 5e-5,
-        "clip_range": 0.15,      # slightly tighter helps stability
+        # PPO
+        "ent_coef": 0.0,        # IMPORTANT: don't stack entropy bonus with strong SDE noise
+        "clip_range": 0.2,
         "gamma": cfg.ppo_gamma,
         "gae_lambda": cfg.ppo_lambda,
-        "max_grad_norm": 0.3,    # tighter to prevent spikes
+        "max_grad_norm": 0.3,   # tighter to prevent blow-ups
         "vf_coef": 0.5,
-        "clip_range_vf": cfg.ppo_clip_range,
+        "clip_range_vf": 0.2,   # avoid None; keep stable
 
-        # Exploration: DON'T stack SDE with lattice
-        "use_sde": False,
+        # Exploration
+        "use_sde": True,
+        "sde_sample_freq": 16,  # less frequent resampling = less chaos (4 can be too aggressive)
 
         "seed": cfg.seed,
 
         "policy_kwargs": dict(
             use_lattice=True,
-            use_expln=True,        # safer std growth than exp
-            full_std=False,        # keep covariance simpler
+
+            # SDE stability knobs
+            use_expln=True,          # expln helps prevent std from exploding
+            full_std=False,          # keep it cheaper/more stable
             ortho_init=True,
 
-            log_std_init=-1.0,     # start smaller
-            std_clip=(1e-3, 2.0),
+            log_std_init=-2.0,       # smaller initial noise than -0.5
+            std_clip=(1e-3, 0.5),    # BIG one: do NOT allow std up to 10 with SDE+cov
             expln_eps=1e-6,
-            std_reg=0.0,
+            std_reg=1e-4,            # prevents collapsing / weird cov
 
-            # Net arch (their defaults)
             net_arch=dict(
                 pi=[512, 512],
                 vf=[256, 256],
