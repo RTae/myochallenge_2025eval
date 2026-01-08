@@ -10,6 +10,7 @@ from config import Config
 from env_factory import build_manager_vec, build_worker_vec
 from callbacks.infologger_callback import InfoLoggerCallback
 from callbacks.video_callback import VideoCallback
+from callbacks.eval_cb import SaveVecNormalizeCallback
 from hrl.worker_env import TableTennisWorker
 from hrl.manager_env import TableTennisManager
 from hrl.noise_ann_cb import WorkerNoiseAnnealCallback
@@ -89,48 +90,67 @@ def main():
     worker_resumed = bool(LOAD_WORKER_MODEL_PATH and os.path.exists(LOAD_WORKER_MODEL_PATH))
 
     worker_args = {
+        # ---------------------------
         # Env + Logging
-        "env": worker_env,
+        # ---------------------------
+        "env": worker_env,  # Assumed num_envs=100 based on your math below
         "verbose": 1,
         "tensorboard_log": os.path.join(cfg.logdir),
         "device": "cuda",
 
-        # Rollout / batch
-        # rollout = n_steps * n_envs = 128 * 100 = 12_800
+        # ---------------------------
+        # PPO Rollout / Batch
+        # ---------------------------
+        # ROLLOUT MATH:
+        # n_steps = 128 (Covers your full 120-step episode in one go -> Higher quality Advantage)
+        # buffer_size = 128 * 100 envs = 12,800 steps
         "n_steps": 128,
-        "batch_size": 1600,     # 12_800 / 1600 = 8 minibatches
-        "n_epochs": 3,          # keep low when batch is huge
 
-        # LR
-        "learning_rate": (lambda p: 1e-4 * p),  # lower than 3e-4 for stability at 100 envs
+        # BATCH MATH:
+        # 12,800 steps / 1,600 batch size = 8 mini-batches per epoch
+        "batch_size": 1600,
+        "n_epochs": 3,
 
-        # PPO
-        "ent_coef": 0.0,        # IMPORTANT: don't stack entropy bonus with strong SDE noise
+        # ---------------------------
+        # LR schedule
+        # ---------------------------
+        "learning_rate": (lambda p: 1e-4 * p),
+
+        # ---------------------------
+        # PPO Hyperparameters
+        # ---------------------------
+        "ent_coef": 1e-4,
         "clip_range": 0.2,
         "gamma": cfg.ppo_gamma,
         "gae_lambda": cfg.ppo_lambda,
-        "max_grad_norm": 0.3,   # tighter to prevent blow-ups
+        "max_grad_norm": 0.5,
         "vf_coef": 0.5,
-        "clip_range_vf": 0.2,   # avoid None; keep stable
+        "clip_range_vf": cfg.ppo_clip_range,
 
+        # ---------------------------
         # Exploration
+        # ---------------------------
         "use_sde": True,
-        "sde_sample_freq": 16,  # less frequent resampling = less chaos (4 can be too aggressive)
+        "sde_sample_freq": 4,
 
+        # ---------------------------
+        # Reproducibility
+        # ---------------------------
         "seed": cfg.seed,
 
+        # ---------------------------
+        # Policy Network + Std
+        # ---------------------------
         "policy_kwargs": dict(
             use_lattice=True,
-
-            # SDE stability knobs
-            use_expln=True,          # expln helps prevent std from exploding
-            full_std=False,          # keep it cheaper/more stable
+            use_expln=False,
+            full_std=False,
             ortho_init=True,
-
-            log_std_init=-2.0,       # smaller initial noise than -0.5
-            std_clip=(1e-3, 0.5),    # BIG one: do NOT allow std up to 10 with SDE+cov
+            
+            std_clip=(0.01, 2.0),
+            log_std_init=-0.5,
             expln_eps=1e-6,
-            std_reg=1e-4,            # prevents collapsing / weird cov
+            std_reg=0.0,
 
             net_arch=dict(
                 pi=[512, 512],
@@ -175,7 +195,11 @@ def main():
     if isinstance(eval_worker_env, VecNormalize):
         eval_worker_env.training = False
         eval_worker_env.norm_reward = False
-
+        
+    save_vecnorm_cb = SaveVecNormalizeCallback(
+        save_path=os.path.join(cfg.logdir, "best", "vecnormalize.pkl"),
+        verbose=1
+    )
     eval_worker_cb = EvalCallback(
         eval_worker_env,
         best_model_save_path=os.path.join(cfg.logdir, "best"),
@@ -184,6 +208,7 @@ def main():
         n_eval_episodes=cfg.eval_episodes,
         deterministic=True,
         render=False,
+        callback_on_new_best=save_vecnorm_cb,
     )
 
     # ---- Worker video ---
@@ -257,7 +282,6 @@ def main():
         "batch_size":1024,
         "n_steps": 512,
         "learning_rate": lambda p: cfg.ppo_lr * 0.5 * (1 + math.cos(math.pi * (1 - p))),
-        "clip_range": lambda p: cfg.ppo_clip_range * p,
         "gamma":0.995,
         "gae_lambda":0.97,
         "clip_range":cfg.ppo_clip_range,
