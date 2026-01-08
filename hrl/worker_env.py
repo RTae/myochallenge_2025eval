@@ -12,8 +12,8 @@ class TableTennisWorker(CustomEnv):
         super().__init__(config)
         
         # 1(time) + 3(pelvis) + 58(qpos) + 58(qvel) + 3(ball) + 3(ball_v) + 
-        # 3(pad) + 3(pad_v) + 4(pad_ori) + 3(reach) + 3(palm) + 3(palm_err) + 
-        # 6(touch) + 273(act) = 425
+        # 3(pad) + 3(pad_v) + 4(pad_ori) + 3(reach) + 6(touch) + 273(act)
+        # = 417 (state)
         self.state_dim = 417
         self.goal_dim = 8
         self.observation_dim = self.state_dim + self.goal_dim
