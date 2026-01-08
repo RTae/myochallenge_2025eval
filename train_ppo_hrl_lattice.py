@@ -157,6 +157,7 @@ def main():
                 vf=[256, 256],
             ),
             activation_fn=nn.SiLU,
+            optimizer_kwargs=dict(eps=1e-5)
         ),
     }
     
