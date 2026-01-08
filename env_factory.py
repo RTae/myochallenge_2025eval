@@ -19,15 +19,22 @@ def make_subproc_env(num_envs: int, thunk_fn: Callable):
 def build_worker_vec(cfg: Config, num_envs: int) -> VecNormalize:
     def make_env(rank: int):
         def _init():
-            
             env = TableTennisWorker(cfg)
             return env
         return _init
-    
+
     logger.info(f"Creating {num_envs} low-level environments")
     venv = make_subproc_env(num_envs, make_env)
     venv = VecMonitor(venv, info_keywords=("is_success",))
-    return VecNormalize(venv, norm_obs=True, norm_reward=True, clip_obs=10.0, clip_reward=10.0)
+
+    venv = VecNormalize(
+        venv,
+        norm_obs=True,
+        norm_reward=False,
+        clip_obs=10.0,
+        clip_reward=10.0,
+    )
+    return venv
 
 
 # ============================================================

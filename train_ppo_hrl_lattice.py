@@ -89,62 +89,43 @@ def main():
     worker_resumed = bool(LOAD_WORKER_MODEL_PATH and os.path.exists(LOAD_WORKER_MODEL_PATH))
 
     worker_args = {
-        # ---------------------------
         # Env + Logging
-        # ---------------------------
-        "env": worker_env,  # should be VecNormalize-wrapped, num_envs=4
+        "env": worker_env,  # VecNormalize-wrapped, num_envs=100
         "verbose": 1,
         "tensorboard_log": os.path.join(cfg.logdir),
         "device": "cuda",
 
-        # ---------------------------
-        # PPO Rollout / Batch (match their stable ratios)
-        # ---------------------------
-        # rollout = n_steps * n_envs = 64 * 100 = 6400
-        "n_steps": 64,
-        "batch_size": 800,     # 6400 / 800 = 8 minibatches (nice)
-        "n_epochs": 3,
+        # Rollout / Batch
+        # rollout = 256 * 100 = 25600 transitions per update (much stabler than 6400)
+        "n_steps": 256,
+        "batch_size": 2048,      # 25600 / 2048 = 12.5 (SB3 allows last minibatch smaller; OK)
+        "n_epochs": 4,
 
-        # ---------------------------
-        # LR schedule (simple + stable)
-        # ---------------------------
-        # Their style: linear schedule (SB3 uses progress_remaining in [1..0])
-        "learning_rate": (lambda p: 3e-4 * p),
+        # LR schedule (lower)
+        "learning_rate": (lambda p: 3e-5 + (1e-4 - 3e-5) * p),  # warm-high -> low
 
-        # ---------------------------
-        # PPO Hyperparameters
-        # ---------------------------
-        "ent_coef": 1e-4,       # much lower than 0.01
-        "clip_range": 0.2,
+        # PPO hypers
+        "ent_coef": 5e-5,
+        "clip_range": 0.15,      # slightly tighter helps stability
         "gamma": cfg.ppo_gamma,
         "gae_lambda": cfg.ppo_lambda,
-        "max_grad_norm": 0.5,   # slightly looser than 0.3 (more standard)
+        "max_grad_norm": 0.3,    # tighter to prevent spikes
         "vf_coef": 0.5,
         "clip_range_vf": cfg.ppo_clip_range,
 
-        # ---------------------------
-        # Exploration (match them)
-        # ---------------------------
-        "use_sde": True,
-        "sde_sample_freq": 4,
+        # Exploration: DON'T stack SDE with lattice
+        "use_sde": False,
 
-        # ---------------------------
-        # Reproducibility
-        # ---------------------------
         "seed": cfg.seed,
 
-        # ---------------------------
-        # Policy Network + Std (match them closer)
-        # ---------------------------
         "policy_kwargs": dict(
             use_lattice=True,
-            use_expln=False,
-            full_std=False,
+            use_expln=True,        # safer std growth than exp
+            full_std=False,        # keep covariance simpler
             ortho_init=True,
 
-            # Wider/healthier exploration early
-            log_std_init=-0.5,
-            std_clip=(1e-3, 10.0),
+            log_std_init=-1.0,     # start smaller
+            std_clip=(1e-3, 2.0),
             expln_eps=1e-6,
             std_reg=0.0,
 

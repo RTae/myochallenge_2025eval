@@ -147,48 +147,31 @@ class SquashedLatticeNoiseDistribution(LatticeNoiseDistribution):
         log_prob = self.log_prob(action, self.gaussian_actions)
         return action, log_prob
 
-
 class LatticeStateDependentNoiseDistribution(StateDependentNoiseDistribution):
     """
-    Distribution class of Lattice exploration.
-    Paper: Latent Exploration for Reinforcement Learning https://arxiv.org/abs/2305.20065
-
-    It creates correlated noise across actuators, with a covariance matrix induced by
-    the network weights. Can improve exploration in high-dimensional systems.
-
-    :param action_dim: Dimension of the action space.
-    :param full_std: Whether to use (n_features x n_actions) parameters
-        for the std instead of only (n_features,), defaults to True
-    :param use_expln: Use ``expln()`` function instead of ``exp()`` to ensure
-        a positive standard deviation (cf paper). It allows to keep variance
-        above zero and prevent it from growing too fast. In practice, ``exp()`` is usually enough.
-        Defaults to False
-    :param squash_output:  Whether to squash the output using a tanh function,
-        this ensures bounds are satisfied, defaults to False
-    :param learn_features: Whether to learn features for gSDE or not, defaults to False
-        This will enable gradients to be backpropagated through the features, defaults to False
-    :param epsilon: small value to avoid NaN due to numerical imprecision, defaults to 1e-6
-    :param std_clip: clip range for the standard deviation, can be used to prevent extreme values,
-        defaults to (1e-3, 1.0)
-    :param std_reg: optional regularization to prevent collapsing to a deterministic policy,
-        defaults to 0.0
-    :param alpha: relative weight between action and latent noise, 0 removes the latent noise,
-        defaults to 1 (equal weight)
+    A safer Lattice MVN distribution:
+      - robust PD covariance repair
+      - clipping to avoid exploding covariance
+      - optional debug checks
     """
+
     def __init__(
         self,
         action_dim: int,
-        full_std: bool = True,
-        use_expln: bool = False,
+        full_std: bool = False,
+        use_expln: bool = True,
         squash_output: bool = False,
         learn_features: bool = False,
         epsilon: float = 1e-6,
-        std_clip: Tuple[float, float] = (1e-3, 1.0),
+        std_clip: Tuple[float, float] = (1e-3, 2.0),
         std_reg: float = 0.0,
-        alpha: float = 1.0,
-        latent_clip: float = 10.0,     # clamp latent features used for noise
-        max_var: float = 10.0,         # clamp latent-induced variances
-        jitter: float = 1e-6,          # diag jitter for PD covariance
+        alpha: float = 0.5,
+        latent_clip: float = 5.0,
+        max_var: float = 2.0,
+        jitter: float = 1e-5,
+        max_mean_abs: Optional[float] = 10.0,  # clamp mean actions
+        max_weight_abs: Optional[float] = 5.0,  # clamp W in covariance build
+        debug: bool = False,
     ):
         super().__init__(
             action_dim=action_dim,
@@ -198,7 +181,8 @@ class LatticeStateDependentNoiseDistribution(StateDependentNoiseDistribution):
             epsilon=epsilon,
             learn_features=learn_features,
         )
-        self.min_std, self.max_std = std_clip
+
+        self.min_std, self.max_std = float(std_clip[0]), float(std_clip[1])
         self.std_reg = float(std_reg)
         self.alpha = float(alpha)
 
@@ -206,34 +190,58 @@ class LatticeStateDependentNoiseDistribution(StateDependentNoiseDistribution):
         self.max_var = float(max_var)
         self.jitter = float(jitter)
 
-        # SB3 fields we will set later in proba_distribution_net
+        self.max_mean_abs = None if max_mean_abs is None else float(max_mean_abs)
+        self.max_weight_abs = None if max_weight_abs is None else float(max_weight_abs)
+
+        self.debug = bool(debug)
+
+        # SB3 fields set later
         self.mean_actions_net: Optional[nn.Module] = None
         self.clipped_mean_actions_net: Optional[nn.Module] = None
         self.latent_sde_dim: Optional[int] = None
         self._latent_sde: Optional[torch.Tensor] = None
 
-        # exploration matrices (sampled in sample_weights)
+        # sampled exploration weights
         self.corr_weights_dist: Optional[Normal] = None
         self.ind_weights_dist: Optional[Normal] = None
         self.corr_exploration_mat: Optional[torch.Tensor] = None
         self.ind_exploration_mat: Optional[torch.Tensor] = None
         self.corr_exploration_matrices: Optional[torch.Tensor] = None
         self.ind_exploration_matrices: Optional[torch.Tensor] = None
-        
+
+    # -------------------------
+    # safety helpers
+    # -------------------------
     def _safe_latent(self, latent: torch.Tensor) -> torch.Tensor:
         latent = torch.nan_to_num(latent, nan=0.0, posinf=0.0, neginf=0.0)
-        if self.latent_clip is not None and self.latent_clip > 0:
+        if self.latent_clip and self.latent_clip > 0:
             latent = torch.clamp(latent, -self.latent_clip, self.latent_clip)
         return latent
 
-    def _make_pd(self, cov: torch.Tensor) -> torch.Tensor:
-        # cov: (batch, action_dim, action_dim)
+    def _pd_repair(self, cov: torch.Tensor) -> torch.Tensor:
+        """
+        Make covariance PD by trying Cholesky with increasing jitter.
+        If still failing, fallback to diagonal covariance.
+        """
         cov = torch.nan_to_num(cov, nan=0.0, posinf=0.0, neginf=0.0)
-        cov = 0.5 * (cov + cov.transpose(-1, -2))
-        idx = torch.arange(cov.size(-1), device=cov.device)
-        cov[:, idx, idx] = torch.clamp(cov[:, idx, idx], min=self.jitter)
-        cov[:, idx, idx] += self.jitter
-        return cov
+        cov = 0.5 * (cov + cov.transpose(-1, -2))  # symmetrize
+
+        b, n, _ = cov.shape
+        eye = torch.eye(n, device=cov.device, dtype=cov.dtype).unsqueeze(0)  # (1,n,n)
+
+        jitter = self.jitter
+        for _ in range(6):
+            try:
+                _ = torch.linalg.cholesky(cov + jitter * eye)
+                return cov + jitter * eye
+            except RuntimeError:
+                jitter *= 10.0
+
+        # fallback: diagonalize
+        diag = torch.diagonal(cov, dim1=-2, dim2=-1)  # (b,n)
+        diag = torch.nan_to_num(diag, nan=self.jitter, posinf=self.max_var, neginf=self.jitter)
+        diag = torch.clamp(diag, min=self.jitter, max=self.max_var)
+        return torch.diag_embed(diag) + self.jitter * eye
 
     # -------------------------
     # Std parametrization
@@ -252,7 +260,7 @@ class LatticeStateDependentNoiseDistribution(StateDependentNoiseDistribution):
         log_std = torch.nan_to_num(log_std, nan=log_min, posinf=log_max, neginf=log_min)
         log_std = torch.clamp(log_std, log_min, log_max)
 
-        # correction from paper / SB3 gSDE
+        # correction from gSDE paper / SB3
         log_std = log_std - 0.5 * np.log(self.latent_sde_dim)
 
         if self.use_expln:
@@ -274,8 +282,12 @@ class LatticeStateDependentNoiseDistribution(StateDependentNoiseDistribution):
         else:
             # std shape: (latent_sde_dim, 2)
             assert std.shape == (self.latent_sde_dim, 2), std.shape
-            corr_std = torch.ones(self.latent_sde_dim, self.latent_sde_dim, device=std.device) * std[:, 0:1]
-            ind_std = torch.ones(self.latent_sde_dim, self.action_dim, device=std.device) * std[:, 1:]
+            corr_std = torch.ones(
+                self.latent_sde_dim, self.latent_sde_dim, device=std.device, dtype=std.dtype
+            ) * std[:, 0:1]
+            ind_std = torch.ones(
+                self.latent_sde_dim, self.action_dim, device=std.device, dtype=std.dtype
+            ) * std[:, 1:]
 
         return corr_std, ind_std
 
@@ -300,7 +312,7 @@ class LatticeStateDependentNoiseDistribution(StateDependentNoiseDistribution):
     def proba_distribution_net(
         self,
         latent_dim: int,
-        log_std_init: float = 0.0,
+        log_std_init: float = -0.5,
         latent_sde_dim: Optional[int] = None,
         clip_mean: float = 0.0,
     ) -> Tuple[nn.Module, nn.Parameter]:
@@ -324,11 +336,10 @@ class LatticeStateDependentNoiseDistribution(StateDependentNoiseDistribution):
             if self.full_std
             else torch.ones(self.latent_sde_dim, 2)
         )
-
         log_std = nn.Parameter(log_std * float(log_std_init), requires_grad=True)
 
         # initial sample
-        self.sample_weights(log_std)
+        self.sample_weights(log_std, batch_size=1)
         return self.clipped_mean_actions_net, log_std
 
     # -------------------------
@@ -350,24 +361,38 @@ class LatticeStateDependentNoiseDistribution(StateDependentNoiseDistribution):
         corr_std, ind_std = self.get_std(log_std)
 
         # variances (safe)
-        latent_sq = latent.pow(2)
-        latent_corr_variance = torch.mm(latent_sq, corr_std.pow(2))
-        latent_ind_variance = torch.mm(latent_sq, ind_std.pow(2)) + (self.std_reg ** 2)
+        latent_sq = latent.pow(2)  # (batch, latent_dim)
+        latent_corr_variance = torch.mm(latent_sq, corr_std.pow(2))  # (batch, latent_dim)
+        latent_ind_variance = torch.mm(latent_sq, ind_std.pow(2)) + (self.std_reg ** 2)  # (batch, action_dim)
 
-        if self.max_var is not None and self.max_var > 0:
-            latent_corr_variance = torch.clamp(latent_corr_variance, 0.0, self.max_var)
-            latent_ind_variance = torch.clamp(latent_ind_variance, 0.0, self.max_var)
+        # cap variances (important!)
+        latent_corr_variance = torch.clamp(latent_corr_variance, 0.0, self.max_var)
+        latent_ind_variance = torch.clamp(latent_ind_variance, 0.0, self.max_var)
 
-        # covariance
+        # covariance from correlated part
         W = self.mean_actions_net.weight  # (action_dim, latent_dim)
+        if self.max_weight_abs is not None and self.max_weight_abs > 0:
+            W = torch.clamp(W, -self.max_weight_abs, self.max_weight_abs)
+
+        # (batch, action_dim, action_dim)
         sigma_mat = (self.alpha ** 2) * (W * latent_corr_variance[:, None, :]).matmul(W.T)
 
+        # add independent variance to diagonal
         idx = torch.arange(self.action_dim, device=sigma_mat.device)
-        sigma_mat[:, idx, idx] += latent_ind_variance
+        sigma_mat[:, idx, idx] = sigma_mat[:, idx, idx] + latent_ind_variance
 
-        sigma_mat = self._make_pd(sigma_mat)
+        sigma_mat = self._pd_repair(sigma_mat)
 
         mean_actions = torch.nan_to_num(mean_actions, nan=0.0, posinf=0.0, neginf=0.0)
+        if self.max_mean_abs is not None and self.max_mean_abs > 0:
+            mean_actions = torch.clamp(mean_actions, -self.max_mean_abs, self.max_mean_abs)
+
+        if self.debug:
+            if not torch.isfinite(sigma_mat).all():
+                raise RuntimeError("sigma_mat has NaN/Inf")
+            if not torch.isfinite(mean_actions).all():
+                raise RuntimeError("mean_actions has NaN/Inf")
+            _ = torch.linalg.cholesky(sigma_mat)
 
         self.distribution = MultivariateNormal(
             loc=mean_actions,
@@ -384,6 +409,9 @@ class LatticeStateDependentNoiseDistribution(StateDependentNoiseDistribution):
             gaussian_actions = self.bijector.inverse(actions)
         else:
             gaussian_actions = actions
+
+        gaussian_actions = torch.nan_to_num(gaussian_actions, nan=0.0, posinf=0.0, neginf=0.0)
+
         log_prob = self.distribution.log_prob(gaussian_actions)
         if self.bijector is not None:
             log_prob -= torch.sum(self.bijector.log_prob_correction(gaussian_actions), dim=1)
